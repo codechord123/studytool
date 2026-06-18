@@ -247,6 +247,91 @@ export function makeParallelogram(
   ];
 }
 
+export function makeRhombus(
+  cx: number,
+  cy: number,
+  d1: number,
+  d2: number
+): Point[] {
+  // d1 = 가로 대각선, d2 = 세로 대각선
+  return [
+    { x: cx, y: cy - d2 / 2 },
+    { x: cx + d1 / 2, y: cy },
+    { x: cx, y: cy + d2 / 2 },
+    { x: cx - d1 / 2, y: cy },
+  ];
+}
+
+// ----- 도형 합치기 (인접 변 공유 시) -----
+export function signedArea(points: Point[]): number {
+  let s = 0;
+  const n = points.length;
+  for (let i = 0; i < n; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % n];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return s / 2;
+}
+
+export function ensureCW(points: Point[]): Point[] {
+  // 캔버스 좌표계 (y가 아래로 증가) 기준 시계방향이 되도록
+  return signedArea(points) >= 0 ? points : [...points].reverse();
+}
+
+export function simplifyCollinear(points: Point[], tol = 0.6): Point[] {
+  const n = points.length;
+  if (n < 4) return points;
+  const out: Point[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = points[(i - 1 + n) % n];
+    const cur = points[i];
+    const next = points[(i + 1) % n];
+    const cross =
+      (cur.x - prev.x) * (next.y - cur.y) - (cur.y - prev.y) * (next.x - cur.x);
+    if (Math.abs(cross) > tol) out.push(cur);
+  }
+  return out.length >= 3 ? out : points;
+}
+
+/**
+ * 두 다각형이 한 변을 공유할 때 하나로 합친다.
+ * 공유 변이 없으면 null.
+ */
+export function mergePolygons(A: Point[], B: Point[], tol = 6): Point[] | null {
+  const a = ensureCW(A);
+  const b = ensureCW(B);
+  const nA = a.length;
+  const nB = b.length;
+  const eq = (p: Point, q: Point) => Math.hypot(p.x - q.x, p.y - q.y) < tol;
+
+  for (let i = 0; i < nA; i++) {
+    const i2 = (i + 1) % nA;
+    for (let j = 0; j < nB; j++) {
+      const j2 = (j + 1) % nB;
+      // A의 변 i→i2 와 B의 변 j2→j 가 같은 선분이어야 (반대 방향)
+      if (eq(a[i], b[j2]) && eq(a[i2], b[j])) {
+        const out: Point[] = [];
+        // A를 i2부터 i까지 순회
+        let k = i2;
+        while (true) {
+          out.push(a[k]);
+          if (k === i) break;
+          k = (k + 1) % nA;
+        }
+        // B를 j2+1부터 j 직전까지 순회
+        k = (j2 + 1) % nB;
+        while (k !== j) {
+          out.push(b[k]);
+          k = (k + 1) % nB;
+        }
+        return simplifyCollinear(out);
+      }
+    }
+  }
+  return null;
+}
+
 export function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }

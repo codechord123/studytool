@@ -8,9 +8,11 @@ import {
   flipPoints,
   makeParallelogram,
   makeRectangle,
+  makeRhombus,
   makeRightTriangle,
   makeTrapezoid,
   makeTriangle,
+  mergePolygons,
   polygonArea,
   polygonCentroid,
   polygonPerimeter,
@@ -22,7 +24,7 @@ import {
   uid,
 } from "@/lib/geometry";
 
-type Tool = "draw" | "select" | "cut" | "delete";
+type Tool = "draw" | "select" | "cut" | "delete" | "merge";
 
 const GRID = 40; // 1cm = 40px
 const CANVAS_W = 960;
@@ -37,6 +39,170 @@ type DragMode =
   | { type: "rotate"; shapeId: string; center: Point; startAngle: number; startPoints: Point[] }
   | { type: "cut"; start: Point; current: Point };
 
+function placeAtCenter(pts: Point[], cx: number, cy: number): Point[] {
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const mx = (Math.max(...xs) + Math.min(...xs)) / 2;
+  const my = (Math.max(...ys) + Math.min(...ys)) / 2;
+  return pts.map((p) => ({ x: p.x - mx + cx, y: p.y - my + cy }));
+}
+
+// ============ 프리셋 정의 (원점 기준 픽셀 좌표) ============
+type Preset = { id: string; label: string; formula: string; build: () => Point[] };
+
+const PRESETS: Preset[] = [
+  { id: "square", label: "정사각형", formula: "한 변 × 한 변", build: () => makeRectangle(0, 0, 4 * GRID, 4 * GRID) },
+  { id: "rect", label: "직사각형", formula: "가로 × 세로", build: () => makeRectangle(0, 0, 6 * GRID, 3 * GRID) },
+  { id: "rtri", label: "직각삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRightTriangle(0, 0, 6 * GRID, 4 * GRID) },
+  { id: "tri", label: "삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeTriangle(0, 0, 6 * GRID, 4 * GRID) },
+  { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
+  { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID) },
+  { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 6 * GRID, 4 * GRID) },
+];
+
+// ============ 학습 시나리오 ============
+type Scenario = { label: string; hint: string; build: (cx: number, cy: number) => Shape[] };
+type ScenarioGroup = { shape: string; formula: string; scenarios: Scenario[] };
+
+function S(color: string, pts: Point[]): Shape {
+  return { id: uid(), color, points: pts };
+}
+
+const SCENARIO_GROUPS: ScenarioGroup[] = [
+  {
+    shape: "🔷 사다리꼴의 넓이",
+    formula: "(윗변 + 아랫변) × 높이 ÷ 2",
+    scenarios: [
+      {
+        label: "① 같은 사다리꼴 두 개 → 평행사변형",
+        hint:
+          "똑같은 사다리꼴 두 개 중 하나를 180° 돌려서 옆에 붙여 보세요. 평행사변형(밑변=윗변+아랫변, 높이는 그대로)이 돼요. ➜ 사다리꼴 넓이 = (윗변+아랫변)×높이÷2",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx - 5 * GRID, cy)),
+          S(COLORS[1], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx + 5 * GRID, cy)),
+        ],
+      },
+      {
+        label: "② 가운데에서 잘라 → 직사각형",
+        hint:
+          "사다리꼴을 ‘높이의 절반(중간선)’ 위치에서 가로로 잘라 보세요(✂️ 자르기). 위쪽 조각을 좌우로 뒤집어 옆에 붙이면 직사각형이 돼요. 가로 = (윗변+아랫변)÷2 (중간선), 세로 = 높이. ➜ 같은 공식이 나와요!",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx, cy)),
+        ],
+      },
+      {
+        label: "③ 대각선으로 잘라 → 두 개의 삼각형",
+        hint:
+          "사다리꼴에 대각선을 그어 잘라 보면 두 개의 삼각형이 나와요. 각 삼각형의 넓이는 ‘밑변×높이÷2’. 두 삼각형 넓이의 합이 사다리꼴 넓이예요. (윗변×높이÷2) + (아랫변×높이÷2) = (윗변+아랫변)×높이÷2",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx, cy)),
+        ],
+      },
+      {
+        label: "④ 직사각형 + 삼각형들로 나누기",
+        hint:
+          "윗변 양 끝에서 아래로 수직선을 그어 자르면, 가운데 직사각형 + 양쪽 직각삼각형이 돼요. 각 부분의 넓이를 따로 구해서 더해 봐요.",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx, cy)),
+        ],
+      },
+    ],
+  },
+  {
+    shape: "🔶 평행사변형의 넓이",
+    formula: "밑변 × 높이",
+    scenarios: [
+      {
+        label: "① 끝을 잘라 옮기기 → 직사각형",
+        hint:
+          "평행사변형의 한쪽 끝에서 수직으로 잘라(✂️ 자르기) 잘린 직각삼각형을 반대편으로 옮겨 붙여 보세요. ‘🔗 합치기’로 합치면 직사각형이 돼요. ➜ 평행사변형 넓이 = 밑변 × 높이",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID), cx, cy)),
+        ],
+      },
+      {
+        label: "② 대각선으로 잘라 → 두 개의 합동 삼각형",
+        hint:
+          "대각선으로 한 번 자르면 똑같은 삼각형 두 개가 나와요. 그래서 한 삼각형의 넓이는 평행사변형의 절반: 밑변×높이÷2",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID), cx, cy)),
+        ],
+      },
+    ],
+  },
+  {
+    shape: "🔺 삼각형의 넓이",
+    formula: "밑변 × 높이 ÷ 2",
+    scenarios: [
+      {
+        label: "① 직각삼각형 두 개 → 직사각형",
+        hint:
+          "똑같은 직각삼각형 두 개 중 하나를 180° 돌려서 빗변끼리 맞붙이면 직사각형이 돼요. 두 개로 직사각형이 되니까 한 개는 그 절반!",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeRightTriangle(0, 0, 6 * GRID, 4 * GRID), cx - 4 * GRID, cy)),
+          S(COLORS[1], placeAtCenter(makeRightTriangle(0, 0, 6 * GRID, 4 * GRID), cx + 4 * GRID, cy)),
+        ],
+      },
+      {
+        label: "② 일반 삼각형 두 개 → 평행사변형",
+        hint:
+          "직각이 아닌 삼각형도 똑같이! 한 개를 180° 돌려 한 변을 맞붙이면 평행사변형이 만들어져요. 그 절반이 삼각형의 넓이.",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeTriangle(0, 0, 6 * GRID, 4 * GRID), cx - 4 * GRID, cy)),
+          S(COLORS[1], placeAtCenter(makeTriangle(0, 0, 6 * GRID, 4 * GRID), cx + 4 * GRID, cy)),
+        ],
+      },
+    ],
+  },
+  {
+    shape: "💎 마름모의 넓이",
+    formula: "한 대각선 × 다른 대각선 ÷ 2",
+    scenarios: [
+      {
+        label: "① 두 대각선으로 잘라 → 4개의 직각삼각형",
+        hint:
+          "마름모의 두 대각선을 따라 자르면 똑같은 직각삼각형 4개가 나와요. 이들을 다시 배치하면 가로=대각선1, 세로=대각선2÷2 인 직사각형이 돼요. ➜ 마름모 넓이 = 대각선 × 대각선 ÷ 2",
+        build: (cx, cy) => [
+          S(COLORS[2], placeAtCenter(makeRhombus(0, 0, 6 * GRID, 4 * GRID), cx, cy)),
+        ],
+      },
+      {
+        label: "② 마름모를 둘러싼 직사각형",
+        hint:
+          "두 대각선 길이를 가로·세로로 하는 직사각형 안에 마름모가 딱 들어가요. 마름모는 그 직사각형의 절반! ➜ 같은 공식 (대각선 × 대각선 ÷ 2)",
+        build: (cx, cy) => [
+          S(COLORS[2], placeAtCenter(makeRhombus(0, 0, 6 * GRID, 4 * GRID), cx, cy)),
+          S(COLORS[3], placeAtCenter(makeRectangle(0, 0, 6 * GRID, 4 * GRID), cx, cy)),
+        ],
+      },
+    ],
+  },
+  {
+    shape: "▭ 직사각형의 넓이",
+    formula: "가로 × 세로",
+    scenarios: [
+      {
+        label: "① 격자 칸 세어 보기",
+        hint:
+          "직사각형 안에 모눈 칸이 몇 개 들어가는지 세어 보세요. ‘가로 칸 수 × 세로 칸 수’가 칸의 개수, 즉 넓이(cm²)예요.",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeRectangle(0, 0, 6 * GRID, 4 * GRID), cx, cy)),
+        ],
+      },
+      {
+        label: "② 대각선으로 잘라 → 직각삼각형 두 개",
+        hint:
+          "직사각형을 대각선으로 자르면 똑같은 직각삼각형 두 개가 돼요. 그래서 직각삼각형의 넓이는 ‘가로×세로÷2’.",
+        build: (cx, cy) => [
+          S(COLORS[0], placeAtCenter(makeRectangle(0, 0, 6 * GRID, 4 * GRID), cx, cy)),
+        ],
+      },
+    ],
+  },
+];
+
+// =============================================================
+
 export default function PolygonCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -44,11 +210,13 @@ export default function PolygonCanvas() {
   const [past, setPast] = useState<Shape[][]>([]);
   const [future, setFuture] = useState<Shape[][]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [tool, setTool] = useState<Tool>("draw");
+  const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
+  const [tool, setTool] = useState<Tool>("select");
   const [snap, setSnap] = useState(true);
   const [draft, setDraft] = useState<Point[]>([]);
   const [hoverPt, setHoverPt] = useState<Point | null>(null);
   const [scenarioHint, setScenarioHint] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
   const dragRef = useRef<DragMode>({ type: "none" });
   const colorIndexRef = useRef(0);
 
@@ -64,12 +232,15 @@ export default function PolygonCanvas() {
     return () => ro.disconnect();
   }, []);
 
-  const selected = useMemo(
-    () => shapes.find((s) => s.id === selectedId) ?? null,
-    [shapes, selectedId]
-  );
+  const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
 
-  // ----- 히스토리 -----
+  // 플래시 메시지 자동 닫기
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 3500);
+    return () => clearTimeout(t);
+  }, [flash]);
+
   const commitHistory = useCallback(() => {
     setPast((p) => {
       const next = [...p, cloneShapes(shapes)];
@@ -85,6 +256,7 @@ export default function PolygonCanvas() {
     setPast((p) => p.slice(0, -1));
     setShapes(prev);
     setSelectedId((id) => (prev.find((s) => s.id === id) ? id : null));
+    setMergeFirstId(null);
     setDraft([]);
     dragRef.current = { type: "none" };
   }, [past, shapes]);
@@ -98,7 +270,6 @@ export default function PolygonCanvas() {
     setSelectedId((id) => (next.find((s) => s.id === id) ? id : null));
   }, [future, shapes]);
 
-  // ----- 좌표 변환 -----
   const getPt = (e: React.PointerEvent): Point => {
     const c = canvasRef.current!;
     const rect = c.getBoundingClientRect();
@@ -131,7 +302,6 @@ export default function PolygonCanvas() {
     return { x: c.x, y: minY - 40 };
   }
 
-  // ----- 마우스 이벤트 -----
   function handleCanvasPointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return;
     const p = getPt(e);
@@ -160,8 +330,35 @@ export default function PolygonCanvas() {
     }
 
     if (tool === "cut") {
-      // 드래그로 자르기 직선을 긋는다
       dragRef.current = { type: "cut", start: p, current: p };
+      return;
+    }
+
+    if (tool === "merge") {
+      const hit = topShapeAt(p);
+      if (!hit) {
+        setMergeFirstId(null);
+        return;
+      }
+      if (!mergeFirstId) {
+        setMergeFirstId(hit.id);
+        return;
+      }
+      if (mergeFirstId === hit.id) return;
+      // 합치기 시도
+      const A = shapes.find((s) => s.id === mergeFirstId)!;
+      const merged = mergePolygons(A.points, hit.points);
+      if (!merged) {
+        setFlash("두 도형의 한 변이 정확히 맞붙어 있어야 합쳐져요. (격자 스냅 사용 추천)");
+        return;
+      }
+      commitHistory();
+      setShapes((all) => {
+        const remaining = all.filter((s) => s.id !== A.id && s.id !== hit.id);
+        return [...remaining, { id: uid(), color: A.color, points: merged }];
+      });
+      setMergeFirstId(null);
+      setFlash("도형 두 개를 하나로 합쳤어요!");
       return;
     }
 
@@ -180,9 +377,7 @@ export default function PolygonCanvas() {
           };
           return;
         }
-        const vi = selected.points.findIndex(
-          (v) => Math.hypot(v.x - p.x, v.y - p.y) < 12
-        );
+        const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 12);
         if (vi !== -1) {
           commitHistory();
           dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi };
@@ -205,12 +400,10 @@ export default function PolygonCanvas() {
     setHoverPt(p);
     const dm = dragRef.current;
     if (dm.type === "none") return;
-
     if (dm.type === "cut") {
       dragRef.current = { ...dm, current: p };
       return;
     }
-
     setShapes((all) =>
       all.map((s) => {
         if (s.id !== dm.shapeId) return s;
@@ -239,9 +432,7 @@ export default function PolygonCanvas() {
       const p = getPt(e);
       const a = dm.start;
       const b = p;
-      if (Math.hypot(a.x - b.x, a.y - b.y) > 4) {
-        applyCut(a, b);
-      }
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 4) applyCut(a, b);
     }
     dragRef.current = { type: "none" };
   }
@@ -278,7 +469,6 @@ export default function PolygonCanvas() {
     }
   }
 
-  // ----- 키보드 -----
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const meta = e.ctrlKey || e.metaKey;
@@ -294,6 +484,7 @@ export default function PolygonCanvas() {
       }
       if (e.key === "Escape") {
         setDraft([]);
+        setMergeFirstId(null);
         dragRef.current = { type: "none" };
       } else if (e.key === "Enter" && tool === "draw" && draft.length >= 3) {
         finishDraft();
@@ -308,40 +499,43 @@ export default function PolygonCanvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool, draft.length, selectedId, undo, redo, commitHistory]);
 
-  // ----- 변환 액션 -----
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
     if (!selected) return;
     commitHistory();
     setShapes((all) =>
       all.map((s) =>
-        s.id === selected.id
-          ? { ...s, points: fn(s.points, polygonCentroid(s.points)) }
-          : s
+        s.id === selected.id ? { ...s, points: fn(s.points, polygonCentroid(s.points)) } : s
       )
     );
   }
 
-  function addPresetShape(points: Point[]) {
+  function addPreset(p: Preset) {
     commitHistory();
-    const s: Shape = { id: uid(), color: nextColor(), points };
+    const cx = Math.round(CANVAS_W / 2 / GRID) * GRID;
+    const cy = Math.round(CANVAS_H / 2 / GRID) * GRID;
+    const s: Shape = { id: uid(), color: nextColor(), points: placeAtCenter(p.build(), cx, cy) };
     setShapes((all) => [...all, s]);
     setSelectedId(s.id);
     setTool("select");
   }
 
-  function loadScenario(scenario: Scenario) {
+  function loadScenario(sc: Scenario) {
     commitHistory();
-    setShapes(scenario.build());
+    const cx = Math.round(CANVAS_W / 2 / GRID) * GRID;
+    const cy = Math.round(CANVAS_H / 2 / GRID) * GRID;
+    setShapes(sc.build(cx, cy));
     setSelectedId(null);
+    setMergeFirstId(null);
     setDraft([]);
     setTool("select");
-    setScenarioHint(scenario.hint);
+    setScenarioHint(sc.hint);
   }
 
   function clearAll() {
     commitHistory();
     setShapes([]);
     setSelectedId(null);
+    setMergeFirstId(null);
     setDraft([]);
     setScenarioHint(null);
   }
@@ -387,9 +581,8 @@ export default function PolygonCanvas() {
     for (let x = GRID; x < CANVAS_W; x += GRID * 5) ctx.fillText(`${x / GRID}`, x + 2, 12);
     for (let y = GRID; y < CANVAS_H; y += GRID * 5) ctx.fillText(`${y / GRID}`, 2, y + 12);
 
-    for (const s of shapes) drawShape(ctx, s, s.id === selectedId);
+    for (const s of shapes) drawShape(ctx, s, s.id === selectedId, s.id === mergeFirstId);
 
-    // 그리기 중인 다각형
     if (draft.length > 0) {
       ctx.strokeStyle = "#0ea5e9";
       ctx.lineWidth = 2;
@@ -413,7 +606,6 @@ export default function PolygonCanvas() {
       }
     }
 
-    // 자르기 미리보기 — 드래그 중인 직선 (양쪽으로 확장된 무한직선)
     const dm = dragRef.current;
     if (tool === "cut" && dm.type === "cut") {
       const a = dm.start;
@@ -432,7 +624,6 @@ export default function PolygonCanvas() {
       ctx.lineTo(a.x + ex, a.y + ey);
       ctx.stroke();
       ctx.restore();
-      // 실제 드래그 구간
       ctx.strokeStyle = "#dc2626";
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -447,18 +638,23 @@ export default function PolygonCanvas() {
       ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
       ctx.fill();
     }
-  }, [shapes, draft, hoverPt, selectedId, tool]);
+  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool]);
 
-  function drawShape(ctx: CanvasRenderingContext2D, s: Shape, isSelected: boolean) {
+  function drawShape(
+    ctx: CanvasRenderingContext2D,
+    s: Shape,
+    isSelected: boolean,
+    isMergeFirst: boolean
+  ) {
     if (s.points.length < 2) return;
     ctx.beginPath();
     ctx.moveTo(s.points[0].x, s.points[0].y);
     for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
     ctx.closePath();
-    ctx.fillStyle = s.color + "55";
+    ctx.fillStyle = isMergeFirst ? "#f59e0b55" : s.color + "55";
     ctx.fill();
-    ctx.strokeStyle = isSelected ? "#0f172a" : s.color;
-    ctx.lineWidth = isSelected ? 2.5 : 2;
+    ctx.strokeStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : s.color;
+    ctx.lineWidth = isMergeFirst || isSelected ? 3 : 2;
     ctx.stroke();
 
     ctx.fillStyle = "#334155";
@@ -473,9 +669,9 @@ export default function PolygonCanvas() {
     }
 
     for (const v of s.points) {
-      ctx.fillStyle = isSelected ? "#0f172a" : s.color;
+      ctx.fillStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : s.color;
       ctx.beginPath();
-      ctx.arc(v.x, v.y, isSelected ? 5 : 3, 0, Math.PI * 2);
+      ctx.arc(v.x, v.y, isSelected || isMergeFirst ? 5 : 3, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -509,6 +705,12 @@ export default function PolygonCanvas() {
       ctx.strokeStyle = "#065f46";
       ctx.stroke();
     }
+
+    if (isMergeFirst) {
+      ctx.fillStyle = "#d97706";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText("1️⃣", s.points[0].x - 8, s.points[0].y - 12);
+    }
   }
 
   const totalArea = useMemo(
@@ -520,10 +722,7 @@ export default function PolygonCanvas() {
     [shapes]
   );
 
-  // ----- 캔버스 중심 좌표 -----
-  const cx = CANVAS_W / 2;
-  const cy = CANVAS_H / 2;
-
+  // -------- 렌더 --------
   return (
     <div className="flex flex-col gap-3">
       <Toolbar
@@ -531,6 +730,7 @@ export default function PolygonCanvas() {
         setTool={(t) => {
           setTool(t);
           setDraft([]);
+          setMergeFirstId(null);
           dragRef.current = { type: "none" };
         }}
         snap={snap}
@@ -556,16 +756,14 @@ export default function PolygonCanvas() {
         onRedo={redo}
       />
 
-      <PresetRow
-        onAdd={addPresetShape}
-        cx={cx}
-        cy={cy}
-      />
-
-      <ScenarioRow onLoad={loadScenario} cx={cx} cy={cy} />
+      {flash && (
+        <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900 shadow-sm">
+          {flash}
+        </div>
+      )}
 
       {scenarioHint && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
           💡 {scenarioHint}
           <button
             className="ml-3 text-xs text-amber-700 underline"
@@ -576,46 +774,54 @@ export default function PolygonCanvas() {
         </div>
       )}
 
-      <div
-        ref={wrapRef}
-        className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white"
-        style={{ touchAction: "none" }}
-      >
-        <div style={{ width: CANVAS_W * cssScale, height: CANVAS_H * cssScale }}>
-          <canvas
-            ref={canvasRef}
-            width={CANVAS_W}
-            height={CANVAS_H}
-            style={{
-              width: CANVAS_W * cssScale,
-              height: CANVAS_H * cssScale,
-              cursor:
-                tool === "draw"
-                  ? "crosshair"
-                  : tool === "cut"
-                  ? "crosshair"
-                  : tool === "delete"
-                  ? "not-allowed"
-                  : "default",
-              display: "block",
-            }}
-            onPointerDown={handleCanvasPointerDown}
-            onPointerMove={handleCanvasPointerMove}
-            onPointerUp={handleCanvasPointerUp}
-            onPointerCancel={handleCanvasPointerUp}
-          />
-        </div>
-      </div>
+      <div className="grid gap-3 lg:grid-cols-[210px_minmax(0,1fr)_260px]">
+        <ShapePalette presets={PRESETS} onAdd={addPreset} />
 
-      {selected && (
-        <TransformBar
-          onRotate={(deg) =>
-            transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))
-          }
-          onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
-          onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
-        />
-      )}
+        <div className="flex flex-col gap-3">
+          <div
+            ref={wrapRef}
+            className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white"
+            style={{ touchAction: "none" }}
+          >
+            <div style={{ width: CANVAS_W * cssScale, height: CANVAS_H * cssScale }}>
+              <canvas
+                ref={canvasRef}
+                width={CANVAS_W}
+                height={CANVAS_H}
+                style={{
+                  width: CANVAS_W * cssScale,
+                  height: CANVAS_H * cssScale,
+                  cursor:
+                    tool === "draw" || tool === "cut"
+                      ? "crosshair"
+                      : tool === "delete"
+                      ? "not-allowed"
+                      : tool === "merge"
+                      ? "pointer"
+                      : "default",
+                  display: "block",
+                }}
+                onPointerDown={handleCanvasPointerDown}
+                onPointerMove={handleCanvasPointerMove}
+                onPointerUp={handleCanvasPointerUp}
+                onPointerCancel={handleCanvasPointerUp}
+              />
+            </div>
+          </div>
+
+          {selected && (
+            <TransformBar
+              onRotate={(deg) =>
+                transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))
+              }
+              onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
+              onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
+            />
+          )}
+        </div>
+
+        <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} />
+      </div>
 
       <InfoPanel
         selected={selected}
@@ -623,12 +829,13 @@ export default function PolygonCanvas() {
         totalPeri={totalPeri}
         shapeCount={shapes.length}
         tool={tool}
+        mergeFirst={!!mergeFirstId}
       />
     </div>
   );
 }
 
-// =================== UI 컴포넌트 ===================
+// ====================== UI ======================
 
 function Toolbar(props: {
   tool: Tool;
@@ -653,19 +860,12 @@ function Toolbar(props: {
     }`;
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-      <div className="flex gap-1.5">
-        <button className={btn(props.tool === "draw")} onClick={() => props.setTool("draw")}>
-          ✏️ 그리기
-        </button>
-        <button className={btn(props.tool === "select")} onClick={() => props.setTool("select")}>
-          🖱️ 선택/이동
-        </button>
-        <button className={btn(props.tool === "cut")} onClick={() => props.setTool("cut")}>
-          ✂️ 자르기
-        </button>
-        <button className={btn(props.tool === "delete")} onClick={() => props.setTool("delete")}>
-          🗑️ 삭제
-        </button>
+      <div className="flex gap-1.5 flex-wrap">
+        <button className={btn(props.tool === "draw")} onClick={() => props.setTool("draw")}>✏️ 그리기</button>
+        <button className={btn(props.tool === "select")} onClick={() => props.setTool("select")}>🖱️ 선택/이동</button>
+        <button className={btn(props.tool === "cut")} onClick={() => props.setTool("cut")}>✂️ 자르기</button>
+        <button className={btn(props.tool === "merge")} onClick={() => props.setTool("merge")}>🔗 합치기</button>
+        <button className={btn(props.tool === "delete")} onClick={() => props.setTool("delete")}>🗑️ 삭제</button>
       </div>
       <div className="ml-1 h-6 w-px bg-slate-200" />
       <button
@@ -688,136 +888,78 @@ function Toolbar(props: {
         disabled={!props.canUndo}
         onClick={props.onUndo}
         title="Ctrl/Cmd+Z"
-      >
-        ↶ 되돌리기
-      </button>
+      >↶ 되돌리기</button>
       <button
         className="px-3 py-2 text-sm font-medium rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40"
         disabled={!props.canRedo}
         onClick={props.onRedo}
         title="Ctrl/Cmd+Shift+Z"
-      >
-        ↷ 다시하기
-      </button>
+      >↷ 다시하기</button>
       <label className="flex items-center gap-2 text-sm text-slate-600 px-2">
-        <input
-          type="checkbox"
-          checked={props.snap}
-          onChange={(e) => props.setSnap(e.target.checked)}
-        />
+        <input type="checkbox" checked={props.snap} onChange={(e) => props.setSnap(e.target.checked)} />
         격자에 맞추기
       </label>
       <div className="ml-auto">
         <button
           className="px-3 py-2 text-sm font-medium rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
           onClick={props.onClear}
-        >
-          전체 초기화
-        </button>
+        >전체 초기화</button>
       </div>
     </div>
   );
 }
 
-function PresetRow(props: { onAdd: (pts: Point[]) => void; cx: number; cy: number }) {
-  const { cx, cy, onAdd } = props;
-  const items: { label: string; build: () => Point[] }[] = [
-    { label: "정사각형 4×4", build: () => makeRectangle(cx, cy, 4 * GRID, 4 * GRID) },
-    { label: "직사각형 6×3", build: () => makeRectangle(cx, cy, 6 * GRID, 3 * GRID) },
-    { label: "직각삼각형 6×4", build: () => makeRightTriangle(cx, cy, 6 * GRID, 4 * GRID) },
-    { label: "삼각형", build: () => makeTriangle(cx, cy, 6 * GRID, 4 * GRID) },
-    {
-      label: "평행사변형",
-      build: () => makeParallelogram(cx, cy, 6 * GRID, 4 * GRID, 2 * GRID),
-    },
-    {
-      label: "사다리꼴",
-      build: () => makeTrapezoid(cx, cy, 3 * GRID, 6 * GRID, 4 * GRID),
-    },
-  ];
+function ShapePalette({ presets, onAdd }: { presets: Preset[]; onAdd: (p: Preset) => void }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-      <span className="text-sm font-semibold text-slate-500 pr-2">도형 추가</span>
-      {items.map((it) => (
-        <button
-          key={it.label}
-          className="px-3 py-2 text-sm rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-          onClick={() => onAdd(it.build())}
-        >
-          ➕ {it.label}
-        </button>
-      ))}
-    </div>
+    <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="mb-2 text-sm font-semibold text-slate-700">📐 도형 추가</div>
+      <div className="grid grid-cols-2 gap-2">
+        {presets.map((p) => (
+          <ShapeThumb key={p.id} preset={p} onClick={() => onAdd(p)} />
+        ))}
+      </div>
+      <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
+        도형을 누르면 모눈종이 가운데에 놓여요.
+      </p>
+    </aside>
   );
 }
 
-type Scenario = { label: string; hint: string; build: () => Shape[] };
-
-function ScenarioRow(props: { onLoad: (s: Scenario) => void; cx: number; cy: number }) {
-  const { cx, cy, onLoad } = props;
-  const scenarios: Scenario[] = [
-    {
-      label: "사다리꼴 두 개 → 평행사변형",
-      hint:
-        "똑같은 사다리꼴 두 개를 준비했어요. 한 개를 180° 돌려서 다른 사다리꼴 옆에 붙여 보세요. 평행사변형이 되면 ‘(윗변+아랫변)×높이’가 평행사변형의 넓이가 돼요. 사다리꼴 한 개의 넓이는 그 절반!",
-      build: () => {
-        const A = makeTrapezoid(cx - 3.5 * GRID, cy, 3 * GRID, 6 * GRID, 4 * GRID);
-        const B = makeTrapezoid(cx + 3.5 * GRID, cy, 3 * GRID, 6 * GRID, 4 * GRID);
-        return [
-          { id: uid(), color: COLORS[0], points: A },
-          { id: uid(), color: COLORS[1], points: B },
-        ];
-      },
-    },
-    {
-      label: "평행사변형 → 직사각형",
-      hint:
-        "평행사변형의 왼쪽(또는 오른쪽) 끝에서 직각삼각형 한 조각을 잘라(✂️ 자르기) 반대편으로 옮겨 붙여 보세요. 직사각형이 되죠? 그래서 평행사변형의 넓이는 ‘밑변×높이’예요.",
-      build: () => {
-        const P = makeParallelogram(cx, cy, 6 * GRID, 4 * GRID, 2 * GRID);
-        return [{ id: uid(), color: COLORS[0], points: P }];
-      },
-    },
-    {
-      label: "직각삼각형 두 개 → 직사각형",
-      hint:
-        "똑같은 직각삼각형 두 개를 합쳐 보세요. 한 개를 180° 돌려서 빗변끼리 맞붙이면 직사각형이 돼요. 그래서 삼각형의 넓이는 ‘밑변×높이÷2’!",
-      build: () => {
-        const A = makeRightTriangle(cx - 3 * GRID, cy, 6 * GRID, 4 * GRID);
-        const B = makeRightTriangle(cx + 3 * GRID, cy, 6 * GRID, 4 * GRID);
-        return [
-          { id: uid(), color: COLORS[0], points: A },
-          { id: uid(), color: COLORS[1], points: B },
-        ];
-      },
-    },
-    {
-      label: "삼각형 두 개 → 평행사변형",
-      hint:
-        "임의의 삼각형 두 개로도 평행사변형을 만들 수 있어요. 한 개를 180° 회전해서 한 변에 딱 맞춰 보세요.",
-      build: () => {
-        const A = makeTriangle(cx - 3 * GRID, cy, 6 * GRID, 4 * GRID);
-        const B = makeTriangle(cx + 3 * GRID, cy, 6 * GRID, 4 * GRID);
-        return [
-          { id: uid(), color: COLORS[0], points: A },
-          { id: uid(), color: COLORS[1], points: B },
-        ];
-      },
-    },
-  ];
+function ShapeThumb({ preset, onClick }: { preset: Preset; onClick: () => void }) {
+  const W = 92, H = 70, PAD = 8;
+  const pts = preset.build();
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const bw = Math.max(1, maxX - minX);
+  const bh = Math.max(1, maxY - minY);
+  const s = Math.min((W - PAD * 2) / bw, (H - PAD * 2) / bh);
+  const tx = (W - bw * s) / 2 - minX * s;
+  const ty = (H - bh * s) / 2 - minY * s;
+  const ptsStr = pts.map((p) => `${(p.x * s + tx).toFixed(1)},${(p.y * s + ty).toFixed(1)}`).join(" ");
+  const gridStep = Math.max(8, GRID * s);
+  const patternId = `g-${preset.id}`;
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm">
-      <span className="text-sm font-semibold text-indigo-700 pr-2">📚 학습 예시</span>
-      {scenarios.map((sc) => (
-        <button
-          key={sc.label}
-          className="px-3 py-2 text-sm rounded-lg border border-indigo-200 bg-white text-indigo-800 hover:bg-indigo-100"
-          onClick={() => onLoad(sc)}
-        >
-          {sc.label}
-        </button>
-      ))}
-    </div>
+    <button
+      onClick={onClick}
+      className="group flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white p-2 hover:border-sky-400 hover:bg-sky-50 transition"
+      title={preset.formula}
+    >
+      <svg width={W} height={H} className="rounded-md overflow-hidden">
+        <defs>
+          <pattern id={patternId} width={gridStep} height={gridStep} patternUnits="userSpaceOnUse">
+            <path d={`M ${gridStep} 0 L 0 0 0 ${gridStep}`} stroke="#e2e8f0" strokeWidth="1" fill="none" />
+          </pattern>
+        </defs>
+        <rect width={W} height={H} fill={`url(#${patternId})`} />
+        <polygon points={ptsStr} fill="#60a5fa66" stroke="#0ea5e9" strokeWidth="1.8" />
+      </svg>
+      <div className="text-[12px] font-semibold text-slate-700 group-hover:text-sky-700">
+        {preset.label}
+      </div>
+      <div className="text-[10px] text-slate-500 text-center leading-tight">{preset.formula}</div>
+    </button>
   );
 }
 
@@ -832,41 +974,64 @@ function TransformBar(props: {
     <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 shadow-sm">
       <span className="text-sm font-semibold text-emerald-800 pr-2">선택한 도형 변환</span>
       <div className="flex gap-1.5">
-        <button className={btn} onClick={() => props.onRotate(-90)}>
-          ↶ 90°
-        </button>
-        <button className={btn} onClick={() => props.onRotate(90)}>
-          ↷ 90°
-        </button>
-        <button className={btn} onClick={() => props.onRotate(180)}>
-          180°
-        </button>
+        <button className={btn} onClick={() => props.onRotate(-90)}>↶ 90°</button>
+        <button className={btn} onClick={() => props.onRotate(90)}>↷ 90°</button>
+        <button className={btn} onClick={() => props.onRotate(180)}>180°</button>
       </div>
       <div className="h-6 w-px bg-emerald-200" />
       <div className="flex gap-1.5">
-        <button className={btn} onClick={() => props.onFlip("horizontal")}>
-          ↔ 좌우 뒤집기
-        </button>
-        <button className={btn} onClick={() => props.onFlip("vertical")}>
-          ↕ 위아래 뒤집기
-        </button>
+        <button className={btn} onClick={() => props.onFlip("horizontal")}>↔ 좌우 뒤집기</button>
+        <button className={btn} onClick={() => props.onFlip("vertical")}>↕ 위아래 뒤집기</button>
       </div>
       <div className="h-6 w-px bg-emerald-200" />
       <div className="flex gap-1.5">
-        <button className={btn} onClick={() => props.onScale(0.5)}>
-          🔻 ×0.5
-        </button>
-        <button className={btn} onClick={() => props.onScale(0.8)}>
-          🔽 ×0.8
-        </button>
-        <button className={btn} onClick={() => props.onScale(1.25)}>
-          🔼 ×1.25
-        </button>
-        <button className={btn} onClick={() => props.onScale(2)}>
-          🔺 ×2
-        </button>
+        <button className={btn} onClick={() => props.onScale(0.5)}>🔻 ×0.5</button>
+        <button className={btn} onClick={() => props.onScale(0.8)}>🔽 ×0.8</button>
+        <button className={btn} onClick={() => props.onScale(1.25)}>🔼 ×1.25</button>
+        <button className={btn} onClick={() => props.onScale(2)}>🔺 ×2</button>
       </div>
     </div>
+  );
+}
+
+function ScenariosAside({
+  groups,
+  onLoad,
+}: {
+  groups: ScenarioGroup[];
+  onLoad: (sc: Scenario) => void;
+}) {
+  return (
+    <aside className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm overflow-y-auto max-h-[640px]">
+      <div className="mb-2 text-sm font-semibold text-indigo-800">📚 학습 예시</div>
+      <div className="flex flex-col gap-2">
+        {groups.map((g, gi) => (
+          <details
+            key={g.shape}
+            open={gi === 0}
+            className="rounded-xl bg-white border border-indigo-100 px-3 py-2"
+          >
+            <summary className="cursor-pointer text-sm font-semibold text-indigo-900 marker:text-indigo-400">
+              {g.shape}
+            </summary>
+            <div className="mt-1 text-[11px] text-indigo-700 font-medium">
+              공식: {g.formula}
+            </div>
+            <div className="mt-2 flex flex-col gap-1.5">
+              {g.scenarios.map((sc) => (
+                <button
+                  key={sc.label}
+                  className="text-left text-xs px-2 py-1.5 rounded-md border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-900"
+                  onClick={() => onLoad(sc)}
+                >
+                  {sc.label}
+                </button>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
+    </aside>
   );
 }
 
@@ -876,6 +1041,7 @@ function InfoPanel(props: {
   totalPeri: number;
   shapeCount: number;
   tool: Tool;
+  mergeFirst: boolean;
 }) {
   const tips: Record<Tool, string> = {
     draw:
@@ -883,6 +1049,9 @@ function InfoPanel(props: {
     select:
       "도형을 클릭해서 선택해요. 도형 안쪽을 끌면 옮기고, 꼭짓점을 끌면 모양을 바꿔요. 위쪽 초록 점은 회전 손잡이예요.",
     cut: "도형 위에서 ‘드래그(누른 채로 끌기)’해서 잘라요. 가로·세로·비스듬한 직선 모두 가능해요.",
+    merge: props.mergeFirst
+      ? "첫 번째 도형을 골랐어요! 이제 ‘붙이고 싶은 도형’을 클릭하세요. 두 도형이 한 변을 정확히 맞대고 있어야 합쳐져요."
+      : "합칠 첫 번째 도형을 클릭하세요. 그 다음 두 번째 도형을 클릭하면 한 도형으로 합쳐져요.",
     delete: "지우고 싶은 도형을 클릭하세요.",
   };
   return (
@@ -891,7 +1060,8 @@ function InfoPanel(props: {
         <div className="text-sm font-semibold text-slate-500">사용 방법</div>
         <p className="mt-1 text-sm text-slate-700 leading-relaxed">{tips[props.tool]}</p>
         <p className="mt-2 text-xs text-slate-500">
-          🔸 격자 한 칸 = 1cm · 굵은 선 = 5cm · Ctrl/Cmd+Z: 되돌리기 · Delete: 선택 도형 지우기
+          🔸 격자 한 칸 = 1cm · 굵은 선 = 5cm · Ctrl/Cmd+Z 되돌리기 · 합치기는 변을 정확히 맞붙여야
+          해요 (격자 스냅 추천)
         </p>
       </div>
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">

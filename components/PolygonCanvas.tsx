@@ -32,18 +32,27 @@ const CANVAS_H = 800;
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
 const HISTORY_LIMIT = 50;
 
-// 길이/넓이를 전자칠판에서 보기 좋은 형식으로 (자연수면 자연수, 아니면 1자리)
+// 길이/넓이를 전자칠판에서 보기 좋게 (정수 ≒ → 정수, 반정수 ≒ → x.5, 그 외 → 약 X)
 function fmtLen(cm: number): string {
-  if (Math.abs(cm - Math.round(cm)) < 0.02) return `${Math.round(cm)}cm`;
-  return `${cm.toFixed(1)}cm`;
+  const r = Math.round(cm);
+  if (Math.abs(cm - r) < 0.05) return `${r}cm`;
+  const h = Math.round(cm * 2) / 2;
+  if (Math.abs(cm - h) < 0.05) return `${h}cm`;
+  return `약 ${r}cm`;
 }
 function fmtArea(cm2: number): string {
-  if (Math.abs(cm2 - Math.round(cm2)) < 0.02) return `${Math.round(cm2)}cm²`;
-  return `${cm2.toFixed(1)}cm²`;
+  const r = Math.round(cm2);
+  if (Math.abs(cm2 - r) < 0.05) return `${r}cm²`;
+  const h = Math.round(cm2 * 2) / 2;
+  if (Math.abs(cm2 - h) < 0.05) return `${h}cm²`;
+  return `약 ${r}cm²`;
 }
 function fmtLenNum(cm: number): string {
-  if (Math.abs(cm - Math.round(cm)) < 0.02) return `${Math.round(cm)}`;
-  return cm.toFixed(1);
+  const r = Math.round(cm);
+  if (Math.abs(cm - r) < 0.05) return `${r}`;
+  const h = Math.round(cm * 2) / 2;
+  if (Math.abs(cm - h) < 0.05) return `${h}`;
+  return `~${r}`;
 }
 
 type Measurement = { id: string; a: Point; b: Point };
@@ -223,7 +232,6 @@ export default function PolygonCanvas() {
   const [magnifierOn, setMagnifierOn] = useState(false);
   const [magnifierPos, setMagnifierPos] = useState<Point | null>(null);
   const [boardMode, setBoardMode] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
   const dragRef = useRef<DragMode>({ type: "none" });
   const colorIndexRef = useRef(0);
 
@@ -636,40 +644,6 @@ export default function PolygonCanvas() {
     setMeasurements([]);
   }
 
-  // ----- URL hash 직렬화 (스냅샷 공유) -----
-  const encodeState = useCallback((): string => {
-    const data = shapes.map((s) => ({
-      p: s.points.map((q) => [Math.round(q.x * 10) / 10, Math.round(q.y * 10) / 10]),
-      c: s.color,
-      g: s.ghosts?.map((gh) => gh.map((q) => [Math.round(q.x * 10) / 10, Math.round(q.y * 10) / 10])),
-    }));
-    try {
-      return btoa(unescape(encodeURIComponent(JSON.stringify(data))));
-    } catch {
-      return "";
-    }
-  }, [shapes]);
-
-  useEffect(() => {
-    // 페이지 로드 시 URL hash 에서 상태 복원 (학생용)
-    if (typeof window === "undefined") return;
-    const hash = window.location.hash;
-    const m = hash.match(/[#&]s=([^&]+)/);
-    if (!m) return;
-    try {
-      const json = decodeURIComponent(escape(atob(decodeURIComponent(m[1]))));
-      const data: { p: number[][]; c: string; g?: number[][][] }[] = JSON.parse(json);
-      const loaded: Shape[] = data.map((d) => ({
-        id: uid(),
-        color: d.c,
-        points: d.p.map(([x, y]) => ({ x, y })),
-        ghosts: d.g?.map((gh) => gh.map(([x, y]) => ({ x, y }))),
-      }));
-      if (loaded.length > 0) setShapes(loaded);
-    } catch (err) {
-      console.warn("URL 해시 복원 실패", err);
-    }
-  }, []);
 
   // ----- 캔버스 렌더링 (DPR + cssScale 보정) -----
   useEffect(() => {
@@ -985,57 +959,8 @@ export default function PolygonCanvas() {
       ctx.fill();
     }
 
-    // 6) 넓이·둘레 라벨 — 도형 위쪽 바깥에 배치 (모눈종이와 겹치지 않도록)
+    // 6) 도형 번호 작게 (상단 요약 바와 매칭) — 무게중심 부근에 작은 색 원
     const c = polygonCentroid(s.points);
-    const xs = s.points.map((p) => p.x);
-    const ys = s.points.map((p) => p.y);
-    const bxMin = Math.min(...xs);
-    const bxMax = Math.max(...xs);
-    const byMin = Math.min(...ys);
-    const byMax = Math.max(...ys);
-    const area = polygonArea(s.points) / (GRID * GRID);
-    const peri = polygonPerimeter(s.points) / GRID;
-    const label = `넓이 ${fmtArea(area)}`;
-    const label2 = `둘레 ${fmtLen(peri)}`;
-    const bigFont = boardMode ? 28 : 22;
-    ctx.font = `bold ${bigFont * k}px sans-serif`;
-    const lw1 = ctx.measureText(label).width;
-    const lw2 = ctx.measureText(label2).width;
-    const tw = Math.max(lw1, lw2);
-    const pad = 10 * k;
-    const lineH = (bigFont + 8) * k;
-    const boxW = tw + pad * 2;
-    const boxH = lineH * 2 + 6 * k;
-    // 기본 위치: 도형 위쪽 바깥
-    let boxX = (bxMin + bxMax) / 2 - boxW / 2;
-    let boxY = byMin - boxH - 12 * k;
-    // 위쪽 공간이 부족하면 아래쪽으로
-    if (boxY < 6 * k) boxY = byMax + 12 * k;
-    // 좌우 캔버스 경계 안으로 클램프
-    if (boxX < 6 * k) boxX = 6 * k;
-    if (boxX + boxW > CANVAS_W - 6 * k) boxX = CANVAS_W - 6 * k - boxW;
-    // 라벨에서 도형 무게중심으로 가는 얇은 leader 선
-    ctx.strokeStyle = isSelected ? "#0f172a" : s.color;
-    ctx.setLineDash([3 * k, 3 * k]);
-    ctx.lineWidth = 1 * k;
-    ctx.beginPath();
-    ctx.moveTo(boxX + boxW / 2, boxY + boxH / 2);
-    ctx.lineTo(c.x, c.y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    // 라벨 박스
-    ctx.fillStyle = "rgba(255,255,255,0.96)";
-    ctx.strokeStyle = isSelected ? "#0f172a" : s.color;
-    ctx.lineWidth = 2 * k;
-    ctx.fillRect(boxX, boxY, boxW, boxH);
-    ctx.strokeRect(boxX, boxY, boxW, boxH);
-    ctx.fillStyle = "#0f172a";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(label, boxX + boxW / 2, boxY + lineH / 2 + 3 * k);
-    ctx.fillText(label2, boxX + boxW / 2, boxY + lineH * 1.5 + 3 * k);
-    ctx.textAlign = "start";
-    ctx.textBaseline = "alphabetic";
 
     // 7) 회전 핸들
     if (isSelected) {
@@ -1112,7 +1037,6 @@ export default function PolygonCanvas() {
         }}
         boardMode={boardMode}
         setBoardMode={setBoardMode}
-        onShare={() => setShareOpen(true)}
         onClearMeasurements={() => setMeasurements([])}
         measurementsCount={measurements.length}
       />
@@ -1138,6 +1062,12 @@ export default function PolygonCanvas() {
         {!boardMode && <ShapePalette presets={PRESETS} onAdd={addPreset} />}
 
         <div className="flex flex-col gap-3 min-w-0">
+          <SummaryBar
+            shapes={shapes}
+            selectedId={selectedId}
+            onSelect={(id) => setSelectedId(id)}
+            boardMode={boardMode}
+          />
           <div
             ref={wrapRef}
             className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white"
@@ -1198,9 +1128,6 @@ export default function PolygonCanvas() {
         />
       )}
 
-      {shareOpen && (
-        <ShareDialog encodedState={encodeState()} onClose={() => setShareOpen(false)} />
-      )}
     </div>
   );
 }
@@ -1227,7 +1154,6 @@ function Toolbar(props: {
   setMagnifierOn: (b: boolean) => void;
   boardMode: boolean;
   setBoardMode: (b: boolean) => void;
-  onShare: () => void;
   onClearMeasurements: () => void;
   measurementsCount: number;
 }) {
@@ -1315,10 +1241,6 @@ function Toolbar(props: {
         }`}
         title="전자칠판/프로젝터 모드 (큰 라벨, 사이드바 접기)"
       >📺 전자칠판</button>
-      <button
-        onClick={props.onShare}
-        className="px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100"
-      >📱 QR 공유</button>
       {props.measurementsCount > 0 && (
         <button
           onClick={props.onClearMeasurements}
@@ -1564,99 +1486,60 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ShareDialog({
-  encodedState,
-  onClose,
+
+function SummaryBar({
+  shapes,
+  selectedId,
+  onSelect,
+  boardMode,
 }: {
-  encodedState: string;
-  onClose: () => void;
+  shapes: Shape[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  boardMode: boolean;
 }) {
-  const [qrUrl, setQrUrl] = useState<string | null>(null);
-  const url = useMemo(() => {
-    if (typeof window === "undefined") return "";
-    const base = window.location.origin + window.location.pathname;
-    return encodedState ? `${base}#s=${encodeURIComponent(encodedState)}` : base;
-  }, [encodedState]);
-
-  useEffect(() => {
-    if (!url) return;
-    let cancelled = false;
-    import("qrcode").then((QR) => {
-      QR.toDataURL(url, { width: 360, margin: 2, errorCorrectionLevel: "M" }).then((dataUrl) => {
-        if (!cancelled) setQrUrl(dataUrl);
-      });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
-
-  const [copied, setCopied] = useState(false);
-  function copy() {
-    navigator.clipboard?.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  }
-
+  if (shapes.length === 0) return null;
+  const sizing = boardMode
+    ? "text-base sm:text-lg lg:text-xl"
+    : "text-sm sm:text-base";
+  const headingSize = boardMode ? "text-lg sm:text-xl" : "text-base sm:text-lg";
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-md rounded-2xl bg-white p-5 sm:p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg sm:text-xl font-bold text-slate-900">📱 학생용 QR 공유</h3>
-          <button
-            onClick={onClose}
-            className="text-slate-500 hover:text-slate-700 text-2xl leading-none"
-            aria-label="닫기"
-          >
-            ×
-          </button>
-        </div>
-        <p className="text-sm text-slate-600 mb-4">
-          학생이 디벗(태블릿)으로 QR 을 찍으면 <b>지금 화면 상태(도형)</b> 그대로 열려요. 선생님 화면이
-          바뀐 뒤에는 학생이 한 번 더 QR 을 찍거나 페이지를 새로고침해야 동기화돼요.
-        </p>
-        <div className="flex flex-col items-center gap-3">
-          {qrUrl ? (
-            <img
-              src={qrUrl}
-              alt="공유 QR 코드"
-              className="rounded-lg border border-slate-200"
-              width={300}
-              height={300}
-            />
-          ) : (
-            <div className="w-[300px] h-[300px] rounded-lg border border-slate-200 bg-slate-50 grid place-items-center text-slate-400">
-              QR 생성 중...
-            </div>
-          )}
-          <div className="w-full">
-            <div className="text-xs text-slate-500 mb-1">공유 링크</div>
-            <div className="flex gap-2">
-              <input
-                readOnly
-                value={url}
-                className="flex-1 px-3 py-2 text-xs rounded-md border border-slate-200 bg-slate-50 font-mono"
-                onFocus={(e) => e.currentTarget.select()}
-              />
-              <button
-                onClick={copy}
-                className="px-3 py-2 text-sm font-medium rounded-md border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100"
-              >
-                {copied ? "복사됨" : "복사"}
-              </button>
-            </div>
-          </div>
-        </div>
-        <p className="mt-4 text-[11px] text-slate-400 leading-relaxed">
-          ℹ️ 실시간 동시 미러링은 추후 백엔드(웹소켓) 연결 시 지원 예정. 현재는 “스냅샷” 방식이에요.
-        </p>
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-2 sm:p-3">
+      <div className={`px-1 pb-1 font-semibold text-slate-600 ${headingSize}`}>
+        📊 도형별 둘레와 넓이
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {shapes.map((s, i) => {
+          const area = polygonArea(s.points) / (GRID * GRID);
+          const peri = polygonPerimeter(s.points) / GRID;
+          const sel = s.id === selectedId;
+          const sName = `${s.points.length}각형`;
+          return (
+            <button
+              key={s.id}
+              onClick={() => onSelect(s.id)}
+              className={`shrink-0 flex items-center gap-3 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl border-2 transition ${
+                sel
+                  ? "border-slate-900 bg-slate-50 ring-2 ring-slate-200"
+                  : "border-slate-200 bg-white hover:bg-slate-50"
+              } ${sizing}`}
+              style={{ borderLeftWidth: 8, borderLeftColor: s.color }}
+            >
+              <span className="font-bold text-slate-700">#{i + 1}</span>
+              <span className="text-slate-500">{sName}</span>
+              <span className="text-slate-300">|</span>
+              <span>
+                <span className="text-slate-500">넓이</span>{" "}
+                <b className="text-slate-900">{fmtArea(area)}</b>
+              </span>
+              <span className="text-slate-300">|</span>
+              <span>
+                <span className="text-slate-500">둘레</span>{" "}
+                <b className="text-slate-900">{fmtLen(peri)}</b>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

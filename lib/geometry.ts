@@ -4,6 +4,7 @@ export type Shape = {
   id: string;
   points: Point[]; // 닫힌 다각형 (마지막 점이 첫 점과 자동 연결)
   color: string;
+  ghosts?: Point[][]; // 합치기 전 원본 도형들의 외곽선 (희미하게 표시)
 };
 
 export function polygonArea(points: Point[]): number {

@@ -2,7 +2,7 @@ import PolygonCanvas from "@/components/PolygonCanvas";
 
 export default function Home() {
   return (
-    <main className="mx-auto max-w-6xl px-4 py-6">
+    <main className="mx-auto max-w-[1400px] px-3 sm:px-4 py-4 sm:py-6">
       <header className="mb-4">
         <h1 className="text-2xl font-bold text-slate-900">
           다각형의 둘레와 넓이 체험실

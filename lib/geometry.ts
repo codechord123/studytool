@@ -85,29 +85,9 @@ export function translatePoints(points: Point[], dx: number, dy: number): Point[
   return points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
 }
 
-// 두 선분의 교점 (있을 때만 반환) — 무한직선 a~b 와 선분 c~d
-function lineSegIntersect(
-  a: Point,
-  b: Point,
-  c: Point,
-  d: Point
-): { p: Point; t: number } | null {
-  const r = { x: b.x - a.x, y: b.y - a.y };
-  const s = { x: d.x - c.x, y: d.y - c.y };
-  const denom = r.x * s.y - r.y * s.x;
-  if (Math.abs(denom) < 1e-9) return null;
-  const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom;
-  const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denom;
-  if (u < -1e-9 || u > 1 + 1e-9) return null;
-  return {
-    p: { x: c.x + u * s.x, y: c.y + u * s.y },
-    t,
-  };
-}
-
 /**
- * 무한 직선 lineA~lineB 로 볼록/오목 단순 다각형을 두 조각으로 자른다.
- * 단순한 다각형(자기교차 없음) 가정. 직선이 다각형과 정확히 2개의 변에서 교차할 때 동작.
+ * 무한 직선 lineA~lineB 로 단순 다각형을 두 조각으로 자른다.
+ * 꼭짓점이 정확히 선 위에 있는 경우(모서리 자르기)도 정확히 처리한다.
  */
 export function splitPolygonByLine(
   points: Point[],
@@ -117,40 +97,57 @@ export function splitPolygonByLine(
   const n = points.length;
   if (n < 3) return null;
 
-  // 직선 방향에 대한 부호 함수
   const dirX = lineB.x - lineA.x;
   const dirY = lineB.y - lineA.y;
+  if (Math.hypot(dirX, dirY) < 1e-6) return null;
   const side = (p: Point) => (p.x - lineA.x) * dirY - (p.y - lineA.y) * dirX;
+  const EPS = 0.5; // 픽셀 단위 — 0.5px 이내면 “선 위”로 간주
 
-  // 교차점 위치 저장
-  type Crossing = { edgeIndex: number; p: Point; t: number };
-  const crossings: Crossing[] = [];
-
-  // 결과 두 폴리곤
+  const sides: number[] = points.map(side);
   const polyPos: Point[] = [];
   const polyNeg: Point[] = [];
+  let crossings = 0;
 
   for (let i = 0; i < n; i++) {
     const cur = points[i];
     const nxt = points[(i + 1) % n];
-    const sCur = side(cur);
-    const sNxt = side(nxt);
+    const sCur = sides[i];
+    const sNxt = sides[(i + 1) % n];
 
-    if (sCur >= 0) polyPos.push(cur);
-    if (sCur <= 0) polyNeg.push(cur);
+    if (sCur > EPS) {
+      polyPos.push(cur);
+    } else if (sCur < -EPS) {
+      polyNeg.push(cur);
+    } else {
+      // 꼭짓점이 선 위에 있음 — 두 다각형 모두에 포함
+      polyPos.push(cur);
+      polyNeg.push(cur);
+      // 이웃 꼭짓점들이 반대쪽이면 교차로 카운트
+      const sPrev = sides[(i - 1 + n) % n];
+      const prevPos = sPrev > EPS;
+      const prevNeg = sPrev < -EPS;
+      const nxtPos = sNxt > EPS;
+      const nxtNeg = sNxt < -EPS;
+      if ((prevPos && nxtNeg) || (prevNeg && nxtPos)) crossings++;
+    }
 
-    // 부호가 다르면 교차점 계산
-    if ((sCur > 0 && sNxt < 0) || (sCur < 0 && sNxt > 0)) {
-      const hit = lineSegIntersect(lineA, lineB, cur, nxt);
-      if (hit) {
-        crossings.push({ edgeIndex: i, p: hit.p, t: hit.t });
-        polyPos.push(hit.p);
-        polyNeg.push(hit.p);
+    // 변(cur→nxt)이 선을 엄격히 가로지르면 교차점 계산
+    if ((sCur > EPS && sNxt < -EPS) || (sCur < -EPS && sNxt > EPS)) {
+      const r = { x: dirX, y: dirY };
+      const s = { x: nxt.x - cur.x, y: nxt.y - cur.y };
+      const denom = r.x * s.y - r.y * s.x;
+      if (Math.abs(denom) > 1e-9) {
+        const u = ((cur.x - lineA.x) * r.y - (cur.y - lineA.y) * r.x) / denom;
+        const cu = Math.max(0, Math.min(1, u));
+        const p = { x: cur.x + cu * s.x, y: cur.y + cu * s.y };
+        polyPos.push(p);
+        polyNeg.push(p);
+        crossings++;
       }
     }
   }
 
-  if (crossings.length !== 2) return null;
+  if (crossings !== 2) return null;
   if (polyPos.length < 3 || polyNeg.length < 3) return null;
   return [polyPos, polyNeg];
 }
@@ -211,10 +208,12 @@ export function makeTriangle(
   base: number,
   h: number
 ): Point[] {
+  // 일반(부등변) 삼각형 — apex 를 base/6 만큼 중심 왼쪽으로
+  // base=6cm 일 때 apex 가 정확히 -1cm (정수) 에 떨어지도록
   return [
     { x: cx - base / 2, y: cy + h / 2 },
     { x: cx + base / 2, y: cy + h / 2 },
-    { x: cx + base * 0.1, y: cy - h / 2 },
+    { x: cx - base / 6, y: cy - h / 2 },
   ];
 }
 

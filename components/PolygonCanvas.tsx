@@ -34,9 +34,22 @@ const HISTORY_LIMIT = 50;
 
 type DragMode =
   | { type: "none" }
-  | { type: "translate"; shapeId: string; last: Point }
+  | {
+      type: "translate";
+      shapeId: string;
+      startPointer: Point;
+      startPoints: Point[];
+      startGhosts?: Point[][];
+    }
   | { type: "vertex"; shapeId: string; vertexIndex: number }
-  | { type: "rotate"; shapeId: string; center: Point; startAngle: number; startPoints: Point[]; startGhosts?: Point[][] }
+  | {
+      type: "rotate";
+      shapeId: string;
+      center: Point;
+      startAngle: number;
+      startPoints: Point[];
+      startGhosts?: Point[][];
+    }
   | { type: "cut"; start: Point; current: Point };
 
 function placeAtCenter(pts: Point[], cx: number, cy: number): Point[] {
@@ -51,11 +64,11 @@ type Preset = { id: string; label: string; formula: string; build: () => Point[]
 
 const PRESETS: Preset[] = [
   { id: "square", label: "정사각형", formula: "한 변 × 한 변", build: () => makeRectangle(0, 0, 4 * GRID, 4 * GRID) },
-  { id: "rect", label: "직사각형", formula: "가로 × 세로", build: () => makeRectangle(0, 0, 6 * GRID, 3 * GRID) },
+  { id: "rect", label: "직사각형", formula: "가로 × 세로", build: () => makeRectangle(0, 0, 8 * GRID, 4 * GRID) },
   { id: "rtri", label: "직각삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRightTriangle(0, 0, 6 * GRID, 4 * GRID) },
   { id: "tri", label: "삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeTriangle(0, 0, 6 * GRID, 4 * GRID) },
   { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
-  { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID) },
+  { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID) },
   { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 6 * GRID, 4 * GRID) },
 ];
 
@@ -75,24 +88,24 @@ const SCENARIO_GROUPS: ScenarioGroup[] = [
         label: "① 같은 사다리꼴 두 개 → 평행사변형",
         hint: "똑같은 사다리꼴 두 개 중 하나를 180° 돌려서 옆에 붙여 보세요. 평행사변형(밑변=윗변+아랫변, 높이는 그대로)이 돼요. ➜ 사다리꼴 넓이 = (윗변+아랫변)×높이÷2",
         build: (cx, cy) => [
-          S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx - 5 * GRID, cy)),
-          S(COLORS[1], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx + 5 * GRID, cy)),
+          S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx - 5 * GRID, cy)),
+          S(COLORS[1], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx + 5 * GRID, cy)),
         ],
       },
       {
         label: "② 가운데에서 잘라 → 직사각형",
         hint: "사다리꼴을 ‘높이의 절반(중간선)’ 위치에서 가로로 잘라 보세요. 위쪽 조각을 좌우로 뒤집어 옆에 붙이면 직사각형이 돼요. 가로 = (윗변+아랫변)÷2, 세로 = 높이. ➜ 같은 공식이 나와요!",
-        build: (cx, cy) => [S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx, cy))],
+        build: (cx, cy) => [S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx, cy))],
       },
       {
         label: "③ 대각선으로 잘라 → 두 개의 삼각형",
         hint: "사다리꼴에 대각선을 그어 잘라 보면 두 개의 삼각형이 나와요. 각 삼각형의 넓이는 ‘밑변×높이÷2’. 두 삼각형 넓이의 합 = (윗변+아랫변)×높이÷2",
-        build: (cx, cy) => [S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx, cy))],
+        build: (cx, cy) => [S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx, cy))],
       },
       {
         label: "④ 직사각형 + 삼각형들로 나누기",
         hint: "윗변 양 끝에서 아래로 수직선을 그어 자르면, 가운데 직사각형 + 양쪽 직각삼각형이 돼요. 각 부분의 넓이를 따로 구해서 더해 봐요.",
-        build: (cx, cy) => [S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 3 * GRID, 6 * GRID, 4 * GRID), cx, cy))],
+        build: (cx, cy) => [S(COLORS[0], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx, cy))],
       },
     ],
   },
@@ -182,7 +195,9 @@ export default function PolygonCanvas() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setTool] = useState<Tool>("select");
-  const [snap, setSnap] = useState(true);
+  // 격자 스냅 단위 (cm). 0 = 끄기
+  const [snapStep, setSnapStep] = useState<0 | 0.2 | 0.5 | 1>(0.5);
+  const [magnetic, setMagnetic] = useState(true);
   const [draft, setDraft] = useState<Point[]>([]);
   const [hoverPt, setHoverPt] = useState<Point | null>(null);
   const [scenarioHint, setScenarioHint] = useState<string | null>(null);
@@ -244,12 +259,50 @@ export default function PolygonCanvas() {
     const rect = c.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * CANVAS_W;
     const y = ((e.clientY - rect.top) / rect.height) * CANVAS_H;
-    return maybeSnap({ x, y });
+    return gridSnap({ x, y });
   };
-  const maybeSnap = (p: Point): Point => {
-    if (!snap) return p;
-    const step = GRID / 2;
+  const gridSnap = (p: Point): Point => {
+    if (snapStep === 0) return p;
+    const step = snapStep * GRID;
     return { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step };
+  };
+  // 임의의 점을 가장 가까운 폴리곤 꼭짓점에 “자석” 스냅 (toler 이내일 때)
+  const vertexSnap = (p: Point, excludeShapeId?: string, tol = 16): Point => {
+    if (!magnetic) return p;
+    let bestD = tol;
+    let best: Point | null = null;
+    for (const s of shapes) {
+      if (excludeShapeId && s.id === excludeShapeId) continue;
+      for (const v of s.points) {
+        const d = Math.hypot(p.x - v.x, p.y - v.y);
+        if (d < bestD) {
+          bestD = d;
+          best = v;
+        }
+      }
+    }
+    return best ?? p;
+  };
+  // 도형 전체를 평행이동할 때, 가장 가까운 (자기 꼭짓점 ↔ 다른 도형 꼭짓점) 쌍을 찾아 보정
+  const magnetTranslate = (pts: Point[], excludeShapeId: string, tol = 16): { dx: number; dy: number } => {
+    if (!magnetic) return { dx: 0, dy: 0 };
+    let bestD = tol;
+    let best: { dx: number; dy: number } = { dx: 0, dy: 0 };
+    let found = false;
+    for (const v of pts) {
+      for (const s of shapes) {
+        if (s.id === excludeShapeId) continue;
+        for (const ov of s.points) {
+          const d = Math.hypot(v.x - ov.x, v.y - ov.y);
+          if (d < bestD) {
+            bestD = d;
+            best = { dx: ov.x - v.x, dy: ov.y - v.y };
+            found = true;
+          }
+        }
+      }
+    }
+    return found ? best : { dx: 0, dy: 0 };
   };
 
   function nextColor() {
@@ -299,7 +352,9 @@ export default function PolygonCanvas() {
     }
 
     if (tool === "cut") {
-      dragRef.current = { type: "cut", start: p, current: p };
+      // 자르기 시작점도 가장 가까운 꼭짓점에 자석 스냅 (모서리끼리 자르기 지원)
+      const startPt = vertexSnap(p, undefined, 16);
+      dragRef.current = { type: "cut", start: startPt, current: startPt };
       return;
     }
 
@@ -317,7 +372,7 @@ export default function PolygonCanvas() {
       const A = shapes.find((s) => s.id === mergeFirstId)!;
       const merged = mergePolygons(A.points, hit.points);
       if (!merged) {
-        setFlash("두 도형의 한 변이 정확히 맞붙어 있어야 합쳐져요. (격자 스냅 사용 추천)");
+        setFlash("두 도형의 한 변이 정확히 맞붙어 있어야 합쳐져요. 🧲 자석을 켜고 가까이 가져가 보세요!");
         return;
       }
       commitHistory();
@@ -358,7 +413,13 @@ export default function PolygonCanvas() {
       if (hit) {
         setSelectedId(hit.id);
         commitHistory();
-        dragRef.current = { type: "translate", shapeId: hit.id, last: p };
+        dragRef.current = {
+          type: "translate",
+          shapeId: hit.id,
+          startPointer: p,
+          startPoints: hit.points.map((q) => ({ ...q })),
+          startGhosts: hit.ghosts?.map((g) => g.map((q) => ({ ...q }))),
+        };
       } else {
         setSelectedId(null);
       }
@@ -371,27 +432,32 @@ export default function PolygonCanvas() {
     const dm = dragRef.current;
     if (dm.type === "none") return;
     if (dm.type === "cut") {
-      dragRef.current = { ...dm, current: p };
+      // 자르기 끝점도 꼭짓점에 자석 스냅
+      const cur = vertexSnap(p, undefined, 16);
+      dragRef.current = { ...dm, current: cur };
       return;
     }
     setShapes((all) =>
       all.map((s) => {
         if (s.id !== dm.shapeId) return s;
         if (dm.type === "translate") {
-          const dx = p.x - dm.last.x;
-          const dy = p.y - dm.last.y;
-          dragRef.current = { ...dm, last: p };
-          return {
-            ...s,
-            points: translatePoints(s.points, dx, dy),
-            ghosts: s.ghosts?.map((g) => translatePoints(g, dx, dy)),
-          };
+          const dx0 = p.x - dm.startPointer.x;
+          const dy0 = p.y - dm.startPointer.y;
+          const moved = dm.startPoints.map((q) => ({ x: q.x + dx0, y: q.y + dy0 }));
+          // 자석 보정 — 가장 가까운 꼭짓점 쌍이 정확히 만나도록
+          const { dx: mdx, dy: mdy } = magnetTranslate(moved, dm.shapeId, 16);
+          const finalPts = moved.map((q) => ({ x: q.x + mdx, y: q.y + mdy }));
+          const finalGhosts = dm.startGhosts?.map((g) =>
+            g.map((q) => ({ x: q.x + dx0 + mdx, y: q.y + dy0 + mdy }))
+          );
+          return { ...s, points: finalPts, ghosts: finalGhosts };
         }
         if (dm.type === "vertex") {
-          // 자유 변형 시 ghosts는 더이상 매칭되지 않으므로 제거
+          // 꼭짓점 드래그도 다른 도형 꼭짓점에 자석 스냅
+          const snapped = vertexSnap(p, dm.shapeId, 14);
           return {
             ...s,
-            points: s.points.map((q, i) => (i === dm.vertexIndex ? p : q)),
+            points: s.points.map((q, i) => (i === dm.vertexIndex ? snapped : q)),
             ghosts: undefined,
           };
         }
@@ -411,9 +477,9 @@ export default function PolygonCanvas() {
   function handleCanvasPointerUp(e: React.PointerEvent) {
     const dm = dragRef.current;
     if (dm.type === "cut") {
-      const p = getPt(e);
+      const raw = getPt(e);
+      const b = vertexSnap(raw, undefined, 16);
       const a = dm.start;
-      const b = p;
       if (Math.hypot(a.x - b.x, a.y - b.y) > 4) applyCut(a, b);
     }
     dragRef.current = { type: "none" };
@@ -781,8 +847,10 @@ export default function PolygonCanvas() {
           setMergeFirstId(null);
           dragRef.current = { type: "none" };
         }}
-        snap={snap}
-        setSnap={setSnap}
+        snapStep={snapStep}
+        setSnapStep={setSnapStep}
+        magnetic={magnetic}
+        setMagnetic={setMagnetic}
         onFinishDraw={finishDraft}
         canFinish={draft.length >= 3}
         onClear={clearAll}
@@ -890,8 +958,10 @@ export default function PolygonCanvas() {
 function Toolbar(props: {
   tool: Tool;
   setTool: (t: Tool) => void;
-  snap: boolean;
-  setSnap: (b: boolean) => void;
+  snapStep: 0 | 0.2 | 0.5 | 1;
+  setSnapStep: (s: 0 | 0.2 | 0.5 | 1) => void;
+  magnetic: boolean;
+  setMagnetic: (b: boolean) => void;
   onFinishDraw: () => void;
   canFinish: boolean;
   onClear: () => void;
@@ -943,14 +1013,30 @@ function Toolbar(props: {
         onClick={props.onRedo}
         title="Ctrl/Cmd+Shift+Z"
       >↷ 다시하기</button>
-      <label className="flex items-center gap-2 text-sm sm:text-base text-slate-700 px-2 min-h-[44px]">
+      <div className="flex items-center gap-1.5 flex-wrap px-1">
+        <span className="text-xs sm:text-sm text-slate-600 font-medium">격자 스냅</span>
+        {([1, 0.5, 0.2, 0] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => props.setSnapStep(s)}
+            className={`px-2.5 py-1.5 text-xs sm:text-sm rounded-md border min-h-[36px] ${
+              props.snapStep === s
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+            }`}
+          >
+            {s === 0 ? "끄기" : `${s}cm`}
+          </button>
+        ))}
+      </div>
+      <label className="flex items-center gap-2 text-sm sm:text-base text-slate-700 px-2 min-h-[36px] cursor-pointer">
         <input
           type="checkbox"
-          checked={props.snap}
-          onChange={(e) => props.setSnap(e.target.checked)}
+          checked={props.magnetic}
+          onChange={(e) => props.setMagnetic(e.target.checked)}
           className="w-4 h-4"
         />
-        격자에 맞추기
+        🧲 자석
       </label>
       <div className="sm:ml-auto">
         <button
@@ -1160,7 +1246,7 @@ function InfoPanel(props: {
         <div className="text-sm sm:text-base font-semibold text-slate-500">사용 방법</div>
         <p className="mt-1 text-sm sm:text-base text-slate-700 leading-relaxed">{tips[props.tool]}</p>
         <p className="mt-2 text-xs sm:text-sm text-slate-500">
-          🔸 격자 한 칸 = 1cm · 굵은 선 = 5cm · Ctrl/Cmd+Z 되돌리기 · 격자 스냅 사용 시 합치기가 잘 돼요
+          🔸 격자 한 칸 = 1cm · 굵은 선 = 5cm · Ctrl/Cmd+Z 되돌리기 · 🧲 자석을 켜면 도형끼리·모서리끼리 딱 붙어요
         </p>
       </div>
       <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">

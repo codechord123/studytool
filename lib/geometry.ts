@@ -154,6 +154,99 @@ export function splitPolygonByLine(
   return [polyPos, polyNeg];
 }
 
+export function scalePoints(
+  points: Point[],
+  origin: Point,
+  sx: number,
+  sy: number
+): Point[] {
+  return points.map((p) => ({
+    x: origin.x + (p.x - origin.x) * sx,
+    y: origin.y + (p.y - origin.y) * sy,
+  }));
+}
+
+export function flipPoints(
+  points: Point[],
+  origin: Point,
+  axis: "horizontal" | "vertical"
+): Point[] {
+  // horizontal = 좌우 뒤집기 (수직축 기준 미러)
+  return axis === "horizontal"
+    ? scalePoints(points, origin, -1, 1)
+    : scalePoints(points, origin, 1, -1);
+}
+
+export function cloneShapes(shapes: Shape[]): Shape[] {
+  return shapes.map((s) => ({ ...s, points: s.points.map((p) => ({ ...p })) }));
+}
+
+// ----- 프리셋 도형 (좌표는 픽셀 단위, 호출 측에서 GRID 곱해서 전달) -----
+export function makeRectangle(cx: number, cy: number, w: number, h: number): Point[] {
+  return [
+    { x: cx - w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy + h / 2 },
+    { x: cx - w / 2, y: cy + h / 2 },
+  ];
+}
+
+export function makeRightTriangle(
+  cx: number,
+  cy: number,
+  base: number,
+  h: number
+): Point[] {
+  return [
+    { x: cx - base / 2, y: cy + h / 2 },
+    { x: cx + base / 2, y: cy + h / 2 },
+    { x: cx - base / 2, y: cy - h / 2 },
+  ];
+}
+
+export function makeTriangle(
+  cx: number,
+  cy: number,
+  base: number,
+  h: number
+): Point[] {
+  return [
+    { x: cx - base / 2, y: cy + h / 2 },
+    { x: cx + base / 2, y: cy + h / 2 },
+    { x: cx + base * 0.1, y: cy - h / 2 },
+  ];
+}
+
+export function makeTrapezoid(
+  cx: number,
+  cy: number,
+  topW: number,
+  bottomW: number,
+  h: number
+): Point[] {
+  return [
+    { x: cx - topW / 2, y: cy - h / 2 },
+    { x: cx + topW / 2, y: cy - h / 2 },
+    { x: cx + bottomW / 2, y: cy + h / 2 },
+    { x: cx - bottomW / 2, y: cy + h / 2 },
+  ];
+}
+
+export function makeParallelogram(
+  cx: number,
+  cy: number,
+  base: number,
+  h: number,
+  skew: number
+): Point[] {
+  return [
+    { x: cx - base / 2 + skew / 2, y: cy - h / 2 },
+    { x: cx + base / 2 + skew / 2, y: cy - h / 2 },
+    { x: cx + base / 2 - skew / 2, y: cy + h / 2 },
+    { x: cx - base / 2 - skew / 2, y: cy + h / 2 },
+  ];
+}
+
 export function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }

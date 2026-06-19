@@ -186,6 +186,17 @@ function placeAtCenter(pts: Point[], cx: number, cy: number): Point[] {
 
 type Preset = { id: string; label: string; formula: string; build: () => Point[] };
 
+// 정n각형 (꼭짓점이 위를 향하도록, 외접원 반지름 R)
+function makeRegular(n: number, R: number): Point[] {
+  const pts: Point[] = [];
+  const start = -Math.PI / 2;
+  for (let i = 0; i < n; i++) {
+    const a = start + (i * 2 * Math.PI) / n;
+    pts.push({ x: R * Math.cos(a), y: R * Math.sin(a) });
+  }
+  return pts;
+}
+
 const PRESETS: Preset[] = [
   { id: "square", label: "정사각형", formula: "한 변 × 한 변", build: () => makeRectangle(0, 0, 4 * GRID, 4 * GRID) },
   { id: "rect", label: "직사각형", formula: "가로 × 세로", build: () => makeRectangle(0, 0, 8 * GRID, 4 * GRID) },
@@ -194,7 +205,12 @@ const PRESETS: Preset[] = [
   { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
   { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID) },
   { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 6 * GRID, 4 * GRID) },
-  { id: "hex", label: "정육각형", formula: "여러 도형으로 나누기", build: () => makeHexagon(0, 0, 3 * GRID) },
+  { id: "reg3", label: "정삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRegular(3, 3 * GRID) },
+  { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegular(5, 3 * GRID) },
+  { id: "hex", label: "정육각형", formula: "삼각형 6개로 나누기", build: () => makeHexagon(0, 0, 3 * GRID) },
+  { id: "reg8", label: "정팔각형", formula: "삼각형 8개로 나누기", build: () => makeRegular(8, 3 * GRID) },
+  { id: "reg10", label: "정십각형", formula: "삼각형 10개로 나누기", build: () => makeRegular(10, 3 * GRID) },
+  { id: "reg12", label: "정십이각형", formula: "삼각형 12개로 나누기", build: () => makeRegular(12, 3 * GRID) },
   { id: "lshape", label: "ㄴ자 모양", formula: "두 직사각형 합", build: () => makeLShape(0, 0, 6 * GRID, 4 * GRID, 2 * GRID, 2 * GRID) },
   { id: "cross", label: "십자 모양", formula: "정사각형 5개", build: () => makeCross(0, 0, 2 * GRID, 2 * GRID) },
 ];
@@ -1047,6 +1063,12 @@ export default function PolygonCanvas() {
     setSelectedId(null);
   }
 
+  function setSelectedColor(color: string) {
+    if (!selected || selected.color === color) return;
+    commitHistory();
+    setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, color } : s)));
+  }
+
   function addPreset(pr: Preset) {
     commitHistory();
     const { x: cx, y: cy } = viewCenterWorld();
@@ -1762,6 +1784,7 @@ export default function PolygonCanvas() {
           onRotate={(deg) => transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))}
           onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
           onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
+          onColor={setSelectedColor}
           onDuplicate={duplicateSelected}
           onDelete={deleteSelected}
         />
@@ -1920,28 +1943,28 @@ function InfoCard({
   if (count === 0) return null;
   const area = selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
   const peri = selected ? polygonPerimeter(selected.points) / GRID : totalPeri;
-  const big = boardMode ? "text-2xl" : "text-xl";
+  const big = boardMode ? "text-4xl" : "text-3xl";
   return (
-    <div className="absolute bottom-3 right-3 z-10 w-[min(86vw,260px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+    <div className="absolute bottom-3 right-3 z-10 w-[min(92vw,340px)] rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-xl backdrop-blur">
       {selected && kind ? (
-        <div className="mb-2 flex items-center gap-2">
-          <span className="h-6 w-6 shrink-0 rounded-md ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
+        <div className="mb-3 flex items-center gap-2.5">
+          <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
           <div className="leading-tight">
-            <div className="font-extrabold text-slate-800">{kind.name}</div>
-            {kind.formula && <div className="text-[11px] font-medium text-amber-700">공식 · {kind.formula}</div>}
+            <div className="text-lg font-extrabold text-slate-800">{kind.name}</div>
+            {kind.formula && <div className="text-xs font-medium text-amber-700">공식 · {kind.formula}</div>}
           </div>
         </div>
       ) : (
-        <div className="mb-2 text-sm font-bold text-slate-500">📊 전체 도형 {count}개</div>
+        <div className="mb-3 text-base font-bold text-slate-500">📊 전체 도형 {count}개</div>
       )}
-      <div className="flex items-stretch gap-2">
-        <div className="flex-1 rounded-xl bg-slate-50 px-3 py-2">
-          <div className="text-[11px] font-semibold text-slate-400">넓이</div>
-          <div className={`font-extrabold text-slate-900 ${big}`}>{fmtArea(area)}</div>
+      <div className="flex items-stretch gap-2.5">
+        <div className="flex-1 rounded-xl bg-slate-50 px-3.5 py-2.5">
+          <div className="text-xs font-semibold text-slate-400">넓이</div>
+          <div className={`font-extrabold leading-tight text-slate-900 ${big}`}>{fmtArea(area)}</div>
         </div>
-        <div className="flex-1 rounded-xl bg-slate-50 px-3 py-2">
-          <div className="text-[11px] font-semibold text-slate-400">둘레</div>
-          <div className={`font-extrabold text-slate-900 ${big}`}>{fmtLen(peri)}</div>
+        <div className="flex-1 rounded-xl bg-slate-50 px-3.5 py-2.5">
+          <div className="text-xs font-semibold text-slate-400">둘레</div>
+          <div className={`font-extrabold leading-tight text-slate-900 ${big}`}>{fmtLen(peri)}</div>
         </div>
       </div>
     </div>
@@ -1953,6 +1976,7 @@ function ContextBar({
   onRotate,
   onFlip,
   onScale,
+  onColor,
   onDuplicate,
   onDelete,
 }: {
@@ -1960,6 +1984,7 @@ function ContextBar({
   onRotate: (deg: number) => void;
   onFlip: (axis: "horizontal" | "vertical") => void;
   onScale: (f: number) => void;
+  onColor: (color: string) => void;
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
@@ -1968,6 +1993,21 @@ function ContextBar({
   return (
     <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
       <div className="flex items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur">
+        <MiniGroup label="색상">
+          <div className="flex h-9 items-center gap-1">
+            {COLORS.map((c) => (
+              <button
+                key={c}
+                onClick={() => onColor(c)}
+                title="색 바꾸기"
+                className={`h-6 w-6 rounded-full ring-2 transition ${
+                  shape.color === c ? "ring-slate-900" : "ring-transparent hover:ring-slate-300"
+                }`}
+                style={{ backgroundColor: c }}
+              />
+            ))}
+          </div>
+        </MiniGroup>
         <MiniGroup label="회전">
           <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90°">
             ↶90°

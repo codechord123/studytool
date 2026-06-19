@@ -5,6 +5,8 @@ export type Shape = {
   points: Point[]; // 닫힌 다각형 (마지막 점이 첫 점과 자동 연결)
   color: string;
   ghosts?: Point[][]; // 합치기 전 원본 도형들의 외곽선 (희미하게 표시)
+  edgeLabels?: string[]; // 변 i의 의미 라벨 (예: "윗변", "밑변") — 학습 모드용
+  isReference?: boolean; // 원본 박제(읽기 전용, 점선 표시)
 };
 
 export function polygonArea(points: Point[]): number {

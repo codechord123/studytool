@@ -334,51 +334,250 @@ type LessonStep = {
   tool?: Tool;
   manual?: boolean; // 자동 감지 불가(관찰형) → '다음' 버튼
   final?: boolean; // 공식 공개 단계
-  done?: (shapes: Shape[]) => boolean; // 목표 상태 감지
+  done?: (shapes: Shape[]) => boolean; // 목표 상태 감지(작업 도형만, reference 제외)
   success?: string;
 };
 type Lesson = {
   id: string;
   title: string;
   formula: string;
-  build: (cx: number, cy: number) => Shape[];
+  // working: 아이가 조작하는 도형 / reference: 비교용 박제(읽기 전용 점선)
+  build: (cx: number, cy: number) => { working: Shape[]; reference: Shape[] };
   steps: LessonStep[];
 };
+
+// 의미 라벨 (각 도형 빌더의 점 순서에 맞춰 부여)
+const TRAP_LABELS = ["윗변", "오른쪽 빗변", "아랫변", "왼쪽 빗변"];
+const PARA_LABELS = ["윗변", "오른쪽 변", "아랫변", "왼쪽 변"];
+const TRI_LABELS = ["밑변", "오른쪽 변", "왼쪽 변"];
+const RTRI_LABELS = ["밑변", "빗변", "높이"];
+const RECT_LABELS = ["윗변(가로)", "오른쪽(세로)", "아랫변(가로)", "왼쪽(세로)"];
+
+function withLabels(color: string, pts: Point[], labels: string[]): Shape {
+  return { id: uid(), color, points: pts, edgeLabels: labels };
+}
+function asReference(s: Shape): Shape {
+  return { ...s, id: uid(), isReference: true };
+}
 
 const LESSONS: Lesson[] = [
   {
     id: "trapezoid",
-    title: "사다리꼴 넓이 공식 만들기",
+    title: "사다리꼴 → 평행사변형",
     formula: "(윗변 + 아랫변) × 높이 ÷ 2",
-    build: (cx, cy) => [
-      S(COLORS[3], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx - 5 * GRID, cy)),
-      S(COLORS[1], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx + 5 * GRID, cy)),
-    ],
+    build: (cx, cy) => {
+      const top = 2 * GRID,
+        bot = 6 * GRID,
+        h = 4 * GRID;
+      const w1 = withLabels(COLORS[3], placeAtCenter(makeTrapezoid(0, 0, top, bot, h), cx - 4.5 * GRID, cy + 0.5 * GRID), TRAP_LABELS);
+      const w2 = withLabels(COLORS[1], placeAtCenter(makeTrapezoid(0, 0, top, bot, h), cx + 4.5 * GRID, cy + 0.5 * GRID), TRAP_LABELS);
+      const ref = asReference(withLabels(COLORS[3], placeAtCenter(makeTrapezoid(0, 0, top, bot, h), cx, cy - 6 * GRID), TRAP_LABELS));
+      return { working: [w1, w2], reference: [ref] };
+    },
     steps: [
       {
         prompt:
-          "🎯 똑같은 사다리꼴 두 개로 '평행사변형'을 만들어 보세요! 분홍 사다리꼴을 선택해 ↻180° 로 돌린 뒤, 노란 사다리꼴의 빗변에 딱 붙이고 🔗 합치기를 누르면 돼요.",
+          "🎯 똑같은 사다리꼴 두 개로 '평행사변형'을 만들어 보세요! 한 도형을 선택해 ↷180° 로 돌린 뒤, 빗변끼리 맞붙이고 🔗 합치기를 누르세요.",
         hint: "기울어진 변(빗변)끼리 정확히 맞붙여야 합쳐져요. 🧲 자석을 켜고 천천히 가까이 가져가 보세요!",
         tool: "select",
         done: (shapes) =>
           shapes.length === 1 &&
           detectShapeKind(shapes[0].points).name === "평행사변형" &&
           Math.abs(polygonArea(shapes[0].points) / (GRID * GRID) - 32) < 1.5,
-        success: "🎉 평행사변형이 됐어요! 밑변이 (윗변 + 아랫변)만큼 길어졌죠?",
+        success: "🎉 평행사변형! 밑변에 '윗변 + 아랫변'이라고 보여요? 두 라벨이 합쳐졌어요!",
       },
       {
         prompt:
-          "📏 이 평행사변형의 넓이 = 밑변 × 높이 = (윗변 + 아랫변) × 높이. 그런데 이건 똑같은 사다리꼴 '두 개'로 만든 거예요!",
+          "📏 평행사변형 넓이 = 밑변 × 높이 = (윗변 + 아랫변) × 높이. 그런데 이건 똑같은 사다리꼴 '두 개'로 만든 거예요. 위에 점선의 원본과 비교해 봐요!",
         manual: true,
       },
       {
-        prompt: "💡 그러니까 사다리꼴 한 개의 넓이는 그 절반이에요. 직접 만들어 알아냈어요!",
+        prompt: "💡 그러니까 사다리꼴 한 개의 넓이 = (윗변 + 아랫변) × 높이 ÷ 2 — 직접 만들어 알아냈어요!",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+  {
+    id: "triangle",
+    title: "삼각형 → 평행사변형",
+    formula: "밑변 × 높이 ÷ 2",
+    build: (cx, cy) => {
+      const W = 6 * GRID,
+        H = 4 * GRID;
+      const w1 = withLabels(COLORS[2], placeAtCenter(makeTriangle(0, 0, W, H), cx - 4 * GRID, cy + 0.5 * GRID), TRI_LABELS);
+      const w2 = withLabels(COLORS[0], placeAtCenter(makeTriangle(0, 0, W, H), cx + 4 * GRID, cy + 0.5 * GRID), TRI_LABELS);
+      const ref = asReference(withLabels(COLORS[2], placeAtCenter(makeTriangle(0, 0, W, H), cx, cy - 6 * GRID), TRI_LABELS));
+      return { working: [w1, w2], reference: [ref] };
+    },
+    steps: [
+      {
+        prompt: "🎯 똑같은 삼각형 두 개로 '평행사변형'을 만들어 보세요! 한 개를 ↷180° 돌려 한 변을 맞붙이고 🔗 합치기.",
+        hint: "어느 변에 붙여도 돼요! 한 변이 완전히 겹쳐야 해요. 🧲 자석을 켜면 정확해져요.",
+        tool: "select",
+        done: (shapes) => {
+          if (shapes.length !== 1) return false;
+          const kind = detectShapeKind(shapes[0].points).name;
+          if (!["평행사변형", "직사각형", "마름모"].includes(kind)) return false;
+          return Math.abs(polygonArea(shapes[0].points) / (GRID * GRID) - 24) < 1.5;
+        },
+        success: "🎉 평행사변형이 됐어요! 두 삼각형으로 만든 거예요.",
+      },
+      {
+        prompt: "📏 평행사변형 넓이 = 밑변 × 높이. 이건 똑같은 삼각형 '두 개'로 만든 거예요. 위 원본과 같은 모양·크기죠?",
+        manual: true,
+      },
+      {
+        prompt: "💡 삼각형 한 개의 넓이 = 밑변 × 높이 ÷ 2 — 직접 발견했어요!",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+  {
+    id: "parallelogram",
+    title: "평행사변형 → 직사각형",
+    formula: "밑변 × 높이",
+    build: (cx, cy) => {
+      const W = 6 * GRID,
+        H = 4 * GRID,
+        sk = 2 * GRID;
+      const w1 = withLabels(COLORS[4], placeAtCenter(makeParallelogram(0, 0, W, H, sk), cx, cy + 0.5 * GRID), PARA_LABELS);
+      const ref = asReference(withLabels(COLORS[4], placeAtCenter(makeParallelogram(0, 0, W, H, sk), cx, cy - 6 * GRID), PARA_LABELS));
+      return { working: [w1], reference: [ref] };
+    },
+    steps: [
+      {
+        prompt:
+          "🎯 평행사변형의 끝부분(기울어진 삼각형)을 ✂️ 자르기로 잘라 반대쪽으로 옮긴 뒤 🔗 합치기를 해 '직사각형'을 만들어 보세요.",
+        hint: "자르는 선은 끝의 꼭짓점에서 수직으로 내려야 해요. 잘린 삼각형을 이동해 빈 곳에 끼우고 합치기!",
+        tool: "cut",
+        done: (shapes) => {
+          if (shapes.length !== 1) return false;
+          const kind = detectShapeKind(shapes[0].points).name;
+          if (kind !== "직사각형" && kind !== "정사각형") return false;
+          return Math.abs(polygonArea(shapes[0].points) / (GRID * GRID) - 24) < 1.5;
+        },
+        success: "🎉 직사각형이 됐어요! 가로(밑변)와 세로(높이)가 평행사변형 때 그대로네요.",
+      },
+      {
+        prompt: "📏 직사각형 넓이 = 가로 × 세로 = 밑변 × 높이. 위 점선 원본과 같은 넓이예요!",
+        manual: true,
+      },
+      {
+        prompt: "💡 평행사변형 넓이 = 밑변 × 높이 — 똑같은 공식! 직사각형으로 변신시켜 알아냈어요.",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+  {
+    id: "rhombus",
+    title: "마름모 = 직사각형의 절반",
+    formula: "한 대각선 × 다른 대각선 ÷ 2",
+    build: (cx, cy) => {
+      const d1 = 6 * GRID,
+        d2 = 4 * GRID;
+      const r = withLabels(COLORS[3], placeAtCenter(makeRectangle(0, 0, d1, d2), cx, cy + 0.5 * GRID), RECT_LABELS);
+      const m = withLabels(COLORS[1], placeAtCenter(makeRhombus(0, 0, d1, d2), cx, cy + 0.5 * GRID), [
+        "대각선 절반",
+        "대각선 절반",
+        "대각선 절반",
+        "대각선 절반",
+      ]);
+      const ref = asReference(withLabels(COLORS[1], placeAtCenter(makeRhombus(0, 0, d1, d2), cx, cy - 6 * GRID), TRAP_LABELS.map(() => "")));
+      return { working: [r, m], reference: [ref] };
+    },
+    steps: [
+      {
+        prompt:
+          "👀 마름모가 직사각형 안에 딱 들어가요. 마름모의 네 꼭짓점이 직사각형의 네 변 가운데에 닿죠? 직사각형의 가로·세로 = 마름모의 두 대각선!",
+        manual: true,
+      },
+      {
+        prompt:
+          "🤔 직사각형 넓이 = 대각선1 × 대각선2 = 24cm². 마름모는 직사각형 안의 절반만 채워요 (위·아래·좌·우 4개의 삼각형이 똑같이 절반).",
+        manual: true,
+      },
+      {
+        prompt: "💡 마름모 넓이 = 한 대각선 × 다른 대각선 ÷ 2",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+  {
+    id: "rectangle",
+    title: "직사각형 = 가로 × 세로 (격자 세기)",
+    formula: "가로 × 세로",
+    build: (cx, cy) => {
+      const W = 6 * GRID,
+        H = 4 * GRID;
+      const w1 = withLabels(COLORS[0], placeAtCenter(makeRectangle(0, 0, W, H), cx, cy + 0.5 * GRID), RECT_LABELS);
+      const ref = asReference(withLabels(COLORS[0], placeAtCenter(makeRectangle(0, 0, W, H), cx, cy - 6 * GRID), RECT_LABELS));
+      return { working: [w1], reference: [ref] };
+    },
+    steps: [
+      {
+        prompt:
+          "👀 직사각형을 한 번 눌러 선택해 보세요. 안에 모눈 칸이 보일 거예요. 가로로 몇 칸? 세로로 몇 칸인가요?",
+        manual: true,
+        tool: "select",
+      },
+      {
+        prompt: "📏 가로 6칸 × 세로 4칸 = 24칸. 한 칸은 1cm²이니까 넓이도 24cm²!",
+        manual: true,
+      },
+      {
+        prompt: "💡 직사각형 넓이 = 가로 × 세로 — 칸을 세는 게 곧 곱하기였어요!",
         manual: true,
         final: true,
       },
     ],
   },
 ];
+
+// ----- 합치기 후 변 라벨 추론: 원본 변이 결과 변과 같은 직선상에 겹치면 라벨을 결과 변에 부여 -----
+// (collinear 합쳐진 경우에도 양쪽 라벨이 모두 잡혀 "윗변 + 아랫변" 같이 표시됨)
+function edgeOverlapsResult(m1: Point, m2: Point, a: Point, b: Point, tol = 2): boolean {
+  const dx = m2.x - m1.x;
+  const dy = m2.y - m1.y;
+  const L = Math.hypot(dx, dy);
+  if (L < 1) return false;
+  // a, b의 m1-m2 직선에 대한 수직 거리 (둘 다 직선 위에 있어야 collinear)
+  const perpA = Math.abs((a.x - m1.x) * dy - (a.y - m1.y) * dx) / L;
+  const perpB = Math.abs((b.x - m1.x) * dy - (b.y - m1.y) * dx) / L;
+  if (perpA > tol || perpB > tol) return false;
+  // 결과 변 길이 단위의 t값. [0,1]을 벗어나도 겹침만 있으면 OK
+  const tA = ((a.x - m1.x) * dx + (a.y - m1.y) * dy) / (L * L);
+  const tB = ((b.x - m1.x) * dx + (b.y - m1.y) * dy) / (L * L);
+  const lo = Math.min(tA, tB);
+  const hi = Math.max(tA, tB);
+  return hi > 0.02 && lo < 0.98;
+}
+function inferEdgeLabels(merged: Point[], sources: Shape[]): string[] | undefined {
+  if (!sources.some((s) => s.edgeLabels && s.edgeLabels.some(Boolean))) return undefined;
+  const out: string[] = [];
+  let any = false;
+  for (let i = 0; i < merged.length; i++) {
+    const m1 = merged[i];
+    const m2 = merged[(i + 1) % merged.length];
+    const labels = new Set<string>();
+    for (const s of sources) {
+      const ls = s.edgeLabels;
+      if (!ls) continue;
+      for (let k = 0; k < s.points.length; k++) {
+        const a = s.points[k];
+        const b = s.points[(k + 1) % s.points.length];
+        if (ls[k] && edgeOverlapsResult(m1, m2, a, b)) labels.add(ls[k]);
+      }
+    }
+    const joined = Array.from(labels).join(" + ");
+    if (joined) any = true;
+    out.push(joined);
+  }
+  return any ? out : undefined;
+}
 
 const TOOL_META: { id: Tool; icon: string; label: string }[] = [
   { id: "select", icon: "🖱️", label: "선택·이동" },
@@ -426,6 +625,7 @@ export default function PolygonCanvas() {
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [lessonStep, setLessonStep] = useState(0);
   const [showHint, setShowHint] = useState(false);
+  const [lessonReference, setLessonReference] = useState<Shape[]>([]);
 
   const [cam, setCamState] = useState<Camera>({ scale: 1, tx: 0, ty: 0 });
   const camRef = useRef<Camera>({ scale: 1, tx: 0, ty: 0 });
@@ -651,6 +851,7 @@ export default function PolygonCanvas() {
 
   function topShapeAt(p: Point): Shape | null {
     for (let i = shapes.length - 1; i >= 0; i--) {
+      if (shapes[i].isReference) continue;
       if (pointInPolygon(p, shapes[i].points)) return shapes[i];
     }
     return null;
@@ -787,9 +988,10 @@ export default function PolygonCanvas() {
       }
       commitHistory();
       const ghosts = [...(A.ghosts ?? [A.points]), ...(hit.ghosts ?? [hit.points])];
+      const edgeLabels = inferEdgeLabels(merged, [A, hit]);
       setShapes((all) => {
         const remaining = all.filter((s) => s.id !== A.id && s.id !== hit.id);
-        return [...remaining, { id: uid(), color: A.color, points: merged, ghosts }];
+        return [...remaining, { id: uid(), color: A.color, points: merged, ghosts, edgeLabels }];
       });
       setMergeFirstId(null);
       setFlash("도형 두 개를 하나로 합쳤어요! 합쳐진 자국이 점선으로 보여요.");
@@ -1153,7 +1355,8 @@ export default function PolygonCanvas() {
     commitHistory();
     const { x: cx, y: cy } = viewCenterWorld();
     const built = L.build(cx, cy);
-    setShapes(built);
+    setShapes(built.working);
+    setLessonReference(built.reference);
     setSelectedId(null);
     setMergeFirstId(null);
     setDraft([]);
@@ -1165,7 +1368,8 @@ export default function PolygonCanvas() {
     setLessonStep(0);
     setShowHint(false);
     setDrawer(null);
-    requestAnimationFrame(() => fitView(built));
+    const all = [...built.working, ...built.reference];
+    requestAnimationFrame(() => fitView(all));
   }
 
   function restartLesson() {
@@ -1173,18 +1377,21 @@ export default function PolygonCanvas() {
     const { x: cx, y: cy } = viewCenterWorld();
     const built = lesson.build(cx, cy);
     commitHistory();
-    setShapes(built);
+    setShapes(built.working);
+    setLessonReference(built.reference);
     setSelectedId(null);
     setMergeFirstId(null);
     setLessonStep(0);
     setShowHint(false);
-    requestAnimationFrame(() => fitView(built));
+    const all = [...built.working, ...built.reference];
+    requestAnimationFrame(() => fitView(all));
   }
 
   function exitLesson() {
     setLesson(null);
     setLessonStep(0);
     setShowHint(false);
+    setLessonReference([]);
   }
 
   function advanceLesson() {
@@ -1193,12 +1400,13 @@ export default function PolygonCanvas() {
     setLessonStep((i) => Math.min(i + 1, lesson.steps.length - 1));
   }
 
-  // 자동 감지: 현재 단계의 목표 상태가 달성되면 다음 단계로
+  // 자동 감지: 현재 단계의 목표 상태가 달성되면 다음 단계로 (reference 제외)
   useEffect(() => {
     if (!lesson) return;
     const step = lesson.steps[lessonStep];
     if (!step || step.manual || !step.done) return;
-    if (step.done(shapes)) {
+    const working = shapes.filter((s) => !s.isReference);
+    if (step.done(working)) {
       if (step.success) setFlash(step.success);
       setShowHint(false);
       setLessonStep((i) => Math.min(i + 1, lesson.steps.length - 1));
@@ -1307,6 +1515,8 @@ export default function PolygonCanvas() {
     }
     ctx.stroke();
 
+    // reference (원본 박제) 먼저 — 작업 도형 아래 레이어
+    for (const s of lessonReference) drawShape(ctx, s, false, false, k);
     for (const s of shapes) drawShape(ctx, s, s.id === selectedId, s.id === mergeFirstId, k);
 
     // 스마트 정렬 가이드 (도형 이동 중 모서리/중심 정렬)
@@ -1506,7 +1716,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge]);
+  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, lessonReference]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -1516,15 +1726,16 @@ export default function PolygonCanvas() {
     k: number
   ) {
     if (s.points.length < 2) return;
+    const isRef = !!s.isReference;
     ctx.beginPath();
     ctx.moveTo(s.points[0].x, s.points[0].y);
     for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
     ctx.closePath();
-    ctx.fillStyle = isMergeFirst ? "#f59e0b55" : s.color + "55";
+    ctx.fillStyle = isMergeFirst ? "#f59e0b55" : isRef ? s.color + "22" : s.color + "55";
     ctx.fill();
 
     // 격자 칸 채우기 시각화 (선택된 축평행 직사각형) — 넓이 = 칸 수
-    const rectCells = isSelected ? axisAlignedRect(s.points) : null;
+    const rectCells = isSelected && !isRef ? axisAlignedRect(s.points) : null;
     let cellInfo: { cols: number; rows: number } | null = null;
     if (rectCells) {
       const cols = Math.round(rectCells.w / GRID);
@@ -1577,9 +1788,22 @@ export default function PolygonCanvas() {
     ctx.moveTo(s.points[0].x, s.points[0].y);
     for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
     ctx.closePath();
-    ctx.strokeStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : s.color;
-    ctx.lineWidth = (isMergeFirst || isSelected ? 3.5 : 2.5) * k;
+    ctx.save();
+    if (isRef) ctx.setLineDash([10 * k, 6 * k]);
+    ctx.strokeStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : isRef ? s.color + "cc" : s.color;
+    ctx.lineWidth = (isMergeFirst || isSelected ? 3.5 : isRef ? 2 : 2.5) * k;
     ctx.stroke();
+    ctx.restore();
+
+    // 원본 박제 워터마크 라벨
+    if (isRef) {
+      ctx.font = `bold ${(boardMode ? 16 : 13) * k}px sans-serif`;
+      ctx.fillStyle = "#64748b";
+      ctx.textAlign = "center";
+      const minY = Math.min(...s.points.map((p) => p.y));
+      ctx.fillText("💎 원본 (비교용)", polygonCentroid(s.points).x, minY - 12 * k);
+      ctx.textAlign = "start";
+    }
 
     // 변 길이 라벨
     const baseFont = boardMode ? 20 : 16;
@@ -1615,6 +1839,26 @@ export default function PolygonCanvas() {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(text, tx0, ty0);
+
+      // 의미 라벨 (학습 모드) — "윗변", "윗변 + 아랫변" 등
+      const meaning = s.edgeLabels?.[i];
+      if (meaning) {
+        const mf = (boardMode ? 14 : 12) * k;
+        ctx.font = `bold ${mf}px sans-serif`;
+        const mw = ctx.measureText(meaning).width;
+        const mpx = 6 * k;
+        const mpy = 3 * k;
+        const mbh = mf + mpy * 2;
+        const mty = ty0 + boxH / 2 + mbh / 2 + 3 * k;
+        ctx.fillStyle = "#fef3c7";
+        ctx.strokeStyle = "#f59e0b";
+        ctx.lineWidth = 1.2 * k;
+        ctx.fillRect(tx0 - mw / 2 - mpx, mty - mbh / 2, mw + mpx * 2, mbh);
+        ctx.strokeRect(tx0 - mw / 2 - mpx, mty - mbh / 2, mw + mpx * 2, mbh);
+        ctx.fillStyle = "#92400e";
+        ctx.fillText(meaning, tx0, mty);
+        ctx.font = `bold ${baseFont * k}px sans-serif`;
+      }
     }
     ctx.textAlign = "start";
     ctx.textBaseline = "alphabetic";
@@ -1939,6 +2183,8 @@ export default function PolygonCanvas() {
           onNext={advanceLesson}
           onRestart={restartLesson}
           onExit={exitLesson}
+          refArea={lessonReference.reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0)}
+          curArea={shapes.filter((s) => !s.isReference).reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0)}
         />
       )}
 
@@ -2210,6 +2456,8 @@ function LessonPanel({
   onNext,
   onRestart,
   onExit,
+  refArea,
+  curArea,
 }: {
   lesson: Lesson;
   stepIndex: number;
@@ -2218,7 +2466,10 @@ function LessonPanel({
   onNext: () => void;
   onRestart: () => void;
   onExit: () => void;
+  refArea: number;
+  curArea: number;
 }) {
+  const conserved = refArea > 0 && Math.abs(refArea - curArea) < 0.5;
   const step = lesson.steps[stepIndex];
   const isFinal = !!step?.final;
   return (
@@ -2242,6 +2493,17 @@ function LessonPanel({
             그만두기 ✕
           </button>
         </div>
+
+        {refArea > 0 && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
+            <span className="text-slate-400">💎 원본 넓이</span>
+            <b className="text-slate-700">{fmtArea(refArea)}</b>
+            <span className="text-slate-300">→</span>
+            <span className="text-slate-400">현재</span>
+            <b className="text-slate-900">{fmtArea(curArea)}</b>
+            {conserved && <span className="ml-auto rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">✓ 넓이 보존!</span>}
+          </div>
+        )}
 
         {isFinal ? (
           <div className="rounded-xl bg-emerald-50 p-3 text-center">

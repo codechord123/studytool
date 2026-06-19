@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   Point,
   Shape,
@@ -32,8 +33,8 @@ type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide"
 
 // 1cm = 80px (이전 40px → 2배로 크게 보이도록)
 const GRID = 80;
-const CANVAS_W = 1600;
-const CANVAS_H = 720; // 9cm 높이. 1080p 한 화면에 헤더+툴바+캔버스+힌트 모두 들어가도록
+const CANVAS_W = 1600; // 20cm
+const CANVAS_H = 880; // 11cm — 16:9에 가까운 비율로 화면을 꽉 채우고 세로 작업영역 확보
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
 const HISTORY_LIMIT = 50;
 
@@ -1242,128 +1243,174 @@ function Toolbar(props: {
   showScenarios: boolean;
   setShowScenarios: (b: boolean) => void;
 }) {
-  const btn = (active: boolean) =>
-    `px-3 py-2.5 rounded-lg text-sm sm:text-base font-medium border transition min-h-[44px] ${
-      active
-        ? "bg-slate-900 text-white border-slate-900"
-        : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50 active:bg-slate-100"
-    }`;
-  const ab =
-    "px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] disabled:opacity-40";
   return (
-    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 rounded-2xl border border-slate-200 bg-white p-2 sm:p-3 shadow-sm">
-      <div className="flex gap-1.5 flex-wrap">
-        <button className={btn(props.tool === "draw")} onClick={() => props.setTool("draw")}>✏️ 그리기</button>
-        <button className={btn(props.tool === "select")} onClick={() => props.setTool("select")}>🖱️ 선택/이동</button>
-        <button className={btn(props.tool === "cut")} onClick={() => props.setTool("cut")}>✂️ 자르기</button>
-        <button className={btn(props.tool === "merge")} onClick={() => props.setTool("merge")}>🔗 합치기</button>
-        <button className={btn(props.tool === "measure")} onClick={() => props.setTool("measure")}>📏 길이재기</button>
-        <button className={btn(props.tool === "guide")} onClick={() => props.setTool("guide")}>📐 직선 가이드</button>
-        <button className={btn(props.tool === "delete")} onClick={() => props.setTool("delete")}>🗑️ 삭제</button>
-      </div>
-      <div className="h-6 w-px bg-slate-200 hidden sm:block" />
-      <button
-        className={`${ab} border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100`}
-        disabled={!props.canFinish}
-        onClick={props.onFinishDraw}
-      >✅ 도형 완성</button>
-      <button
-        className={`${ab} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}
-        disabled={!props.hasSelection}
-        onClick={props.onDuplicate}
-      >📋 복사</button>
-      <div className="h-6 w-px bg-slate-200 hidden sm:block" />
-      <button
-        className={`${ab} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}
-        disabled={!props.canUndo}
-        onClick={props.onUndo}
-        title="Ctrl/Cmd+Z"
-      >↶ 되돌리기</button>
-      <button
-        className={`${ab} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}
-        disabled={!props.canRedo}
-        onClick={props.onRedo}
-        title="Ctrl/Cmd+Shift+Z"
-      >↷ 다시하기</button>
-      <div className="flex items-center gap-1.5 flex-wrap px-1">
-        <span className="text-xs sm:text-sm text-slate-600 font-medium">격자 스냅</span>
-        {([1, 0.5, 0.2, 0] as const).map((s) => (
-          <button
-            key={s}
-            onClick={() => props.setSnapStep(s)}
-            className={`px-2.5 py-1.5 text-xs sm:text-sm rounded-md border min-h-[36px] ${
-              props.snapStep === s
-                ? "bg-slate-900 text-white border-slate-900"
-                : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-            }`}
-          >
-            {s === 0 ? "끄기" : `${s}cm`}
-          </button>
-        ))}
-      </div>
-      <label className="flex items-center gap-2 text-sm sm:text-base text-slate-700 px-2 min-h-[36px] cursor-pointer">
-        <input
-          type="checkbox"
-          checked={props.magnetic}
-          onChange={(e) => props.setMagnetic(e.target.checked)}
-          className="w-4 h-4"
-        />
-        🧲 자석
-      </label>
-      <button
-        onClick={() => props.setMagnifierOn(!props.magnifierOn)}
-        className={`px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] ${
-          props.magnifierOn
-            ? "bg-amber-500 text-white border-amber-600"
-            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-        }`}
-      >🔍 돋보기</button>
-      <button
-        onClick={() => props.setBoardMode(!props.boardMode)}
-        className={`px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] ${
-          props.boardMode
-            ? "bg-sky-600 text-white border-sky-700"
-            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-        }`}
-        title="전자칠판/프로젝터 모드 (큰 라벨, 사이드바 접기)"
-      >📺 전자칠판</button>
-      <button
-        onClick={() => props.setShowPalette(!props.showPalette)}
-        className={`px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] ${
-          props.showPalette
-            ? "bg-slate-900 text-white border-slate-900"
-            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-        }`}
-        title="도형 추가 패널 열기/닫기"
-      >📐 도형 추가</button>
-      <button
-        onClick={() => props.setShowScenarios(!props.showScenarios)}
-        className={`px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] ${
-          props.showScenarios
-            ? "bg-slate-900 text-white border-slate-900"
-            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-        }`}
-        title="학습 예시 패널 열기/닫기"
-      >📚 학습 예시</button>
-      {props.measurementsCount > 0 && (
+    <div className="flex flex-wrap items-end gap-x-3 gap-y-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+      <ToolGroup label="도구">
+        <div className="flex gap-1 rounded-xl bg-slate-100 p-1">
+          {TOOL_META.map((t) => {
+            const active = props.tool === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => props.setTool(t.id)}
+                title={t.label}
+                className={`flex min-w-[54px] flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                  active
+                    ? "bg-white text-slate-900 shadow ring-1 ring-slate-900/10"
+                    : "text-slate-500 hover:bg-white/70 hover:text-slate-800"
+                }`}
+              >
+                <span className="text-lg leading-none">{t.icon}</span>
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </ToolGroup>
+
+      <ToolGroup label="편집">
+        <div className="flex gap-1">
+          <ActBtn tone="emerald" disabled={!props.canFinish} onClick={props.onFinishDraw} icon="✅" label="완성" />
+          <ActBtn disabled={!props.hasSelection} onClick={props.onDuplicate} icon="📋" label="복사" />
+          <ActBtn disabled={!props.canUndo} onClick={props.onUndo} icon="↶" label="되돌리기" title="Ctrl/Cmd+Z" />
+          <ActBtn disabled={!props.canRedo} onClick={props.onRedo} icon="↷" label="다시" title="Ctrl/Cmd+Shift+Z" />
+        </div>
+      </ToolGroup>
+
+      <ToolGroup label="격자 스냅">
+        <div className="flex items-center gap-1.5">
+          <div className="flex gap-1 rounded-lg bg-slate-100 p-1">
+            {([1, 0.5, 0.2, 0] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => props.setSnapStep(s)}
+                className={`rounded-md px-2 py-1 text-xs font-semibold transition ${
+                  props.snapStep === s ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {s === 0 ? "끄기" : `${s}`}
+              </button>
+            ))}
+          </div>
+          <ToggleChip active={props.magnetic} onClick={() => props.setMagnetic(!props.magnetic)} icon="🧲" label="자석" />
+        </div>
+      </ToolGroup>
+
+      <ToolGroup label="보기">
+        <div className="flex gap-1">
+          <ToggleChip active={props.magnifierOn} onClick={() => props.setMagnifierOn(!props.magnifierOn)} icon="🔍" label="돋보기" tone="amber" />
+          <ToggleChip active={props.boardMode} onClick={() => props.setBoardMode(!props.boardMode)} icon="📺" label="전자칠판" tone="sky" />
+          <ToggleChip active={props.showPalette} onClick={() => props.setShowPalette(!props.showPalette)} icon="📐" label="도형" />
+          <ToggleChip active={props.showScenarios} onClick={() => props.setShowScenarios(!props.showScenarios)} icon="📚" label="예시" />
+        </div>
+      </ToolGroup>
+
+      <div className="ml-auto flex items-end gap-2">
+        {(props.measurementsCount > 0 || props.guidesCount > 0) && (
+          <ToolGroup label="지우기">
+            <div className="flex gap-1">
+              {props.measurementsCount > 0 && (
+                <ActBtn tone="purple" onClick={props.onClearMeasurements} icon="📏" label={`측정선 ${props.measurementsCount}`} />
+              )}
+              {props.guidesCount > 0 && (
+                <ActBtn onClick={props.onClearGuides} icon="📐" label={`가이드 ${props.guidesCount}`} />
+              )}
+            </div>
+          </ToolGroup>
+        )}
         <button
-          onClick={props.onClearMeasurements}
-          className="px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
-        >📏 측정선 지우기 ({props.measurementsCount})</button>
-      )}
-      {props.guidesCount > 0 && (
-        <button
-          onClick={props.onClearGuides}
-          className="px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
-        >📐 가이드선 지우기 ({props.guidesCount})</button>
-      )}
-      <div className="sm:ml-auto">
-        <button
-          className={`${ab} border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100`}
           onClick={props.onClear}
-        >전체 초기화</button>
+          className="self-end rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+        >
+          🗑 전체 초기화
+        </button>
       </div>
     </div>
+  );
+}
+
+const TOOL_META: { id: Tool; icon: string; label: string }[] = [
+  { id: "draw", icon: "✏️", label: "그리기" },
+  { id: "select", icon: "🖱️", label: "선택" },
+  { id: "cut", icon: "✂️", label: "자르기" },
+  { id: "merge", icon: "🔗", label: "합치기" },
+  { id: "measure", icon: "📏", label: "길이" },
+  { id: "guide", icon: "📐", label: "가이드" },
+  { id: "delete", icon: "🗑️", label: "삭제" },
+];
+
+function ToolGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="px-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function ActBtn({
+  icon,
+  label,
+  onClick,
+  disabled,
+  title,
+  tone,
+}: {
+  icon: string;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  tone?: "emerald" | "purple";
+}) {
+  const toneCls =
+    tone === "emerald"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+      : tone === "purple"
+      ? "border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
+      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex items-center gap-1 rounded-lg border px-2.5 py-2 text-xs font-semibold transition disabled:opacity-40 ${toneCls}`}
+    >
+      <span className="text-sm leading-none">{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+function ToggleChip({
+  icon,
+  label,
+  active,
+  onClick,
+  tone,
+}: {
+  icon: string;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  tone?: "amber" | "sky";
+}) {
+  const activeCls =
+    tone === "amber"
+      ? "border-amber-500 bg-amber-500 text-white"
+      : tone === "sky"
+      ? "border-sky-600 bg-sky-600 text-white"
+      : "border-slate-900 bg-slate-900 text-white";
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1 rounded-lg border px-2.5 py-2 text-xs font-semibold transition ${
+        active ? activeCls : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+      }`}
+    >
+      <span className="text-sm leading-none">{icon}</span>
+      {label}
+    </button>
   );
 }
 
@@ -1433,43 +1480,37 @@ function SummaryBar({
   boardMode: boolean;
 }) {
   if (shapes.length === 0) return null;
-  const sizing = boardMode
-    ? "text-base sm:text-lg lg:text-xl"
-    : "text-sm sm:text-base";
-  const headingSize = boardMode ? "text-lg sm:text-xl" : "text-base sm:text-lg";
+  const stat = boardMode ? "text-base sm:text-lg" : "text-sm";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-2 sm:p-3">
-      <div className={`px-1 pb-1 font-semibold text-slate-600 ${headingSize}`}>
-        📊 도형별 둘레와 넓이
-      </div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
+    <div className="flex items-center gap-3 overflow-x-auto rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+      <span className="shrink-0 text-xs font-bold text-slate-400">📊 도형 {shapes.length}개</span>
+      <div className="flex gap-2">
         {shapes.map((s, i) => {
           const area = polygonArea(s.points) / (GRID * GRID);
           const peri = polygonPerimeter(s.points) / GRID;
           const sel = s.id === selectedId;
-          const sName = `${s.points.length}각형`;
           return (
             <button
               key={s.id}
               onClick={() => onSelect(s.id)}
-              className={`shrink-0 flex items-center gap-3 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl border-2 transition ${
+              className={`shrink-0 flex items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition ${
                 sel
-                  ? "border-slate-900 bg-slate-50 ring-2 ring-slate-200"
+                  ? "border-slate-900 bg-slate-50 ring-2 ring-slate-900/10"
                   : "border-slate-200 bg-white hover:bg-slate-50"
-              } ${sizing}`}
-              style={{ borderLeftWidth: 8, borderLeftColor: s.color }}
+              }`}
             >
-              <span className="font-bold text-slate-700">#{i + 1}</span>
-              <span className="text-slate-500">{sName}</span>
-              <span className="text-slate-300">|</span>
-              <span>
-                <span className="text-slate-500">넓이</span>{" "}
-                <b className="text-slate-900">{fmtArea(area)}</b>
+              <span
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-[11px] font-bold text-white"
+                style={{ backgroundColor: s.color }}
+              >
+                {i + 1}
               </span>
-              <span className="text-slate-300">|</span>
-              <span>
-                <span className="text-slate-500">둘레</span>{" "}
-                <b className="text-slate-900">{fmtLen(peri)}</b>
+              <span className="flex flex-col items-start leading-tight">
+                <span className="text-[10px] font-medium text-slate-400">{s.points.length}각형</span>
+                <span className={`flex items-baseline gap-2 ${stat}`}>
+                  <b className="text-slate-900">{fmtArea(area)}</b>
+                  <span className="text-slate-400">둘레 {fmtLen(peri)}</span>
+                </span>
               </span>
             </button>
           );
@@ -1536,40 +1577,51 @@ function SelectedStrip({
   const kind = useMemo(() => detectShapeKind(shape.points), [shape]);
   const area = polygonArea(shape.points) / (GRID * GRID);
   const peri = polygonPerimeter(shape.points) / GRID;
-  const txt = boardMode ? "text-base sm:text-lg" : "text-sm sm:text-base";
-  const big = boardMode ? "text-xl sm:text-2xl" : "text-base sm:text-lg";
-  const btn =
-    "px-2.5 py-1.5 text-xs sm:text-sm rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 min-h-[36px]";
+  const name = boardMode ? "text-xl" : "text-base";
+  const stat = boardMode ? "text-base sm:text-lg" : "text-sm";
+  const mini =
+    "grid h-9 min-w-[40px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
   return (
-    <div
-      className="flex flex-wrap items-center gap-2 sm:gap-3 rounded-2xl border-2 border-amber-300 bg-amber-50 px-3 py-2 shadow-sm"
-      style={{ borderLeftWidth: 10, borderLeftColor: shape.color }}
-    >
-      <div className={`font-bold text-amber-900 ${big}`}>📐 {kind.name}</div>
-      {kind.formula && (
-        <div className={`${txt} text-amber-900`}>
-          <span className="text-amber-700">공식</span>{" "}
-          <span className="font-bold bg-white px-2 py-0.5 rounded border border-amber-200">
-            {kind.formula}
-          </span>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2 shadow-sm">
+      <div className="flex items-center gap-2.5">
+        <span className="h-7 w-7 shrink-0 rounded-md ring-1 ring-black/5" style={{ backgroundColor: shape.color }} />
+        <div className="flex flex-col leading-tight">
+          <span className={`font-bold text-amber-900 ${name}`}>{kind.name}</span>
+          {kind.formula && <span className="text-xs font-medium text-amber-700">공식 · {kind.formula}</span>}
         </div>
-      )}
-      <div className={`${txt}`}>
-        <span className="text-slate-500">넓이</span>{" "}
-        <b className="text-slate-900">{fmtArea(area)}</b>
       </div>
-      <div className={`${txt}`}>
-        <span className="text-slate-500">둘레</span>{" "}
-        <b className="text-slate-900">{fmtLen(peri)}</b>
+
+      <div className={`flex gap-4 ${stat}`}>
+        <span>
+          <span className="text-slate-500">넓이 </span>
+          <b className="text-slate-900">{fmtArea(area)}</b>
+        </span>
+        <span>
+          <span className="text-slate-500">둘레 </span>
+          <b className="text-slate-900">{fmtLen(peri)}</b>
+        </span>
       </div>
-      <div className="ml-auto flex flex-wrap gap-1.5">
-        <button className={btn} onClick={() => onRotate(-90)} title="시계 반대 90°">↶90°</button>
-        <button className={btn} onClick={() => onRotate(90)} title="시계 90°">↷90°</button>
-        <button className={btn} onClick={() => onRotate(180)}>180°</button>
-        <button className={btn} onClick={() => onFlip("horizontal")} title="좌우 뒤집기">↔</button>
-        <button className={btn} onClick={() => onFlip("vertical")} title="위아래 뒤집기">↕</button>
-        <button className={btn} onClick={() => onScale(0.5)}>×½</button>
-        <button className={btn} onClick={() => onScale(2)}>×2</button>
+
+      <div className="ml-auto flex items-end gap-3">
+        <ToolGroup label="회전">
+          <div className="flex gap-1">
+            <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90°">↶90°</button>
+            <button className={mini} onClick={() => onRotate(90)} title="시계 90°">↷90°</button>
+            <button className={mini} onClick={() => onRotate(180)} title="180°">180°</button>
+          </div>
+        </ToolGroup>
+        <ToolGroup label="뒤집기">
+          <div className="flex gap-1">
+            <button className={mini} onClick={() => onFlip("horizontal")} title="좌우 뒤집기">↔</button>
+            <button className={mini} onClick={() => onFlip("vertical")} title="위아래 뒤집기">↕</button>
+          </div>
+        </ToolGroup>
+        <ToolGroup label="크기">
+          <div className="flex gap-1">
+            <button className={mini} onClick={() => onScale(0.5)} title="절반으로">×½</button>
+            <button className={mini} onClick={() => onScale(2)} title="2배로">×2</button>
+          </div>
+        </ToolGroup>
       </div>
     </div>
   );

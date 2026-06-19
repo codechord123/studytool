@@ -33,8 +33,8 @@ type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide"
 
 // 1cm = 80px (이전 40px → 2배로 크게 보이도록)
 const GRID = 80;
-const CANVAS_W = 1600; // 20cm
-const CANVAS_H = 880; // 11cm — 16:9에 가까운 비율로 화면을 꽉 채우고 세로 작업영역 확보
+const CANVAS_W = 1440; // 18cm — 폭을 줄여 한 칸(1cm)이 화면에서 더 크게 보이도록
+const CANVAS_H = 880; // 11cm — 세로가 부족하면 캔버스 패널 안에서 스크롤
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
 const HISTORY_LIMIT = 50;
 
@@ -255,12 +255,8 @@ export default function PolygonCanvas() {
     if (!el) return;
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth;
-      const h = el.clientHeight;
-      const byW = w / CANVAS_W;
-      // 컨테이너가 세로로 제한될 때(PC 한 화면 모드)는 높이에도 맞춤.
-      // 높이 제약이 없는 모바일 흐름에서는 byH가 byW로 수렴해 가로 기준만 적용됨.
-      const byH = h > 0 ? h / CANVAS_H : byW;
-      setCssScale(Math.min(1, byW, byH));
+      // 폭에 꽉 맞춰 한 칸(1cm)을 최대한 크게. 세로가 부족하면 캔버스 패널이 스크롤됨.
+      setCssScale(Math.min(1, w / CANVAS_W));
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -1171,11 +1167,13 @@ export default function PolygonCanvas() {
           />
           <div
             ref={wrapRef}
-            className="flex w-full items-center justify-center overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white lg:min-h-0 lg:flex-1"
+            className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white lg:min-h-0 lg:flex-1"
             style={{ touchAction: "none" }}
           >
-            <div style={{ width: CANVAS_W * cssScale, height: CANVAS_H * cssScale }}>
-              <canvas
+            <div className="w-full lg:h-full lg:overflow-y-auto lg:overflow-x-hidden">
+              <div className="flex min-h-full items-center justify-center">
+                <div style={{ width: CANVAS_W * cssScale, height: CANVAS_H * cssScale }}>
+                  <canvas
                 ref={canvasRef}
                 style={{
                   width: CANVAS_W * cssScale,
@@ -1197,7 +1195,9 @@ export default function PolygonCanvas() {
                 onPointerMove={handleCanvasPointerMove}
                 onPointerUp={handleCanvasPointerUp}
                 onPointerCancel={handleCanvasPointerUp}
-              />
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>

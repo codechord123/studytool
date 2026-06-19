@@ -262,6 +262,62 @@ export function makeRhombus(
   ];
 }
 
+// 정육각형 — 꼭짓점 거리 r, 각 변 길이 r
+export function makeHexagon(cx: number, cy: number, r: number): Point[] {
+  const out: Point[] = [];
+  for (let i = 0; i < 6; i++) {
+    const a = (Math.PI * 2 * i) / 6 - Math.PI / 2;
+    out.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+  }
+  return out;
+}
+
+// ㄴ 자 형태 — 6 꼭짓점 (오목 다각형), 모든 변 정수 cm
+export function makeLShape(
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  cutW: number,
+  cutH: number
+): Point[] {
+  const x0 = cx - w / 2;
+  const y0 = cy - h / 2;
+  return [
+    { x: x0, y: y0 },
+    { x: x0 + (w - cutW), y: y0 },
+    { x: x0 + (w - cutW), y: y0 + (h - cutH) },
+    { x: x0 + w, y: y0 + (h - cutH) },
+    { x: x0 + w, y: y0 + h },
+    { x: x0, y: y0 + h },
+  ];
+}
+
+// 십자 (+) — 12 꼭짓점
+export function makeCross(
+  cx: number,
+  cy: number,
+  armW: number,
+  armLen: number
+): Point[] {
+  const a = armW / 2;
+  const b = armW / 2 + armLen;
+  return [
+    { x: cx - a, y: cy - b },
+    { x: cx + a, y: cy - b },
+    { x: cx + a, y: cy - a },
+    { x: cx + b, y: cy - a },
+    { x: cx + b, y: cy + a },
+    { x: cx + a, y: cy + a },
+    { x: cx + a, y: cy + b },
+    { x: cx - a, y: cy + b },
+    { x: cx - a, y: cy + a },
+    { x: cx - b, y: cy + a },
+    { x: cx - b, y: cy - a },
+    { x: cx - a, y: cy - a },
+  ];
+}
+
 // ----- 도형 합치기 (인접 변 공유 시) -----
 export function signedArea(points: Point[]): number {
   let s = 0;
@@ -334,4 +390,74 @@ export function mergePolygons(A: Point[], B: Point[], tol = 6): Point[] | null {
 
 export function uid(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+// 도형 종류와 공식 자동 인식 (5학년 수준 휴리스틱)
+export type ShapeKind = { name: string; formula: string };
+
+export function detectShapeKind(points: Point[]): ShapeKind {
+  const n = points.length;
+  if (n < 3) return { name: "선", formula: "" };
+
+  const sides: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % n];
+    sides.push(Math.hypot(b.x - a.x, b.y - a.y));
+  }
+
+  const angleDot = (i: number): number => {
+    const a = points[(i - 1 + n) % n];
+    const b = points[i];
+    const c = points[(i + 1) % n];
+    const v1x = a.x - b.x,
+      v1y = a.y - b.y;
+    const v2x = c.x - b.x,
+      v2y = c.y - b.y;
+    const L1 = Math.hypot(v1x, v1y) || 1;
+    const L2 = Math.hypot(v2x, v2y) || 1;
+    return (v1x * v2x + v1y * v2y) / (L1 * L2); // 정규화된 내적
+  };
+  const isRight = (i: number) => Math.abs(angleDot(i)) < 0.05;
+  const allRight = () => {
+    for (let i = 0; i < n; i++) if (!isRight(i)) return false;
+    return true;
+  };
+  const sideEq = (a: number, b: number) => Math.abs(a - b) < Math.max(2, a * 0.04);
+  const allSidesEq = sides.every((s) => sideEq(s, sides[0]));
+  const oppSidesEq = n === 4 && sideEq(sides[0], sides[2]) && sideEq(sides[1], sides[3]);
+  const parallel = (i1: number, i2: number, j1: number, j2: number) => {
+    const ax = points[i2].x - points[i1].x;
+    const ay = points[i2].y - points[i1].y;
+    const bx = points[j2].x - points[j1].x;
+    const by = points[j2].y - points[j1].y;
+    const cross = ax * by - ay * bx;
+    const la = Math.hypot(ax, ay) || 1;
+    const lb = Math.hypot(bx, by) || 1;
+    return Math.abs(cross / (la * lb)) < 0.03;
+  };
+
+  if (n === 3) {
+    if (isRight(0) || isRight(1) || isRight(2))
+      return { name: "직각삼각형", formula: "밑변 × 높이 ÷ 2" };
+    return { name: "삼각형", formula: "밑변 × 높이 ÷ 2" };
+  }
+  if (n === 4) {
+    const p01_23 = parallel(0, 1, 3, 2);
+    const p12_30 = parallel(1, 2, 0, 3);
+    if (allSidesEq && allRight()) return { name: "정사각형", formula: "한 변 × 한 변" };
+    if (oppSidesEq && allRight()) return { name: "직사각형", formula: "가로 × 세로" };
+    if (allSidesEq && p01_23 && p12_30)
+      return { name: "마름모", formula: "한 대각선 × 다른 대각선 ÷ 2" };
+    if (oppSidesEq && p01_23 && p12_30)
+      return { name: "평행사변형", formula: "밑변 × 높이" };
+    if (p01_23 || p12_30)
+      return { name: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2" };
+    return { name: "사각형", formula: "여러 도형으로 나누어 더하기" };
+  }
+  if (n === 5) return { name: "오각형", formula: "여러 도형으로 나누어 더하기" };
+  if (n === 6) return { name: "육각형", formula: "여러 도형으로 나누어 더하기" };
+  if (n === 7) return { name: "칠각형", formula: "여러 도형으로 나누어 더하기" };
+  if (n === 8) return { name: "팔각형", formula: "여러 도형으로 나누어 더하기" };
+  return { name: `${n}각형`, formula: "여러 도형으로 나누어 더하기" };
 }

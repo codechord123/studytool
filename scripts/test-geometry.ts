@@ -256,5 +256,65 @@ group("시나리오 — 사다리꼴 중간선에서 잘라 직사각형 만들�
   }
 });
 
+// ---------- 새 도형 + 자동 인식 ----------
+import {
+  makeHexagon,
+  makeLShape,
+  makeCross,
+  detectShapeKind,
+} from "../lib/geometry";
+
+group("새 프리셋 도형 — 육각형/ㄴ자/십자", () => {
+  const hex = makeHexagon(0, 0, 3 * GRID);
+  assert(hex.length === 6, "정육각형 꼭짓점 6개");
+  // 6개의 변 모두 동일 길이
+  const hexSides: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const a = hex[i], b = hex[(i + 1) % 6];
+    hexSides.push(Math.hypot(b.x - a.x, b.y - a.y));
+  }
+  assert(hexSides.every((s) => near(s, hexSides[0], 0.5)), "정육각형 모든 변 같은 길이");
+  assert(near(hexSides[0] / GRID, 3, 0.02), `정육각형 변 길이 ≈ 3cm (got ${(hexSides[0] / GRID).toFixed(2)})`);
+
+  const L = makeLShape(0, 0, 6 * GRID, 4 * GRID, 2 * GRID, 2 * GRID);
+  assert(L.length === 6, "ㄴ자 꼭짓점 6개");
+  const lArea = polygonArea(L) / (GRID * GRID);
+  // 6×4 - 2×2 = 24 - 4 = 20
+  assert(near(lArea, 20), `ㄴ자 넓이 = 20cm² (got ${lArea})`);
+  const lPeri = polygonPerimeter(L) / GRID;
+  // 외곽: 6+4+2+2+4+2 = 20
+  assert(near(lPeri, 20), `ㄴ자 둘레 = 20cm (got ${lPeri})`);
+
+  const X = makeCross(0, 0, 2 * GRID, 2 * GRID);
+  assert(X.length === 12, "십자 꼭짓점 12개");
+  const xArea = polygonArea(X) / (GRID * GRID);
+  // 6×2 (가로) + 6×2 (세로) - 2×2 (중복) = 20
+  assert(near(xArea, 20), `십자 넓이 = 20cm² (got ${xArea})`);
+  const xPeri = polygonPerimeter(X) / GRID;
+  // 모든 변 2cm × 12개 = 24cm
+  assert(near(xPeri, 24), `십자 둘레 = 24cm (got ${xPeri})`);
+});
+
+group("detectShapeKind", () => {
+  const sq = makeRectangle(0, 0, 4 * GRID, 4 * GRID);
+  assert(detectShapeKind(sq).name === "정사각형", "정사각형 인식");
+  const rect = makeRectangle(0, 0, 6 * GRID, 4 * GRID);
+  assert(detectShapeKind(rect).name === "직사각형", "직사각형 인식");
+  const rtri = makeRightTriangle(0, 0, 6 * GRID, 4 * GRID);
+  assert(detectShapeKind(rtri).name === "직각삼각형", "직각삼각형 인식");
+  const tri = makeTriangle(0, 0, 6 * GRID, 4 * GRID);
+  assert(detectShapeKind(tri).name === "삼각형", `삼각형 인식 (got ${detectShapeKind(tri).name})`);
+  const para = makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID);
+  assert(detectShapeKind(para).name === "평행사변형", `평행사변형 인식 (got ${detectShapeKind(para).name})`);
+  const trap = makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID);
+  assert(detectShapeKind(trap).name === "사다리꼴", `사다리꼴 인식 (got ${detectShapeKind(trap).name})`);
+  const rhom = makeRhombus(0, 0, 6 * GRID, 4 * GRID);
+  assert(detectShapeKind(rhom).name === "마름모", `마름모 인식 (got ${detectShapeKind(rhom).name})`);
+  const hex = makeHexagon(0, 0, 3 * GRID);
+  assert(detectShapeKind(hex).name === "육각형", "육각형 인식");
+  const Lsh = makeLShape(0, 0, 6 * GRID, 4 * GRID, 2 * GRID, 2 * GRID);
+  assert(detectShapeKind(Lsh).name === "육각형", `ㄴ자(6각형) 인식 (got ${detectShapeKind(Lsh).name})`);
+});
+
 console.log(`\n결과: ${pass} 통과, ${fail} 실패`);
 if (fail > 0) process.exit(1);

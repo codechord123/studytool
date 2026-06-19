@@ -5,7 +5,11 @@ import {
   Point,
   Shape,
   cloneShapes,
+  detectShapeKind,
   flipPoints,
+  makeCross,
+  makeHexagon,
+  makeLShape,
   makeParallelogram,
   makeRectangle,
   makeRhombus,
@@ -24,11 +28,12 @@ import {
   uid,
 } from "@/lib/geometry";
 
-type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure";
+type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide";
 
-const GRID = 40;
-const CANVAS_W = 1280;
-const CANVAS_H = 800;
+// 1cm = 80px (이전 40px → 2배로 크게 보이도록)
+const GRID = 80;
+const CANVAS_W = 1600;
+const CANVAS_H = 1000;
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
 const HISTORY_LIMIT = 50;
 
@@ -56,6 +61,7 @@ function fmtLenNum(cm: number): string {
 }
 
 type Measurement = { id: string; a: Point; b: Point };
+type Guide = { id: string; a: Point; b: Point };
 
 type DragMode =
   | { type: "none" }
@@ -76,7 +82,8 @@ type DragMode =
       startGhosts?: Point[][];
     }
   | { type: "cut"; start: Point; current: Point }
-  | { type: "measure"; start: Point; current: Point };
+  | { type: "measure"; start: Point; current: Point }
+  | { type: "guide"; start: Point; current: Point };
 
 function placeAtCenter(pts: Point[], cx: number, cy: number): Point[] {
   const xs = pts.map((p) => p.x);
@@ -96,6 +103,9 @@ const PRESETS: Preset[] = [
   { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
   { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID) },
   { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 6 * GRID, 4 * GRID) },
+  { id: "hex", label: "정육각형", formula: "여러 도형으로 나누기", build: () => makeHexagon(0, 0, 3 * GRID) },
+  { id: "lshape", label: "ㄴ자 모양", formula: "두 직사각형 합", build: () => makeLShape(0, 0, 6 * GRID, 4 * GRID, 2 * GRID, 2 * GRID) },
+  { id: "cross", label: "십자 모양", formula: "정사각형 5개", build: () => makeCross(0, 0, 2 * GRID, 2 * GRID) },
 ];
 
 type Scenario = { label: string; hint: string; build: (cx: number, cy: number) => Shape[] };
@@ -229,6 +239,7 @@ export default function PolygonCanvas() {
   const [scenarioHint, setScenarioHint] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
+  const [guides, setGuides] = useState<Guide[]>([]);
   const [magnifierOn, setMagnifierOn] = useState(false);
   const [magnifierPos, setMagnifierPos] = useState<Point | null>(null);
   const [boardMode, setBoardMode] = useState(false);
@@ -394,6 +405,12 @@ export default function PolygonCanvas() {
       return;
     }
 
+    if (tool === "guide") {
+      const startPt = vertexSnap(p, undefined, 16);
+      dragRef.current = { type: "guide", start: startPt, current: startPt };
+      return;
+    }
+
     if (tool === "merge") {
       const hit = topShapeAt(p);
       if (!hit) {
@@ -479,6 +496,11 @@ export default function PolygonCanvas() {
       dragRef.current = { ...dm, current: cur };
       return;
     }
+    if (dm.type === "guide") {
+      const cur = vertexSnap(p, undefined, 16);
+      dragRef.current = { ...dm, current: cur };
+      return;
+    }
     setShapes((all) =>
       all.map((s) => {
         if (s.id !== dm.shapeId) return s;
@@ -529,6 +551,13 @@ export default function PolygonCanvas() {
       const a = dm.start;
       if (Math.hypot(a.x - b.x, a.y - b.y) > 8) {
         setMeasurements((m) => [...m, { id: uid(), a, b }]);
+      }
+    } else if (dm.type === "guide") {
+      const raw = getPt(e);
+      const b = vertexSnap(raw, undefined, 16);
+      const a = dm.start;
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 8) {
+        setGuides((g) => [...g, { id: uid(), a, b }]);
       }
     }
     dragRef.current = { type: "none" };
@@ -642,6 +671,7 @@ export default function PolygonCanvas() {
     setDraft([]);
     setScenarioHint(null);
     setMeasurements([]);
+    setGuides([]);
   }
 
 
@@ -815,6 +845,34 @@ export default function PolygonCanvas() {
     for (const m of measurements) drawRuler(m.a, m.b, "#7c3aed");
     if (tool === "measure" && dm.type === "measure") drawRuler(dm.start, dm.current, "#a855f7");
 
+    // 가이드 직선 (자르기/생각하기 보조선)
+    const drawGuide = (a: Point, b: Point, color: string, dashed: boolean) => {
+      ctx.save();
+      if (dashed) ctx.setLineDash([12 * k, 8 * k]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3 * k;
+      // 양 끝을 살짝 확장한 직선
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const L = Math.hypot(dx, dy) || 1;
+      const ex = (dx / L) * 14 * k;
+      const ey = (dy / L) * 14 * k;
+      ctx.beginPath();
+      ctx.moveTo(a.x - ex, a.y - ey);
+      ctx.lineTo(b.x + ex, b.y + ey);
+      ctx.stroke();
+      ctx.restore();
+      // 양 끝 동그라미
+      ctx.fillStyle = color;
+      [a, b].forEach((p) => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5 * k, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    };
+    for (const g of guides) drawGuide(g.a, g.b, "#0f172a", true);
+    if (tool === "guide" && dm.type === "guide") drawGuide(dm.start, dm.current, "#475569", true);
+
     // 돋보기 — 클립+확대로 다시 한 번 일부 영역을 그려 보여 줌
     if (magnifierOn && magnifierPos) {
       const r = 110;
@@ -863,7 +921,7 @@ export default function PolygonCanvas() {
       ctx.font = `bold ${14 * k}px sans-serif`;
       ctx.fillText("🔍 ×2", mx - 24 * k, my - r - 8 * k);
     }
-  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cssScale, measurements, magnifierOn, magnifierPos, boardMode]);
+  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cssScale, measurements, guides, magnifierOn, magnifierPos, boardMode]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -962,21 +1020,24 @@ export default function PolygonCanvas() {
     // 6) 도형 번호 작게 (상단 요약 바와 매칭) — 무게중심 부근에 작은 색 원
     const c = polygonCentroid(s.points);
 
-    // 7) 회전 핸들
+    // 7) 회전 핸들 (점선 leader 선)
     if (isSelected) {
       const h = rotationHandle(s);
+      ctx.save();
+      ctx.setLineDash([8 * k, 6 * k]);
       ctx.strokeStyle = "#0f172a";
       ctx.lineWidth = 2 * k;
       ctx.beginPath();
       ctx.moveTo(c.x, c.y);
       ctx.lineTo(h.x, h.y);
       ctx.stroke();
+      ctx.restore();
       ctx.fillStyle = "#10b981";
       ctx.beginPath();
-      ctx.arc(h.x, h.y, 10 * k, 0, Math.PI * 2);
+      ctx.arc(h.x, h.y, 12 * k, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = "#065f46";
-      ctx.lineWidth = 1.5 * k;
+      ctx.lineWidth = 2 * k;
       ctx.stroke();
     }
 
@@ -1039,6 +1100,8 @@ export default function PolygonCanvas() {
         setBoardMode={setBoardMode}
         onClearMeasurements={() => setMeasurements([])}
         measurementsCount={measurements.length}
+        onClearGuides={() => setGuides([])}
+        guidesCount={guides.length}
       />
 
       {flash && (
@@ -1062,12 +1125,22 @@ export default function PolygonCanvas() {
         {!boardMode && <ShapePalette presets={PRESETS} onAdd={addPreset} />}
 
         <div className="flex flex-col gap-3 min-w-0">
+          {selected && <FormulaBanner shape={selected} boardMode={boardMode} />}
           <SummaryBar
             shapes={shapes}
             selectedId={selectedId}
             onSelect={(id) => setSelectedId(id)}
             boardMode={boardMode}
           />
+          {selected && (
+            <TransformBar
+              onRotate={(deg) =>
+                transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))
+              }
+              onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
+              onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
+            />
+          )}
           <div
             ref={wrapRef}
             className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white"
@@ -1082,7 +1155,7 @@ export default function PolygonCanvas() {
                   cursor:
                     magnifierOn
                       ? "none"
-                      : tool === "draw" || tool === "cut" || tool === "measure"
+                      : tool === "draw" || tool === "cut" || tool === "measure" || tool === "guide"
                       ? "crosshair"
                       : tool === "delete"
                       ? "not-allowed"
@@ -1100,18 +1173,7 @@ export default function PolygonCanvas() {
             </div>
           </div>
 
-          {selected && (
-            <>
-              <TransformBar
-                onRotate={(deg) =>
-                  transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))
-                }
-                onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
-                onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
-              />
-              {!boardMode && <PerimeterDetail shape={selected} />}
-            </>
-          )}
+          {selected && !boardMode && <PerimeterDetail shape={selected} />}
         </div>
 
         {!boardMode && <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} />}
@@ -1156,6 +1218,8 @@ function Toolbar(props: {
   setBoardMode: (b: boolean) => void;
   onClearMeasurements: () => void;
   measurementsCount: number;
+  onClearGuides: () => void;
+  guidesCount: number;
 }) {
   const btn = (active: boolean) =>
     `px-3 py-2.5 rounded-lg text-sm sm:text-base font-medium border transition min-h-[44px] ${
@@ -1173,6 +1237,7 @@ function Toolbar(props: {
         <button className={btn(props.tool === "cut")} onClick={() => props.setTool("cut")}>✂️ 자르기</button>
         <button className={btn(props.tool === "merge")} onClick={() => props.setTool("merge")}>🔗 합치기</button>
         <button className={btn(props.tool === "measure")} onClick={() => props.setTool("measure")}>📏 길이재기</button>
+        <button className={btn(props.tool === "guide")} onClick={() => props.setTool("guide")}>📐 직선 가이드</button>
         <button className={btn(props.tool === "delete")} onClick={() => props.setTool("delete")}>🗑️ 삭제</button>
       </div>
       <div className="h-6 w-px bg-slate-200 hidden sm:block" />
@@ -1246,6 +1311,12 @@ function Toolbar(props: {
           onClick={props.onClearMeasurements}
           className="px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
         >📏 측정선 지우기 ({props.measurementsCount})</button>
+      )}
+      {props.guidesCount > 0 && (
+        <button
+          onClick={props.onClearGuides}
+          className="px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+        >📐 가이드선 지우기 ({props.guidesCount})</button>
       )}
       <div className="sm:ml-auto">
         <button
@@ -1448,6 +1519,7 @@ function InfoPanel(props: {
       ? "첫 번째 도형을 골랐어요! 이제 ‘붙이고 싶은 도형’을 누르세요. 두 도형이 한 변을 정확히 맞대고 있어야 합쳐져요."
       : "합칠 첫 번째 도형을 누르세요. 그 다음 두 번째 도형을 누르면 한 도형으로 합쳐져요. 합쳐진 자국이 점선으로 남아요.",
     measure: "두 점을 ‘드래그(누른 채로 끌기)’해서 길이를 재요. 1cm 눈금이 함께 그려져요. 같은 도구로 여러 번 재고, 측정선은 ‘측정선 지우기’로 모두 지울 수 있어요.",
+    guide: "도형을 자르기 전에 ‘이쯤에서 자를까?’ 직선을 미리 그어 보세요. 두 점을 끌면 점선 가이드가 남아요. 가이드는 자르기에 영향을 주지 않고, ‘가이드선 지우기’로 모두 지울 수 있어요.",
     delete: "지우고 싶은 도형을 누르세요.",
   };
   return (
@@ -1541,6 +1613,29 @@ function SummaryBar({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function FormulaBanner({ shape, boardMode }: { shape: Shape; boardMode: boolean }) {
+  const kind = useMemo(() => detectShapeKind(shape.points), [shape]);
+  const sizing = boardMode ? "text-xl sm:text-2xl" : "text-base sm:text-lg";
+  const nameSize = boardMode ? "text-2xl sm:text-3xl" : "text-lg sm:text-xl";
+  return (
+    <div
+      className="rounded-2xl border-2 border-amber-300 bg-amber-50 shadow-sm px-4 py-3 sm:px-5 sm:py-4 flex flex-wrap items-center gap-3 sm:gap-5"
+      style={{ borderLeftWidth: 10, borderLeftColor: shape.color }}
+    >
+      <div className={`font-bold text-amber-900 ${nameSize}`}>📐 {kind.name}</div>
+      {kind.formula && (
+        <div className={`text-amber-800 ${sizing}`}>
+          <span className="font-semibold">넓이 공식</span>
+          <span className="mx-2 text-amber-500">=</span>
+          <span className="font-bold bg-white px-3 py-1.5 rounded-lg border border-amber-200">
+            {kind.formula}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

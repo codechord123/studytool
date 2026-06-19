@@ -20,7 +20,6 @@ import {
   mergePolygons,
   polygonArea,
   polygonCentroid,
-  polygonPerimeter,
   pointInPolygon,
   rotatePoints,
   scalePoints,
@@ -54,6 +53,27 @@ function fmtArea(cm2: number): string {
   const h = Math.round(cm2 * 2) / 2;
   if (Math.abs(cm2 - h) < 0.05) return `${h}cm²`;
   return `약 ${r}cm²`;
+}
+
+// 한 변의 '표시 길이'(라벨에 보이는 값)를 0.5cm 단위 수치로 반환
+function niceLenCm(cm: number): number {
+  const r = Math.round(cm);
+  if (Math.abs(cm - r) < 0.05) return r;
+  const h = Math.round(cm * 2) / 2;
+  if (Math.abs(cm - h) < 0.05) return h;
+  return r; // 어림값은 가장 가까운 정수로
+}
+// 둘레 = 화면에 보이는 각 변 라벨의 합 (아이가 변을 더한 값과 일치, 깔끔한 수)
+function displayPerimeterCm(points: Point[]): number {
+  const n = points.length;
+  if (n < 2) return 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % n];
+    sum += niceLenCm(Math.hypot(b.x - a.x, b.y - a.y) / GRID);
+  }
+  return sum;
 }
 
 type Camera = { scale: number; tx: number; ty: number };
@@ -1933,11 +1953,11 @@ export default function PolygonCanvas() {
   }
 
   const totalArea = useMemo(
-    () => shapes.reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0),
+    () => shapes.filter((s) => !s.isReference).reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0),
     [shapes]
   );
   const totalPeri = useMemo(
-    () => shapes.reduce((a, s) => a + polygonPerimeter(s.points) / GRID, 0),
+    () => shapes.filter((s) => !s.isReference).reduce((a, s) => a + displayPerimeterCm(s.points), 0),
     [shapes]
   );
 
@@ -2329,7 +2349,7 @@ function InfoCard({
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
   if (count === 0) return null;
   const area = selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
-  const peri = selected ? polygonPerimeter(selected.points) / GRID : totalPeri;
+  const peri = selected ? displayPerimeterCm(selected.points) : totalPeri;
   const big = boardMode ? "text-4xl" : "text-3xl";
   return (
     <div className="absolute bottom-3 right-3 z-10 w-[min(92vw,340px)] rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-xl backdrop-blur">

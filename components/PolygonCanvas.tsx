@@ -254,7 +254,12 @@ export default function PolygonCanvas() {
     if (!el) return;
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth;
-      setCssScale(Math.min(1, w / CANVAS_W));
+      const h = el.clientHeight;
+      const byW = w / CANVAS_W;
+      // 컨테이너가 세로로 제한될 때(PC 한 화면 모드)는 높이에도 맞춤.
+      // 높이 제약이 없는 모바일 흐름에서는 byH가 byW로 수렴해 가로 기준만 적용됨.
+      const byH = h > 0 ? h / CANVAS_H : byW;
+      setCssScale(Math.min(1, byW, byH));
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -1060,7 +1065,7 @@ export default function PolygonCanvas() {
   );
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1">
       <Toolbar
         tool={tool}
         setTool={(t) => {
@@ -1140,7 +1145,7 @@ export default function PolygonCanvas() {
       )}
 
       <div
-        className={`grid gap-3 ${
+        className={`grid gap-3 lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] ${
           boardMode
             ? ""
             : !showPalette && !showScenarios
@@ -1156,7 +1161,7 @@ export default function PolygonCanvas() {
           <ShapePalette presets={PRESETS} onAdd={addPreset} />
         )}
 
-        <div className="flex flex-col gap-3 min-w-0">
+        <div className="flex flex-col gap-3 min-w-0 lg:min-h-0">
           <SummaryBar
             shapes={shapes}
             selectedId={selectedId}
@@ -1165,7 +1170,7 @@ export default function PolygonCanvas() {
           />
           <div
             ref={wrapRef}
-            className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white"
+            className="flex w-full items-center justify-center overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white lg:min-h-0 lg:flex-1"
             style={{ touchAction: "none" }}
           >
             <div style={{ width: CANVAS_W * cssScale, height: CANVAS_H * cssScale }}>
@@ -1364,7 +1369,7 @@ function Toolbar(props: {
 
 function ShapePalette({ presets, onAdd }: { presets: Preset[]; onAdd: (p: Preset) => void }) {
   return (
-    <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+    <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:min-h-0 lg:overflow-y-auto">
       <div className="mb-2 text-sm sm:text-base font-semibold text-slate-700">📐 도형 추가</div>
       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-2 gap-2">
         {presets.map((p) => (
@@ -1482,7 +1487,7 @@ function ScenariosAside({
   onLoad: (sc: Scenario) => void;
 }) {
   return (
-    <aside className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm lg:max-h-[640px] lg:overflow-y-auto">
+    <aside className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm lg:min-h-0 lg:max-h-full lg:overflow-y-auto">
       <div className="mb-2 text-sm sm:text-base font-semibold text-indigo-800">📚 학습 예시</div>
       <div className="flex flex-col gap-2">
         {groups.map((g, gi) => (

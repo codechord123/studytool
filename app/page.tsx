@@ -2,8 +2,8 @@ import PolygonCanvas from "@/components/PolygonCanvas";
 
 export default function Home() {
   return (
-    <main className="mx-auto w-full px-2 sm:px-3 py-2">
-      <header className="mb-2 flex items-baseline gap-3">
+    <main className="mx-auto flex w-full flex-col px-2 sm:px-3 py-2 lg:h-[100dvh] lg:overflow-hidden">
+      <header className="mb-2 flex shrink-0 items-baseline gap-3">
         <h1 className="text-lg sm:text-xl font-bold text-slate-900">
           다각형의 둘레와 넓이 체험실
         </h1>

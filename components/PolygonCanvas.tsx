@@ -1139,30 +1139,14 @@ export default function PolygonCanvas() {
         />
       )}
 
-      <div
-        className={`grid gap-3 ${
-          boardMode
-            ? ""
-            : !showPalette && !showScenarios
-            ? ""
-            : showPalette && showScenarios
-            ? "lg:grid-cols-[210px_minmax(0,1fr)_260px]"
-            : showPalette
-            ? "lg:grid-cols-[210px_minmax(0,1fr)]"
-            : "lg:grid-cols-[minmax(0,1fr)_260px]"
-        }`}
-      >
-        {!boardMode && showPalette && (
-          <ShapePalette presets={PRESETS} onAdd={addPreset} />
-        )}
-
-        <div className="flex flex-col gap-3 min-w-0">
-          <SummaryBar
-            shapes={shapes}
-            selectedId={selectedId}
-            onSelect={(id) => setSelectedId(id)}
-            boardMode={boardMode}
-          />
+      <div className="flex flex-col gap-3 min-w-0">
+        <SummaryBar
+          shapes={shapes}
+          selectedId={selectedId}
+          onSelect={(id) => setSelectedId(id)}
+          boardMode={boardMode}
+        />
+        <div className="relative">
           <div
             ref={wrapRef}
             className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white"
@@ -1194,10 +1178,38 @@ export default function PolygonCanvas() {
               />
             </div>
           </div>
+
+          {/* 데스크탑(lg+): 플로팅 드로어로 캔버스 좌/우 모서리에 오버레이 — 캔버스 폭 그대로 유지 */}
+          {!boardMode && showPalette && (
+            <FloatingDrawer
+              side="left"
+              onClose={() => setShowPalette(false)}
+              title="도형 추가"
+            >
+              <ShapePalette presets={PRESETS} onAdd={addPreset} embedded />
+            </FloatingDrawer>
+          )}
+          {!boardMode && showScenarios && (
+            <FloatingDrawer
+              side="right"
+              onClose={() => setShowScenarios(false)}
+              title="학습 예시"
+            >
+              <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} embedded />
+            </FloatingDrawer>
+          )}
         </div>
 
+        {/* 모바일/태블릿(lg 미만): 캔버스 아래 스택 형태 */}
+        {!boardMode && showPalette && (
+          <div className="lg:hidden">
+            <ShapePalette presets={PRESETS} onAdd={addPreset} />
+          </div>
+        )}
         {!boardMode && showScenarios && (
-          <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} />
+          <div className="lg:hidden">
+            <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} />
+          </div>
         )}
       </div>
 
@@ -1362,15 +1374,27 @@ function Toolbar(props: {
   );
 }
 
-function ShapePalette({ presets, onAdd }: { presets: Preset[]; onAdd: (p: Preset) => void }) {
+function ShapePalette({
+  presets,
+  onAdd,
+  embedded,
+}: {
+  presets: Preset[];
+  onAdd: (p: Preset) => void;
+  embedded?: boolean;
+}) {
+  const inner = (
+    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-2 gap-2">
+      {presets.map((p) => (
+        <ShapeThumb key={p.id} preset={p} onClick={() => onAdd(p)} />
+      ))}
+    </div>
+  );
+  if (embedded) return inner;
   return (
     <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
       <div className="mb-2 text-sm sm:text-base font-semibold text-slate-700">📐 도형 추가</div>
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-2 gap-2">
-        {presets.map((p) => (
-          <ShapeThumb key={p.id} preset={p} onClick={() => onAdd(p)} />
-        ))}
-      </div>
+      {inner}
     </aside>
   );
 }
@@ -1477,40 +1501,46 @@ function SummaryBar({
 function ScenariosAside({
   groups,
   onLoad,
+  embedded,
 }: {
   groups: ScenarioGroup[];
   onLoad: (sc: Scenario) => void;
+  embedded?: boolean;
 }) {
+  const inner = (
+    <div className="flex flex-col gap-2">
+      {groups.map((g, gi) => (
+        <details
+          key={g.shape}
+          open={gi === 0}
+          className="rounded-xl bg-white border border-indigo-100 px-3 py-2"
+        >
+          <summary className="cursor-pointer text-sm sm:text-base font-semibold text-indigo-900 marker:text-indigo-400 min-h-[40px] flex items-center">
+            {g.shape}
+          </summary>
+          <div className="mt-1 text-[12px] sm:text-sm text-indigo-700 font-medium">
+            공식: {g.formula}
+          </div>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {g.scenarios.map((sc) => (
+              <button
+                key={sc.label}
+                className="text-left text-[13px] sm:text-sm px-2.5 py-2 rounded-md border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-900 min-h-[36px]"
+                onClick={() => onLoad(sc)}
+              >
+                {sc.label}
+              </button>
+            ))}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+  if (embedded) return inner;
   return (
     <aside className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm lg:max-h-[640px] lg:overflow-y-auto">
       <div className="mb-2 text-sm sm:text-base font-semibold text-indigo-800">📚 학습 예시</div>
-      <div className="flex flex-col gap-2">
-        {groups.map((g, gi) => (
-          <details
-            key={g.shape}
-            open={gi === 0}
-            className="rounded-xl bg-white border border-indigo-100 px-3 py-2"
-          >
-            <summary className="cursor-pointer text-sm sm:text-base font-semibold text-indigo-900 marker:text-indigo-400 min-h-[40px] flex items-center">
-              {g.shape}
-            </summary>
-            <div className="mt-1 text-[12px] sm:text-sm text-indigo-700 font-medium">
-              공식: {g.formula}
-            </div>
-            <div className="mt-2 flex flex-col gap-1.5">
-              {g.scenarios.map((sc) => (
-                <button
-                  key={sc.label}
-                  className="text-left text-[13px] sm:text-sm px-2.5 py-2 rounded-md border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-900 min-h-[36px]"
-                  onClick={() => onLoad(sc)}
-                >
-                  {sc.label}
-                </button>
-              ))}
-            </div>
-          </details>
-        ))}
-      </div>
+      {inner}
     </aside>
   );
 }
@@ -1585,6 +1615,41 @@ function ToolHint({ tool, mergeFirst }: { tool: Tool; mergeFirst: boolean }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs sm:text-sm text-slate-600">
       {tips[tool]}
+    </div>
+  );
+}
+
+function FloatingDrawer({
+  side,
+  title,
+  onClose,
+  children,
+}: {
+  side: "left" | "right";
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const pos =
+    side === "left"
+      ? "left-2 top-2 bottom-2"
+      : "right-2 top-2 bottom-2";
+  return (
+    <div
+      className={`hidden lg:flex absolute ${pos} z-20 w-[220px] xl:w-[260px] flex-col rounded-2xl border-2 border-slate-300 bg-white/96 shadow-2xl backdrop-blur-sm`}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200">
+        <div className="text-sm font-semibold text-slate-700">{title}</div>
+        <button
+          onClick={onClose}
+          className="w-7 h-7 flex items-center justify-center rounded-md text-slate-500 hover:bg-slate-100"
+          aria-label="닫기"
+        >
+          ×
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2">{children}</div>
     </div>
   );
 }

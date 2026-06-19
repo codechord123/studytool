@@ -243,6 +243,8 @@ export default function PolygonCanvas() {
   const [magnifierOn, setMagnifierOn] = useState(false);
   const [magnifierPos, setMagnifierPos] = useState<Point | null>(null);
   const [boardMode, setBoardMode] = useState(false);
+  const [showPalette, setShowPalette] = useState(true);
+  const [showScenarios, setShowScenarios] = useState(false);
   const dragRef = useRef<DragMode>({ type: "none" });
   const colorIndexRef = useRef(0);
 
@@ -1102,6 +1104,10 @@ export default function PolygonCanvas() {
         measurementsCount={measurements.length}
         onClearGuides={() => setGuides([])}
         guidesCount={guides.length}
+        showPalette={showPalette}
+        setShowPalette={setShowPalette}
+        showScenarios={showScenarios}
+        setShowScenarios={setShowScenarios}
       />
 
       {flash && (
@@ -1121,26 +1127,42 @@ export default function PolygonCanvas() {
         </div>
       )}
 
-      <div className={`grid gap-3 ${boardMode ? "" : "xl:grid-cols-[220px_minmax(0,1fr)_300px]"}`}>
-        {!boardMode && <ShapePalette presets={PRESETS} onAdd={addPreset} />}
+      {selected && (
+        <SelectedStrip
+          shape={selected}
+          boardMode={boardMode}
+          onRotate={(deg) =>
+            transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))
+          }
+          onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
+          onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
+        />
+      )}
+
+      <div
+        className={`grid gap-3 ${
+          boardMode
+            ? ""
+            : !showPalette && !showScenarios
+            ? ""
+            : showPalette && showScenarios
+            ? "lg:grid-cols-[210px_minmax(0,1fr)_260px]"
+            : showPalette
+            ? "lg:grid-cols-[210px_minmax(0,1fr)]"
+            : "lg:grid-cols-[minmax(0,1fr)_260px]"
+        }`}
+      >
+        {!boardMode && showPalette && (
+          <ShapePalette presets={PRESETS} onAdd={addPreset} />
+        )}
 
         <div className="flex flex-col gap-3 min-w-0">
-          {selected && <FormulaBanner shape={selected} boardMode={boardMode} />}
           <SummaryBar
             shapes={shapes}
             selectedId={selectedId}
             onSelect={(id) => setSelectedId(id)}
             boardMode={boardMode}
           />
-          {selected && (
-            <TransformBar
-              onRotate={(deg) =>
-                transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))
-              }
-              onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
-              onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
-            />
-          )}
           <div
             ref={wrapRef}
             className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white"
@@ -1172,24 +1194,14 @@ export default function PolygonCanvas() {
               />
             </div>
           </div>
-
-          {selected && !boardMode && <PerimeterDetail shape={selected} />}
         </div>
 
-        {!boardMode && <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} />}
+        {!boardMode && showScenarios && (
+          <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} />
+        )}
       </div>
 
-      {!boardMode && (
-        <InfoPanel
-          selected={selected}
-          totalArea={totalArea}
-          totalPeri={totalPeri}
-          shapeCount={shapes.length}
-          tool={tool}
-          mergeFirst={!!mergeFirstId}
-        />
-      )}
-
+      {!boardMode && <ToolHint tool={tool} mergeFirst={!!mergeFirstId} />}
     </div>
   );
 }
@@ -1220,6 +1232,10 @@ function Toolbar(props: {
   measurementsCount: number;
   onClearGuides: () => void;
   guidesCount: number;
+  showPalette: boolean;
+  setShowPalette: (b: boolean) => void;
+  showScenarios: boolean;
+  setShowScenarios: (b: boolean) => void;
 }) {
   const btn = (active: boolean) =>
     `px-3 py-2.5 rounded-lg text-sm sm:text-base font-medium border transition min-h-[44px] ${
@@ -1306,6 +1322,24 @@ function Toolbar(props: {
         }`}
         title="전자칠판/프로젝터 모드 (큰 라벨, 사이드바 접기)"
       >📺 전자칠판</button>
+      <button
+        onClick={() => props.setShowPalette(!props.showPalette)}
+        className={`px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] ${
+          props.showPalette
+            ? "bg-slate-900 text-white border-slate-900"
+            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+        }`}
+        title="도형 추가 패널 열기/닫기"
+      >📐 도형 추가</button>
+      <button
+        onClick={() => props.setShowScenarios(!props.showScenarios)}
+        className={`px-3 py-2.5 text-sm sm:text-base font-medium rounded-lg border min-h-[44px] ${
+          props.showScenarios
+            ? "bg-slate-900 text-white border-slate-900"
+            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+        }`}
+        title="학습 예시 패널 열기/닫기"
+      >📚 학습 예시</button>
       {props.measurementsCount > 0 && (
         <button
           onClick={props.onClearMeasurements}
@@ -1636,6 +1670,80 @@ function FormulaBanner({ shape, boardMode }: { shape: Shape; boardMode: boolean 
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+function SelectedStrip({
+  shape,
+  boardMode,
+  onRotate,
+  onFlip,
+  onScale,
+}: {
+  shape: Shape;
+  boardMode: boolean;
+  onRotate: (deg: number) => void;
+  onFlip: (axis: "horizontal" | "vertical") => void;
+  onScale: (f: number) => void;
+}) {
+  const kind = useMemo(() => detectShapeKind(shape.points), [shape]);
+  const area = polygonArea(shape.points) / (GRID * GRID);
+  const peri = polygonPerimeter(shape.points) / GRID;
+  const txt = boardMode ? "text-base sm:text-lg" : "text-sm sm:text-base";
+  const big = boardMode ? "text-xl sm:text-2xl" : "text-base sm:text-lg";
+  const btn =
+    "px-2.5 py-1.5 text-xs sm:text-sm rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 min-h-[36px]";
+  return (
+    <div
+      className="flex flex-wrap items-center gap-2 sm:gap-3 rounded-2xl border-2 border-amber-300 bg-amber-50 px-3 py-2 shadow-sm"
+      style={{ borderLeftWidth: 10, borderLeftColor: shape.color }}
+    >
+      <div className={`font-bold text-amber-900 ${big}`}>📐 {kind.name}</div>
+      {kind.formula && (
+        <div className={`${txt} text-amber-900`}>
+          <span className="text-amber-700">공식</span>{" "}
+          <span className="font-bold bg-white px-2 py-0.5 rounded border border-amber-200">
+            {kind.formula}
+          </span>
+        </div>
+      )}
+      <div className={`${txt}`}>
+        <span className="text-slate-500">넓이</span>{" "}
+        <b className="text-slate-900">{fmtArea(area)}</b>
+      </div>
+      <div className={`${txt}`}>
+        <span className="text-slate-500">둘레</span>{" "}
+        <b className="text-slate-900">{fmtLen(peri)}</b>
+      </div>
+      <div className="ml-auto flex flex-wrap gap-1.5">
+        <button className={btn} onClick={() => onRotate(-90)} title="시계 반대 90°">↶90°</button>
+        <button className={btn} onClick={() => onRotate(90)} title="시계 90°">↷90°</button>
+        <button className={btn} onClick={() => onRotate(180)}>180°</button>
+        <button className={btn} onClick={() => onFlip("horizontal")} title="좌우 뒤집기">↔</button>
+        <button className={btn} onClick={() => onFlip("vertical")} title="위아래 뒤집기">↕</button>
+        <button className={btn} onClick={() => onScale(0.5)}>×½</button>
+        <button className={btn} onClick={() => onScale(2)}>×2</button>
+      </div>
+    </div>
+  );
+}
+
+function ToolHint({ tool, mergeFirst }: { tool: Tool; mergeFirst: boolean }) {
+  const tips: Record<Tool, string> = {
+    draw: "✏️ 캔버스를 클릭해 꼭짓점을 찍어요. 첫 점 다시 클릭하거나 ‘도형 완성’으로 마감.",
+    select: "🖱️ 도형을 눌러 선택. 안쪽 드래그=이동, 꼭짓점 드래그=변형, 초록 손잡이=회전.",
+    cut: "✂️ 드래그해서 도형을 자르세요. 가로/세로/대각선 모두 가능.",
+    merge: mergeFirst
+      ? "🔗 두 번째 도형을 누르세요. 한 변이 정확히 맞붙어야 합쳐져요."
+      : "🔗 합칠 첫 번째 도형을 누르세요.",
+    measure: "📏 두 점 드래그로 길이 재기. 1cm 눈금 표시. ‘측정선 지우기’로 초기화.",
+    guide: "📐 자르기 전 ‘여기서 자를까’ 점선 가이드를 미리 그어 보세요.",
+    delete: "🗑️ 지우고 싶은 도형을 누르세요.",
+  };
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs sm:text-sm text-slate-600">
+      {tips[tool]}
     </div>
   );
 }

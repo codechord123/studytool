@@ -31,14 +31,16 @@ import {
 
 type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide";
 
-// 1cm = 80px (이전 40px → 2배로 크게 보이도록)
+// 1cm = 80 world px. 카메라(scale)로 화면 크기를 자유 조절한다.
 const GRID = 80;
-const CANVAS_W = 1440; // 18cm — 폭을 줄여 한 칸(1cm)이 화면에서 더 크게 보이도록
-const CANVAS_H = 880; // 11cm — 세로가 부족하면 캔버스 패널 안에서 스크롤
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
 const HISTORY_LIMIT = 50;
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 5;
 
-// 길이/넓이를 전자칠판에서 보기 좋게 (정수 ≒ → 정수, 반정수 ≒ → x.5, 그 외 → 약 X)
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+// 길이/넓이 표기 (정수 ≒ → 정수, 반정수 ≒ → x.5, 그 외 → 약 X)
 function fmtLen(cm: number): string {
   const r = Math.round(cm);
   if (Math.abs(cm - r) < 0.05) return `${r}cm`;
@@ -53,19 +55,14 @@ function fmtArea(cm2: number): string {
   if (Math.abs(cm2 - h) < 0.05) return `${h}cm²`;
   return `약 ${r}cm²`;
 }
-function fmtLenNum(cm: number): string {
-  const r = Math.round(cm);
-  if (Math.abs(cm - r) < 0.05) return `${r}`;
-  const h = Math.round(cm * 2) / 2;
-  if (Math.abs(cm - h) < 0.05) return `${h}`;
-  return `~${r}`;
-}
 
+type Camera = { scale: number; tx: number; ty: number };
 type Measurement = { id: string; a: Point; b: Point };
 type Guide = { id: string; a: Point; b: Point };
 
 type DragMode =
   | { type: "none" }
+  | { type: "pan"; sx: number; sy: number; startCam: Camera; moved?: boolean; maybeDeselect?: boolean }
   | {
       type: "translate";
       shapeId: string;
@@ -221,6 +218,26 @@ const SCENARIO_GROUPS: ScenarioGroup[] = [
   },
 ];
 
+const TOOL_META: { id: Tool; icon: string; label: string }[] = [
+  { id: "select", icon: "🖱️", label: "선택·이동" },
+  { id: "draw", icon: "✏️", label: "그리기" },
+  { id: "cut", icon: "✂️", label: "자르기" },
+  { id: "merge", icon: "🔗", label: "합치기" },
+  { id: "measure", icon: "📏", label: "길이재기" },
+  { id: "guide", icon: "📐", label: "가이드" },
+  { id: "delete", icon: "🗑️", label: "삭제" },
+];
+
+const TOOL_HINT: Record<Tool, string> = {
+  select: "도형을 눌러 선택 · 안쪽 드래그=이동 · 꼭짓점=변형 · 초록손잡이=회전 · 빈 곳 드래그=화면 이동",
+  draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
+  cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
+  merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요.",
+  measure: "두 점을 드래그해 길이를 재요. 1cm 눈금이 표시돼요.",
+  guide: "자르기 전 ‘여기서 자를까?’ 점선 보조선을 미리 그어 보세요.",
+  delete: "지우고 싶은 도형을 누르세요.",
+};
+
 // =============================================================
 
 export default function PolygonCanvas() {
@@ -231,8 +248,7 @@ export default function PolygonCanvas() {
   const [future, setFuture] = useState<Shape[][]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
-  const [tool, setTool] = useState<Tool>("select");
-  // 격자 스냅 단위 (cm). 0 = 끄기
+  const [tool, setToolState] = useState<Tool>("select");
   const [snapStep, setSnapStep] = useState<0 | 0.2 | 0.5 | 1>(0.5);
   const [magnetic, setMagnetic] = useState(true);
   const [draft, setDraft] = useState<Point[]>([]);
@@ -241,28 +257,131 @@ export default function PolygonCanvas() {
   const [flash, setFlash] = useState<string | null>(null);
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [guides, setGuides] = useState<Guide[]>([]);
-  const [magnifierOn, setMagnifierOn] = useState(false);
-  const [magnifierPos, setMagnifierPos] = useState<Point | null>(null);
   const [boardMode, setBoardMode] = useState(false);
-  const [showPalette, setShowPalette] = useState(true);
-  const [showScenarios, setShowScenarios] = useState(false);
-  const dragRef = useRef<DragMode>({ type: "none" });
-  const colorIndexRef = useRef(0);
+  const [drawer, setDrawer] = useState<null | "shapes" | "scenarios">(null);
 
-  const [cssScale, setCssScale] = useState(1);
+  const [cam, setCamState] = useState<Camera>({ scale: 1, tx: 0, ty: 0 });
+  const camRef = useRef<Camera>({ scale: 1, tx: 0, ty: 0 });
+  const setCam = useCallback((c: Camera) => {
+    camRef.current = c;
+    setCamState(c);
+  }, []);
+
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  const sizeRef = useRef({ w: 0, h: 0 });
+
+  const dragRef = useRef<DragMode>({ type: "none" });
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<{ startDist: number; startCam: Camera; startMid: { x: number; y: number } } | null>(null);
+  const spaceRef = useRef(false);
+  const colorIndexRef = useRef(0);
+  const didInitRef = useRef(false);
+
+  const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
+
+  const setTool = useCallback((t: Tool) => {
+    setToolState(t);
+    setDraft([]);
+    setMergeFirstId(null);
+    dragRef.current = { type: "none" };
+  }, []);
+
+  // ----- 화면 크기 추적 -----
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth;
-      // 폭에 꽉 맞춰 한 칸(1cm)을 최대한 크게. 세로가 부족하면 캔버스 패널이 스크롤됨.
-      setCssScale(Math.min(1, w / CANVAS_W));
+      const h = el.clientHeight;
+      sizeRef.current = { w, h };
+      setSize({ w, h });
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
+  // ----- 카메라 헬퍼 -----
+  const toWorld = useCallback((sx: number, sy: number): Point => {
+    const c = camRef.current;
+    return { x: (sx - c.tx) / c.scale, y: (sy - c.ty) / c.scale };
+  }, []);
+
+  const gridSnap = useCallback(
+    (p: Point): Point => {
+      if (snapStep === 0) return p;
+      const step = snapStep * GRID;
+      return { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step };
+    },
+    [snapStep]
+  );
+
+  const zoomAt = useCallback(
+    (sx: number, sy: number, factor: number) => {
+      const c = camRef.current;
+      const ns = clamp(c.scale * factor, MIN_SCALE, MAX_SCALE);
+      const wx = (sx - c.tx) / c.scale;
+      const wy = (sy - c.ty) / c.scale;
+      setCam({ scale: ns, tx: sx - wx * ns, ty: sy - wy * ns });
+    },
+    [setCam]
+  );
+
+  const zoomCenter = useCallback(
+    (factor: number) => {
+      const { w, h } = sizeRef.current;
+      zoomAt(w / 2, h / 2, factor);
+    },
+    [zoomAt]
+  );
+
+  const fitView = useCallback(
+    (list?: Shape[]) => {
+      const { w, h } = sizeRef.current;
+      if (!w || !h) return;
+      const src = list ?? shapes;
+      let minX = 0,
+        minY = 0,
+        maxX = 16 * GRID,
+        maxY = 10 * GRID;
+      if (src.length) {
+        minX = Infinity;
+        minY = Infinity;
+        maxX = -Infinity;
+        maxY = -Infinity;
+        for (const s of src)
+          for (const p of s.points) {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+          }
+      }
+      const pad = 80;
+      const bw = Math.max(GRID, maxX - minX);
+      const bh = Math.max(GRID, maxY - minY);
+      const s = clamp(Math.min((w - pad * 2) / bw, (h - pad * 2) / bh), MIN_SCALE, MAX_SCALE);
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      setCam({ scale: s, tx: w / 2 - cx * s, ty: h / 2 - cy * s });
+    },
+    [shapes, setCam]
+  );
+
+  // 첫 렌더 시 기본 작업영역을 화면 중앙에 맞춤
+  useEffect(() => {
+    if (didInitRef.current) return;
+    if (size.w > 0 && size.h > 0) {
+      didInitRef.current = true;
+      fitView([]);
+    }
+  }, [size, fitView]);
+
+  // 현재 화면 중앙의 월드 좌표 (도형 생성 위치)
+  const viewCenterWorld = useCallback((): Point => {
+    const { w, h } = sizeRef.current;
+    const p = toWorld(w / 2, h / 2);
+    return { x: Math.round(p.x / GRID) * GRID, y: Math.round(p.y / GRID) * GRID };
+  }, [toWorld]);
 
   useEffect(() => {
     if (!flash) return;
@@ -270,6 +389,7 @@ export default function PolygonCanvas() {
     return () => clearTimeout(t);
   }, [flash]);
 
+  // ----- 히스토리 -----
   const commitHistory = useCallback(() => {
     setPast((p) => {
       const next = [...p, cloneShapes(shapes)];
@@ -299,56 +419,50 @@ export default function PolygonCanvas() {
     setSelectedId((id) => (next.find((s) => s.id === id) ? id : null));
   }, [future, shapes]);
 
-  const getPt = (e: React.PointerEvent): Point => {
-    const c = canvasRef.current!;
-    const rect = c.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * CANVAS_W;
-    const y = ((e.clientY - rect.top) / rect.height) * CANVAS_H;
-    return gridSnap({ x, y });
-  };
-  const gridSnap = (p: Point): Point => {
-    if (snapStep === 0) return p;
-    const step = snapStep * GRID;
-    return { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step };
-  };
-  // 임의의 점을 가장 가까운 폴리곤 꼭짓점에 “자석” 스냅 (toler 이내일 때)
-  const vertexSnap = (p: Point, excludeShapeId?: string, tol = 16): Point => {
-    if (!magnetic) return p;
-    let bestD = tol;
-    let best: Point | null = null;
-    for (const s of shapes) {
-      if (excludeShapeId && s.id === excludeShapeId) continue;
-      for (const v of s.points) {
-        const d = Math.hypot(p.x - v.x, p.y - v.y);
-        if (d < bestD) {
-          bestD = d;
-          best = v;
-        }
-      }
-    }
-    return best ?? p;
-  };
-  // 도형 전체를 평행이동할 때, 가장 가까운 (자기 꼭짓점 ↔ 다른 도형 꼭짓점) 쌍을 찾아 보정
-  const magnetTranslate = (pts: Point[], excludeShapeId: string, tol = 16): { dx: number; dy: number } => {
-    if (!magnetic) return { dx: 0, dy: 0 };
-    let bestD = tol;
-    let best: { dx: number; dy: number } = { dx: 0, dy: 0 };
-    let found = false;
-    for (const v of pts) {
+  // ----- 자석 스냅 -----
+  const vertexSnap = useCallback(
+    (p: Point, excludeShapeId: string | undefined, tol: number): Point => {
+      if (!magnetic) return p;
+      let bestD = tol;
+      let best: Point | null = null;
       for (const s of shapes) {
-        if (s.id === excludeShapeId) continue;
-        for (const ov of s.points) {
-          const d = Math.hypot(v.x - ov.x, v.y - ov.y);
+        if (excludeShapeId && s.id === excludeShapeId) continue;
+        for (const v of s.points) {
+          const d = Math.hypot(p.x - v.x, p.y - v.y);
           if (d < bestD) {
             bestD = d;
-            best = { dx: ov.x - v.x, dy: ov.y - v.y };
-            found = true;
+            best = v;
           }
         }
       }
-    }
-    return found ? best : { dx: 0, dy: 0 };
-  };
+      return best ?? p;
+    },
+    [magnetic, shapes]
+  );
+
+  const magnetTranslate = useCallback(
+    (pts: Point[], excludeShapeId: string, tol: number): { dx: number; dy: number } => {
+      if (!magnetic) return { dx: 0, dy: 0 };
+      let bestD = tol;
+      let best = { dx: 0, dy: 0 };
+      let found = false;
+      for (const v of pts) {
+        for (const s of shapes) {
+          if (s.id === excludeShapeId) continue;
+          for (const ov of s.points) {
+            const d = Math.hypot(v.x - ov.x, v.y - ov.y);
+            if (d < bestD) {
+              bestD = d;
+              best = { dx: ov.x - v.x, dy: ov.y - v.y };
+              found = true;
+            }
+          }
+        }
+      }
+      return found ? best : { dx: 0, dy: 0 };
+    },
+    [magnetic, shapes]
+  );
 
   function nextColor() {
     const c = COLORS[colorIndexRef.current % COLORS.length];
@@ -363,21 +477,64 @@ export default function PolygonCanvas() {
     return null;
   }
 
-  function rotationHandle(s: Shape): Point {
+  function rotationHandle(s: Shape, k: number): Point {
     const c = polygonCentroid(s.points);
     const minY = Math.min(...s.points.map((q) => q.y));
-    return { x: c.x, y: minY - 40 };
+    return { x: c.x, y: minY - 40 * k };
   }
 
-  function handleCanvasPointerDown(e: React.PointerEvent) {
+  // ----- 포인터 입력 -----
+  function localXY(e: React.PointerEvent) {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return { sx: e.clientX - rect.left, sy: e.clientY - rect.top };
+  }
+
+  function doPinch() {
+    const pts = [...pointersRef.current.values()];
+    if (pts.length < 2) return;
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const a = { x: pts[0].x - rect.left, y: pts[0].y - rect.top };
+    const b = { x: pts[1].x - rect.left, y: pts[1].y - rect.top };
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    if (!pinchRef.current) {
+      pinchRef.current = { startDist: dist, startCam: { ...camRef.current }, startMid: mid };
+      return;
+    }
+    const pr = pinchRef.current;
+    const f = dist / (pr.startDist || 1);
+    const ns = clamp(pr.startCam.scale * f, MIN_SCALE, MAX_SCALE);
+    const wx = (pr.startMid.x - pr.startCam.tx) / pr.startCam.scale;
+    const wy = (pr.startMid.y - pr.startCam.ty) / pr.startCam.scale;
+    setCam({ scale: ns, tx: mid.x - wx * ns, ty: mid.y - wy * ns });
+  }
+
+  function handlePointerDown(e: React.PointerEvent) {
+    const c = canvasRef.current!;
+    c.setPointerCapture?.(e.pointerId);
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      pinchRef.current = null;
+      dragRef.current = { type: "none" };
+      return;
+    }
+
+    const { sx, sy } = localXY(e);
+    const k = 1 / camRef.current.scale;
+    const raw = toWorld(sx, sy);
+    const p = gridSnap(raw);
+
+    // 화면 이동(팬): 스페이스, 가운데 버튼
+    if (spaceRef.current || e.button === 1) {
+      dragRef.current = { type: "pan", sx, sy, startCam: { ...camRef.current } };
+      return;
+    }
     if (e.button !== 0 && e.pointerType === "mouse") return;
-    const p = getPt(e);
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
 
     if (tool === "draw") {
       if (draft.length >= 3) {
         const first = draft[0];
-        if (Math.hypot(p.x - first.x, p.y - first.y) < 14) {
+        if (Math.hypot(p.x - first.x, p.y - first.y) < 14 * k) {
           finishDraft();
           return;
         }
@@ -387,7 +544,7 @@ export default function PolygonCanvas() {
     }
 
     if (tool === "delete") {
-      const target = topShapeAt(p);
+      const target = topShapeAt(raw);
       if (target) {
         commitHistory();
         setShapes((all) => all.filter((s) => s.id !== target.id));
@@ -397,26 +554,23 @@ export default function PolygonCanvas() {
     }
 
     if (tool === "cut") {
-      // 자르기 시작점도 가장 가까운 꼭짓점에 자석 스냅 (모서리끼리 자르기 지원)
-      const startPt = vertexSnap(p, undefined, 16);
+      const startPt = vertexSnap(p, undefined, 16 * k);
       dragRef.current = { type: "cut", start: startPt, current: startPt };
       return;
     }
-
     if (tool === "measure") {
-      const startPt = vertexSnap(p, undefined, 16);
+      const startPt = vertexSnap(p, undefined, 16 * k);
       dragRef.current = { type: "measure", start: startPt, current: startPt };
       return;
     }
-
     if (tool === "guide") {
-      const startPt = vertexSnap(p, undefined, 16);
+      const startPt = vertexSnap(p, undefined, 16 * k);
       dragRef.current = { type: "guide", start: startPt, current: startPt };
       return;
     }
 
     if (tool === "merge") {
-      const hit = topShapeAt(p);
+      const hit = topShapeAt(raw);
       if (!hit) {
         setMergeFirstId(null);
         return;
@@ -443,66 +597,78 @@ export default function PolygonCanvas() {
       return;
     }
 
-    if (tool === "select") {
-      if (selected) {
-        const handle = rotationHandle(selected);
-        if (Math.hypot(p.x - handle.x, p.y - handle.y) < 16) {
-          commitHistory();
-          const center = polygonCentroid(selected.points);
-          dragRef.current = {
-            type: "rotate",
-            shapeId: selected.id,
-            center,
-            startAngle: Math.atan2(p.y - center.y, p.x - center.x),
-            startPoints: selected.points.map((q) => ({ ...q })),
-            startGhosts: selected.ghosts?.map((g) => g.map((q) => ({ ...q }))),
-          };
-          return;
-        }
-        const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 14);
-        if (vi !== -1) {
-          commitHistory();
-          dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi };
-          return;
-        }
-      }
-      const hit = topShapeAt(p);
-      if (hit) {
-        setSelectedId(hit.id);
+    // select
+    if (selected) {
+      const handle = rotationHandle(selected, k);
+      if (Math.hypot(p.x - handle.x, p.y - handle.y) < 16 * k) {
         commitHistory();
+        const center = polygonCentroid(selected.points);
         dragRef.current = {
-          type: "translate",
-          shapeId: hit.id,
-          startPointer: p,
-          startPoints: hit.points.map((q) => ({ ...q })),
-          startGhosts: hit.ghosts?.map((g) => g.map((q) => ({ ...q }))),
+          type: "rotate",
+          shapeId: selected.id,
+          center,
+          startAngle: Math.atan2(p.y - center.y, p.x - center.x),
+          startPoints: selected.points.map((q) => ({ ...q })),
+          startGhosts: selected.ghosts?.map((g) => g.map((q) => ({ ...q }))),
         };
-      } else {
-        setSelectedId(null);
+        return;
       }
+      const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 14 * k);
+      if (vi !== -1) {
+        commitHistory();
+        dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi };
+        return;
+      }
+    }
+    const hit = topShapeAt(raw);
+    if (hit) {
+      setSelectedId(hit.id);
+      commitHistory();
+      dragRef.current = {
+        type: "translate",
+        shapeId: hit.id,
+        startPointer: p,
+        startPoints: hit.points.map((q) => ({ ...q })),
+        startGhosts: hit.ghosts?.map((g) => g.map((q) => ({ ...q }))),
+      };
+    } else {
+      // 빈 곳 → 화면 이동(팬). 움직이지 않으면 선택 해제.
+      dragRef.current = { type: "pan", sx, sy, startCam: { ...camRef.current }, maybeDeselect: true };
     }
   }
 
-  function handleCanvasPointerMove(e: React.PointerEvent) {
-    const p = getPt(e);
+  function handlePointerMove(e: React.PointerEvent) {
+    if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      doPinch();
+      return;
+    }
+    const { sx, sy } = localXY(e);
+    const raw = toWorld(sx, sy);
+    const p = gridSnap(raw);
     setHoverPt(p);
-    if (magnifierOn) setMagnifierPos(p);
     const dm = dragRef.current;
     if (dm.type === "none") return;
+
+    if (dm.type === "pan") {
+      const dx = sx - dm.sx;
+      const dy = sy - dm.sy;
+      if (Math.hypot(dx, dy) > 3) dm.moved = true;
+      setCam({ scale: dm.startCam.scale, tx: dm.startCam.tx + dx, ty: dm.startCam.ty + dy });
+      return;
+    }
+
+    const k = 1 / camRef.current.scale;
     if (dm.type === "cut") {
-      // 자르기 끝점도 꼭짓점에 자석 스냅
-      const cur = vertexSnap(p, undefined, 16);
-      dragRef.current = { ...dm, current: cur };
+      dragRef.current = { ...dm, current: vertexSnap(p, undefined, 16 * k) };
       return;
     }
     if (dm.type === "measure") {
-      const cur = vertexSnap(p, undefined, 16);
-      dragRef.current = { ...dm, current: cur };
+      dragRef.current = { ...dm, current: vertexSnap(p, undefined, 16 * k) };
       return;
     }
     if (dm.type === "guide") {
-      const cur = vertexSnap(p, undefined, 16);
-      dragRef.current = { ...dm, current: cur };
+      dragRef.current = { ...dm, current: vertexSnap(p, undefined, 16 * k) };
       return;
     }
     setShapes((all) =>
@@ -512,8 +678,7 @@ export default function PolygonCanvas() {
           const dx0 = p.x - dm.startPointer.x;
           const dy0 = p.y - dm.startPointer.y;
           const moved = dm.startPoints.map((q) => ({ x: q.x + dx0, y: q.y + dy0 }));
-          // 자석 보정 — 가장 가까운 꼭짓점 쌍이 정확히 만나도록
-          const { dx: mdx, dy: mdy } = magnetTranslate(moved, dm.shapeId, 16);
+          const { dx: mdx, dy: mdy } = magnetTranslate(moved, dm.shapeId, 16 * k);
           const finalPts = moved.map((q) => ({ x: q.x + mdx, y: q.y + mdy }));
           const finalGhosts = dm.startGhosts?.map((g) =>
             g.map((q) => ({ x: q.x + dx0 + mdx, y: q.y + dy0 + mdy }))
@@ -521,8 +686,7 @@ export default function PolygonCanvas() {
           return { ...s, points: finalPts, ghosts: finalGhosts };
         }
         if (dm.type === "vertex") {
-          // 꼭짓점 드래그도 다른 도형 꼭짓점에 자석 스냅
-          const snapped = vertexSnap(p, dm.shapeId, 14);
+          const snapped = vertexSnap(p, dm.shapeId, 14 * k);
           return {
             ...s,
             points: s.points.map((q, i) => (i === dm.vertexIndex ? snapped : q)),
@@ -542,27 +706,28 @@ export default function PolygonCanvas() {
     );
   }
 
-  function handleCanvasPointerUp(e: React.PointerEvent) {
+  function handlePointerUp(e: React.PointerEvent) {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
     const dm = dragRef.current;
-    if (dm.type === "cut") {
-      const raw = getPt(e);
-      const b = vertexSnap(raw, undefined, 16);
+    const k = 1 / camRef.current.scale;
+    if (dm.type === "pan") {
+      if (dm.maybeDeselect && !dm.moved) setSelectedId(null);
+    } else if (dm.type === "cut") {
+      const { sx, sy } = localXY(e);
+      const b = vertexSnap(gridSnap(toWorld(sx, sy)), undefined, 16 * k);
       const a = dm.start;
-      if (Math.hypot(a.x - b.x, a.y - b.y) > 4) applyCut(a, b);
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 4 * k) applyCut(a, b);
     } else if (dm.type === "measure") {
-      const raw = getPt(e);
-      const b = vertexSnap(raw, undefined, 16);
+      const { sx, sy } = localXY(e);
+      const b = vertexSnap(gridSnap(toWorld(sx, sy)), undefined, 16 * k);
       const a = dm.start;
-      if (Math.hypot(a.x - b.x, a.y - b.y) > 8) {
-        setMeasurements((m) => [...m, { id: uid(), a, b }]);
-      }
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 8 * k) setMeasurements((m) => [...m, { id: uid(), a, b }]);
     } else if (dm.type === "guide") {
-      const raw = getPt(e);
-      const b = vertexSnap(raw, undefined, 16);
+      const { sx, sy } = localXY(e);
+      const b = vertexSnap(gridSnap(toWorld(sx, sy)), undefined, 16 * k);
       const a = dm.start;
-      if (Math.hypot(a.x - b.x, a.y - b.y) > 8) {
-        setGuides((g) => [...g, { id: uid(), a, b }]);
-      }
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 8 * k) setGuides((g) => [...g, { id: uid(), a, b }]);
     }
     dragRef.current = { type: "none" };
   }
@@ -599,9 +764,30 @@ export default function PolygonCanvas() {
     }
   }
 
+  // ----- 휠 줌 (비-passive 네이티브 리스너) -----
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = c.getBoundingClientRect();
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
+    };
+    c.addEventListener("wheel", onWheel, { passive: false });
+    return () => c.removeEventListener("wheel", onWheel);
+  }, [zoomAt]);
+
+  // ----- 키보드 -----
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
       const meta = e.ctrlKey || e.metaKey;
+      if (e.code === "Space") {
+        spaceRef.current = true;
+        return;
+      }
       if (meta && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -612,9 +798,12 @@ export default function PolygonCanvas() {
         redo();
         return;
       }
-      if (e.key === "Escape") {
+      if (e.key === "+" || e.key === "=") zoomCenter(1.2);
+      else if (e.key === "-" || e.key === "_") zoomCenter(1 / 1.2);
+      else if (e.key === "Escape") {
         setDraft([]);
         setMergeFirstId(null);
+        setDrawer(null);
         dragRef.current = { type: "none" };
       } else if (e.key === "Enter" && tool === "draw" && draft.length >= 3) {
         finishDraft();
@@ -624,10 +813,17 @@ export default function PolygonCanvas() {
         setSelectedId(null);
       }
     }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code === "Space") spaceRef.current = false;
+    }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, draft.length, selectedId, undo, redo, commitHistory]);
+  }, [tool, draft.length, selectedId, undo, redo, commitHistory, zoomCenter]);
 
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
     if (!selected) return;
@@ -636,20 +832,35 @@ export default function PolygonCanvas() {
       all.map((s) => {
         if (s.id !== selected.id) return s;
         const c = polygonCentroid(s.points);
-        return {
-          ...s,
-          points: fn(s.points, c),
-          ghosts: s.ghosts?.map((g) => fn(g, c)),
-        };
+        return { ...s, points: fn(s.points, c), ghosts: s.ghosts?.map((g) => fn(g, c)) };
       })
     );
   }
 
-  function addPreset(p: Preset) {
+  function duplicateSelected() {
+    if (!selected) return;
     commitHistory();
-    const cx = Math.round(CANVAS_W / 2 / GRID) * GRID;
-    const cy = Math.round(CANVAS_H / 2 / GRID) * GRID;
-    const s: Shape = { id: uid(), color: nextColor(), points: placeAtCenter(p.build(), cx, cy) };
+    const copy: Shape = {
+      id: uid(),
+      color: nextColor(),
+      points: translatePoints(selected.points, GRID, GRID),
+      ghosts: selected.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
+    };
+    setShapes((all) => [...all, copy]);
+    setSelectedId(copy.id);
+  }
+
+  function deleteSelected() {
+    if (!selected) return;
+    commitHistory();
+    setShapes((all) => all.filter((s) => s.id !== selected.id));
+    setSelectedId(null);
+  }
+
+  function addPreset(pr: Preset) {
+    commitHistory();
+    const { x: cx, y: cy } = viewCenterWorld();
+    const s: Shape = { id: uid(), color: nextColor(), points: placeAtCenter(pr.build(), cx, cy) };
     setShapes((all) => [...all, s]);
     setSelectedId(s.id);
     setTool("select");
@@ -657,14 +868,16 @@ export default function PolygonCanvas() {
 
   function loadScenario(sc: Scenario) {
     commitHistory();
-    const cx = Math.round(CANVAS_W / 2 / GRID) * GRID;
-    const cy = Math.round(CANVAS_H / 2 / GRID) * GRID;
-    setShapes(sc.build(cx, cy));
+    const { x: cx, y: cy } = viewCenterWorld();
+    const built = sc.build(cx, cy);
+    setShapes(built);
     setSelectedId(null);
     setMergeFirstId(null);
     setDraft([]);
     setTool("select");
     setScenarioHint(sc.hint);
+    setDrawer(null);
+    requestAnimationFrame(() => fitView(built));
   }
 
   function clearAll() {
@@ -678,61 +891,80 @@ export default function PolygonCanvas() {
     setGuides([]);
   }
 
-
-  // ----- 캔버스 렌더링 (DPR + cssScale 보정) -----
+  // ----- 캔버스 렌더링 -----
   useEffect(() => {
-    const c = canvasRef.current!;
+    const c = canvasRef.current;
+    if (!c) return;
+    const { w: cw, h: ch } = sizeRef.current;
+    if (!cw || !ch) return;
     const dpr = (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1;
-    const needW = Math.round(CANVAS_W * dpr);
-    const needH = Math.round(CANVAS_H * dpr);
+    const needW = Math.round(cw * dpr);
+    const needH = Math.round(ch * dpr);
     if (c.width !== needW) c.width = needW;
     if (c.height !== needH) c.height = needH;
     const ctx = c.getContext("2d")!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+    const camera = camRef.current;
+    const k = 1 / camera.scale;
 
-    // 화면상 실제 픽셀로 보이는 크기를 일정하게 유지하기 위한 가독성 보정 계수
-    const k = 1 / Math.max(0.45, cssScale);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.fillStyle = "#fbfcfe";
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.setTransform(dpr * camera.scale, 0, 0, dpr * camera.scale, dpr * camera.tx, dpr * camera.ty);
 
-    // ── 모눈종이 배경 ──
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-    ctx.strokeStyle = "#cbd5e1";
+    // 보이는 월드 범위
+    const x0 = (0 - camera.tx) / camera.scale;
+    const x1 = (cw - camera.tx) / camera.scale;
+    const y0 = (0 - camera.ty) / camera.scale;
+    const y1 = (ch - camera.ty) / camera.scale;
+    const gx0 = Math.floor(x0 / GRID) * GRID;
+    const gy0 = Math.floor(y0 / GRID) * GRID;
+
+    // 모눈 (얇은 선)
+    ctx.strokeStyle = "#e6ebf2";
     ctx.lineWidth = 1 * k;
-    for (let x = 0; x <= CANVAS_W; x += GRID) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, CANVAS_H);
-      ctx.stroke();
+    ctx.beginPath();
+    for (let x = gx0; x <= x1; x += GRID) {
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
     }
-    for (let y = 0; y <= CANVAS_H; y += GRID) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(CANVAS_W, y);
-      ctx.stroke();
+    for (let y = gy0; y <= y1; y += GRID) {
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
     }
-    ctx.strokeStyle = "#64748b";
+    ctx.stroke();
+    // 5cm 굵은 선
+    ctx.strokeStyle = "#cdd7e5";
+    ctx.lineWidth = 1.5 * k;
+    ctx.beginPath();
+    const bx0 = Math.floor(x0 / (GRID * 5)) * GRID * 5;
+    const by0 = Math.floor(y0 / (GRID * 5)) * GRID * 5;
+    for (let x = bx0; x <= x1; x += GRID * 5) {
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
+    }
+    for (let y = by0; y <= y1; y += GRID * 5) {
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+    }
+    ctx.stroke();
+    // 원점 축 강조
+    ctx.strokeStyle = "#bcd0ea";
     ctx.lineWidth = 2 * k;
-    for (let x = 0; x <= CANVAS_W; x += GRID * 5) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, CANVAS_H);
-      ctx.stroke();
+    ctx.beginPath();
+    if (0 >= x0 && 0 <= x1) {
+      ctx.moveTo(0, y0);
+      ctx.lineTo(0, y1);
     }
-    for (let y = 0; y <= CANVAS_H; y += GRID * 5) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(CANVAS_W, y);
-      ctx.stroke();
+    if (0 >= y0 && 0 <= y1) {
+      ctx.moveTo(x0, 0);
+      ctx.lineTo(x1, 0);
     }
-    ctx.fillStyle = "#475569";
-    const gridFont = boardMode ? 18 : 14;
-    ctx.font = `bold ${gridFont * k}px sans-serif`;
-    for (let x = GRID * 5; x < CANVAS_W; x += GRID * 5) ctx.fillText(`${x / GRID}`, x + 3 * k, gridFont * k + 2 * k);
-    for (let y = GRID * 5; y < CANVAS_H; y += GRID * 5) ctx.fillText(`${y / GRID}`, 3 * k, y + gridFont * k);
+    ctx.stroke();
 
     for (const s of shapes) drawShape(ctx, s, s.id === selectedId, s.id === mergeFirstId, k);
 
+    // 그리는 중 도형
     if (draft.length > 0) {
       ctx.strokeStyle = "#0ea5e9";
       ctx.lineWidth = 2.5 * k;
@@ -756,6 +988,7 @@ export default function PolygonCanvas() {
       }
     }
 
+    // 자르기 미리보기
     const dm = dragRef.current;
     if (tool === "cut" && dm.type === "cut") {
       const a = dm.start;
@@ -763,8 +996,8 @@ export default function PolygonCanvas() {
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const len = Math.hypot(dx, dy) || 1;
-      const ex = (dx / len) * 2000;
-      const ey = (dy / len) * 2000;
+      const ex = (dx / len) * 4000;
+      const ey = (dy / len) * 4000;
       ctx.save();
       ctx.setLineDash([8 * k, 6 * k]);
       ctx.strokeStyle = "#ef4444";
@@ -781,15 +1014,14 @@ export default function PolygonCanvas() {
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
       ctx.fillStyle = "#dc2626";
-      ctx.beginPath();
-      ctx.arc(a.x, a.y, 6 * k, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, 6 * k, 0, Math.PI * 2);
-      ctx.fill();
+      [a, b].forEach((q) => {
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, 6 * k, 0, Math.PI * 2);
+        ctx.fill();
+      });
     }
 
-    // 측정선 (저장된 + 그리는 중)
+    // 측정선
     const drawRuler = (a: Point, b: Point, color: string) => {
       const dist = Math.hypot(b.x - a.x, b.y - a.y) / GRID;
       ctx.strokeStyle = color;
@@ -798,22 +1030,19 @@ export default function PolygonCanvas() {
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
-      // 양 끝 작은 직각 tick
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const L = Math.hypot(dx, dy) || 1;
       const tx = -dy / L;
       const ty = dx / L;
       const t = 9 * k;
-      [a, b].forEach((p) => {
+      [a, b].forEach((q) => {
         ctx.beginPath();
-        ctx.moveTo(p.x - tx * t, p.y - ty * t);
-        ctx.lineTo(p.x + tx * t, p.y + ty * t);
+        ctx.moveTo(q.x - tx * t, q.y - ty * t);
+        ctx.lineTo(q.x + tx * t, q.y + ty * t);
         ctx.stroke();
       });
-      // 1cm 마다 작은 눈금
-      const cm = L / GRID;
-      const steps = Math.floor(cm);
+      const steps = Math.floor(L / GRID);
       ctx.lineWidth = 1.5 * k;
       for (let i = 1; i <= steps; i++) {
         const r = (i * GRID) / L;
@@ -825,11 +1054,10 @@ export default function PolygonCanvas() {
         ctx.lineTo(px + tx * small, py + ty * small);
         ctx.stroke();
       }
-      // 라벨
       const mx = (a.x + b.x) / 2 + tx * 22 * k;
       const my = (a.y + b.y) / 2 + ty * 22 * k;
       const text = fmtLen(dist);
-      const f = boardMode ? 24 : 20;
+      const f = boardMode ? 22 : 18;
       ctx.font = `bold ${f * k}px sans-serif`;
       const tw = ctx.measureText(text).width;
       const padH = 8 * k;
@@ -849,13 +1077,12 @@ export default function PolygonCanvas() {
     for (const m of measurements) drawRuler(m.a, m.b, "#7c3aed");
     if (tool === "measure" && dm.type === "measure") drawRuler(dm.start, dm.current, "#a855f7");
 
-    // 가이드 직선 (자르기/생각하기 보조선)
-    const drawGuide = (a: Point, b: Point, color: string, dashed: boolean) => {
+    // 가이드선
+    const drawGuide = (a: Point, b: Point, color: string) => {
       ctx.save();
-      if (dashed) ctx.setLineDash([12 * k, 8 * k]);
+      ctx.setLineDash([12 * k, 8 * k]);
       ctx.strokeStyle = color;
       ctx.lineWidth = 3 * k;
-      // 양 끝을 살짝 확장한 직선
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const L = Math.hypot(dx, dy) || 1;
@@ -866,66 +1093,31 @@ export default function PolygonCanvas() {
       ctx.lineTo(b.x + ex, b.y + ey);
       ctx.stroke();
       ctx.restore();
-      // 양 끝 동그라미
       ctx.fillStyle = color;
-      [a, b].forEach((p) => {
+      [a, b].forEach((q) => {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 5 * k, 0, Math.PI * 2);
+        ctx.arc(q.x, q.y, 5 * k, 0, Math.PI * 2);
         ctx.fill();
       });
     };
-    for (const g of guides) drawGuide(g.a, g.b, "#0f172a", true);
-    if (tool === "guide" && dm.type === "guide") drawGuide(dm.start, dm.current, "#475569", true);
+    for (const g of guides) drawGuide(g.a, g.b, "#0f172a");
+    if (tool === "guide" && dm.type === "guide") drawGuide(dm.start, dm.current, "#475569");
 
-    // 돋보기 — 클립+확대로 다시 한 번 일부 영역을 그려 보여 줌
-    if (magnifierOn && magnifierPos) {
-      const r = 110;
-      const zoom = 2;
-      const mx = magnifierPos.x;
-      const my = magnifierPos.y;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(mx, my, r, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.fillStyle = "#ffffff";
-      ctx.fill();
-      ctx.clip();
-      // 확대된 좌표계 설정: 돋보기 중심을 기준으로 zoom
-      ctx.translate(mx, my);
-      ctx.scale(zoom, zoom);
-      ctx.translate(-mx, -my);
-      // 모눈 + 도형 다시 그리기 (간소화)
-      ctx.strokeStyle = "#cbd5e1";
-      ctx.lineWidth = 1 * k;
-      const startGx = Math.floor((mx - r) / GRID) * GRID;
-      const endGx = Math.ceil((mx + r) / GRID) * GRID;
-      const startGy = Math.floor((my - r) / GRID) * GRID;
-      const endGy = Math.ceil((my + r) / GRID) * GRID;
-      for (let x = startGx; x <= endGx; x += GRID) {
-        ctx.beginPath();
-        ctx.moveTo(x, startGy);
-        ctx.lineTo(x, endGy);
-        ctx.stroke();
-      }
-      for (let y = startGy; y <= endGy; y += GRID) {
-        ctx.beginPath();
-        ctx.moveTo(startGx, y);
-        ctx.lineTo(endGx, y);
-        ctx.stroke();
-      }
-      for (const s of shapes) drawShape(ctx, s, s.id === selectedId, s.id === mergeFirstId, k);
-      ctx.restore();
-      // 돋보기 테두리
-      ctx.strokeStyle = "#0f172a";
-      ctx.lineWidth = 4 * k;
-      ctx.beginPath();
-      ctx.arc(mx, my, r, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = "#0f172a";
-      ctx.font = `bold ${14 * k}px sans-serif`;
-      ctx.fillText("🔍 ×2", mx - 24 * k, my - r - 8 * k);
+    // 모눈 눈금 숫자 (화면 가장자리에 고정 = 자 느낌)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = `bold ${boardMode ? 14 : 12}px sans-serif`;
+    ctx.textBaseline = "top";
+    for (let x = bx0; x <= x1; x += GRID * 5) {
+      const sx = x * camera.scale + camera.tx;
+      if (sx >= 16 && sx <= cw - 4) ctx.fillText(`${Math.round(x / GRID)}`, sx + 3, 3);
     }
-  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cssScale, measurements, guides, magnifierOn, magnifierPos, boardMode]);
+    ctx.textBaseline = "alphabetic";
+    for (let y = by0; y <= y1; y += GRID * 5) {
+      const sy = y * camera.scale + camera.ty;
+      if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
+    }
+  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cam, size, measurements, guides, boardMode]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -935,8 +1127,6 @@ export default function PolygonCanvas() {
     k: number
   ) {
     if (s.points.length < 2) return;
-
-    // 1) 채우기
     ctx.beginPath();
     ctx.moveTo(s.points[0].x, s.points[0].y);
     for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
@@ -944,7 +1134,6 @@ export default function PolygonCanvas() {
     ctx.fillStyle = isMergeFirst ? "#f59e0b55" : s.color + "55";
     ctx.fill();
 
-    // 2) 합쳐진 자국 (희미한 점선)
     if (s.ghosts && s.ghosts.length > 1) {
       ctx.save();
       ctx.setLineDash([7 * k, 5 * k]);
@@ -961,7 +1150,6 @@ export default function PolygonCanvas() {
       ctx.restore();
     }
 
-    // 3) 외곽선
     ctx.beginPath();
     ctx.moveTo(s.points[0].x, s.points[0].y);
     for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
@@ -970,8 +1158,8 @@ export default function PolygonCanvas() {
     ctx.lineWidth = (isMergeFirst || isSelected ? 3.5 : 2.5) * k;
     ctx.stroke();
 
-    // 4) 변 길이 라벨 (변 바깥쪽으로 약간 밀어 표시)
-    const baseFont = boardMode ? 22 : 18;
+    // 변 길이 라벨
+    const baseFont = boardMode ? 20 : 16;
     ctx.font = `bold ${baseFont * k}px sans-serif`;
     const cx0 = polygonCentroid(s.points);
     for (let i = 0; i < s.points.length; i++) {
@@ -979,17 +1167,14 @@ export default function PolygonCanvas() {
       const b = s.points[(i + 1) % s.points.length];
       const mx = (a.x + b.x) / 2;
       const my = (a.y + b.y) / 2;
-      // 변에 수직, 도형 바깥 방향 단위벡터
       const ex = b.x - a.x;
       const ey = b.y - a.y;
       const L = Math.hypot(ex, ey) || 1;
-      // 두 가지 후보 중 무게중심 반대 방향(외부) 선택
       const nA = { x: -ey / L, y: ex / L };
       const nB = { x: ey / L, y: -ex / L };
       const toCx = { x: cx0.x - mx, y: cx0.y - my };
-      const dotA = nA.x * toCx.x + nA.y * toCx.y;
-      const out = dotA > 0 ? nB : nA; // 무게중심 반대편
-      const off = 18 * k; // 변 밖으로 띄우기
+      const out = nA.x * toCx.x + nA.y * toCx.y > 0 ? nB : nA;
+      const off = 18 * k;
       const tx0 = mx + out.x * off;
       const ty0 = my + out.y * off;
       const len = Math.hypot(b.x - a.x, b.y - a.y) / GRID;
@@ -1001,10 +1186,8 @@ export default function PolygonCanvas() {
       ctx.fillStyle = "rgba(255,255,255,0.96)";
       ctx.strokeStyle = s.color;
       ctx.lineWidth = 1.5 * k;
-      const boxX = tx0 - tw / 2 - padH;
-      const boxY = ty0 - boxH / 2;
-      ctx.fillRect(boxX, boxY, tw + padH * 2, boxH);
-      ctx.strokeRect(boxX, boxY, tw + padH * 2, boxH);
+      ctx.fillRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
+      ctx.strokeRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
       ctx.fillStyle = "#0f172a";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -1013,7 +1196,6 @@ export default function PolygonCanvas() {
     ctx.textAlign = "start";
     ctx.textBaseline = "alphabetic";
 
-    // 5) 꼭짓점
     for (const v of s.points) {
       ctx.fillStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : s.color;
       ctx.beginPath();
@@ -1021,12 +1203,9 @@ export default function PolygonCanvas() {
       ctx.fill();
     }
 
-    // 6) 도형 번호 작게 (상단 요약 바와 매칭) — 무게중심 부근에 작은 색 원
-    const c = polygonCentroid(s.points);
-
-    // 7) 회전 핸들 (점선 leader 선)
     if (isSelected) {
-      const h = rotationHandle(s);
+      const c = polygonCentroid(s.points);
+      const h = rotationHandle(s, k);
       ctx.save();
       ctx.setLineDash([8 * k, 6 * k]);
       ctx.strokeStyle = "#0f172a";
@@ -1061,328 +1240,290 @@ export default function PolygonCanvas() {
     [shapes]
   );
 
+  const cursorClass =
+    spaceRef.current
+      ? "cursor-grab"
+      : tool === "draw" || tool === "cut" || tool === "measure" || tool === "guide"
+      ? "cursor-crosshair"
+      : tool === "delete"
+      ? "cursor-pointer"
+      : "cursor-default";
+
   return (
-    <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1">
-      <Toolbar
-        tool={tool}
-        setTool={(t) => {
-          setTool(t);
-          setDraft([]);
-          setMergeFirstId(null);
-          dragRef.current = { type: "none" };
-        }}
-        snapStep={snapStep}
-        setSnapStep={setSnapStep}
-        magnetic={magnetic}
-        setMagnetic={setMagnetic}
-        onFinishDraw={finishDraft}
-        canFinish={draft.length >= 3}
-        onClear={clearAll}
-        onDuplicate={() => {
-          if (!selected) return;
-          commitHistory();
-          const copy: Shape = {
-            id: uid(),
-            color: nextColor(),
-            points: translatePoints(selected.points, GRID, GRID),
-            ghosts: selected.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
-          };
-          setShapes((all) => [...all, copy]);
-          setSelectedId(copy.id);
-        }}
-        hasSelection={!!selected}
-        canUndo={past.length > 0}
-        canRedo={future.length > 0}
-        onUndo={undo}
-        onRedo={redo}
-        magnifierOn={magnifierOn}
-        setMagnifierOn={(v) => {
-          setMagnifierOn(v);
-          if (!v) setMagnifierPos(null);
-        }}
-        boardMode={boardMode}
-        setBoardMode={setBoardMode}
-        onClearMeasurements={() => setMeasurements([])}
-        measurementsCount={measurements.length}
-        onClearGuides={() => setGuides([])}
-        guidesCount={guides.length}
-        showPalette={showPalette}
-        setShowPalette={setShowPalette}
-        showScenarios={showScenarios}
-        setShowScenarios={setShowScenarios}
+    <div ref={wrapRef} className="relative h-full w-full select-none overflow-hidden bg-[#fbfcfe]">
+      <canvas
+        ref={canvasRef}
+        className={`absolute inset-0 h-full w-full ${cursorClass}`}
+        style={{ touchAction: "none" }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
       />
 
-      {flash && (
-        <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm sm:text-base text-sky-900 shadow-sm">
-          {flash}
-        </div>
-      )}
-      {scenarioHint && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm sm:text-base text-amber-900 shadow-sm">
-          💡 {scenarioHint}
-          <button
-            className="ml-3 text-xs sm:text-sm text-amber-700 underline"
-            onClick={() => setScenarioHint(null)}
-          >
-            닫기
-          </button>
-        </div>
-      )}
-
-      {selected && (
-        <SelectedStrip
-          shape={selected}
-          boardMode={boardMode}
-          onRotate={(deg) =>
-            transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))
-          }
-          onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
-          onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
-        />
-      )}
-
-      <div
-        className={`grid gap-3 lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] ${
-          boardMode
-            ? ""
-            : !showPalette && !showScenarios
-            ? ""
-            : showPalette && showScenarios
-            ? "lg:grid-cols-[210px_minmax(0,1fr)_260px]"
-            : showPalette
-            ? "lg:grid-cols-[210px_minmax(0,1fr)]"
-            : "lg:grid-cols-[minmax(0,1fr)_260px]"
-        }`}
-      >
-        {!boardMode && showPalette && (
-          <ShapePalette presets={PRESETS} onAdd={addPreset} />
-        )}
-
-        <div className="flex flex-col gap-3 min-w-0 lg:min-h-0">
-          <SummaryBar
-            shapes={shapes}
-            selectedId={selectedId}
-            onSelect={(id) => setSelectedId(id)}
-            boardMode={boardMode}
-          />
-          <div
-            ref={wrapRef}
-            className="w-full overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white lg:min-h-0 lg:flex-1"
-            style={{ touchAction: "none" }}
-          >
-            <div className="w-full lg:h-full lg:overflow-y-auto lg:overflow-x-hidden">
-              <div className="flex min-h-full items-center justify-center">
-                <div style={{ width: CANVAS_W * cssScale, height: CANVAS_H * cssScale }}>
-                  <canvas
-                ref={canvasRef}
-                style={{
-                  width: CANVAS_W * cssScale,
-                  height: CANVAS_H * cssScale,
-                  cursor:
-                    magnifierOn
-                      ? "none"
-                      : tool === "draw" || tool === "cut" || tool === "measure" || tool === "guide"
-                      ? "crosshair"
-                      : tool === "delete"
-                      ? "not-allowed"
-                      : tool === "merge"
-                      ? "pointer"
-                      : "default",
-                  display: "block",
-                  touchAction: "none",
-                }}
-                onPointerDown={handleCanvasPointerDown}
-                onPointerMove={handleCanvasPointerMove}
-                onPointerUp={handleCanvasPointerUp}
-                onPointerCancel={handleCanvasPointerUp}
-                  />
-                </div>
-              </div>
+      {/* 빈 화면 안내 */}
+      {shapes.length === 0 && draft.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200 bg-white/80 px-8 py-7 text-center shadow-xl backdrop-blur">
+            <div className="text-4xl">📐✨</div>
+            <div className="text-lg font-bold text-slate-800">다각형 체험을 시작해 볼까요?</div>
+            <div className="text-sm leading-relaxed text-slate-500">
+              왼쪽 <b>도구</b>로 직접 그리거나, 아래 버튼으로 기본 도형을 불러와요. 휠/손가락으로 자유롭게 확대·이동할 수 있어요.
+            </div>
+            <div className="mt-1 flex gap-2">
+              <button
+                onClick={() => setDrawer("shapes")}
+                className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-bold text-white shadow hover:bg-slate-800"
+              >
+                📐 도형 추가
+              </button>
+              <button
+                onClick={() => setDrawer("scenarios")}
+                className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-bold text-indigo-700 hover:bg-indigo-100"
+              >
+                📚 학습 예시
+              </button>
             </div>
           </div>
         </div>
+      )}
 
-        {!boardMode && showScenarios && (
-          <ScenariosAside groups={SCENARIO_GROUPS} onLoad={loadScenario} />
-        )}
-      </div>
+      {/* 상단 바 */}
+      {!boardMode && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-lg backdrop-blur">
+            <span className="text-base font-extrabold tracking-tight text-slate-800">📐 다각형 체험실</span>
+            <span className="hidden text-xs text-slate-400 md:inline">초등 5학년 · 둘레와 넓이</span>
+            <span className="mx-1 h-5 w-px bg-slate-200" />
+            <DrawerToggle active={drawer === "shapes"} onClick={() => setDrawer(drawer === "shapes" ? null : "shapes")} icon="📐" label="도형 추가" />
+            <DrawerToggle active={drawer === "scenarios"} onClick={() => setDrawer(drawer === "scenarios" ? null : "scenarios")} icon="📚" label="학습 예시" />
+          </div>
 
-      {!boardMode && <ToolHint tool={tool} mergeFirst={!!mergeFirstId} />}
-    </div>
-  );
-}
+          <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
+              <span className="px-0.5 text-[11px] font-bold text-slate-400">격자</span>
+              <div className="flex gap-0.5 rounded-lg bg-slate-100 p-0.5">
+                {([1, 0.5, 0.2, 0] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSnapStep(s)}
+                    className={`rounded-md px-1.5 py-1 text-xs font-semibold transition ${
+                      snapStep === s ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    {s === 0 ? "끄기" : s}
+                  </button>
+                ))}
+              </div>
+              <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" />
+            </div>
 
-// ====================== UI ======================
+            <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
+              <IconBtn onClick={undo} disabled={past.length === 0} title="되돌리기 (Ctrl+Z)">
+                ↶
+              </IconBtn>
+              <IconBtn onClick={redo} disabled={future.length === 0} title="다시하기 (Ctrl+Shift+Z)">
+                ↷
+              </IconBtn>
+              <Chip active={boardMode} onClick={() => setBoardMode(true)} icon="📺" label="전자칠판" tone="sky" />
+              <button
+                onClick={clearAll}
+                className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100"
+              >
+                전체 초기화
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-function Toolbar(props: {
-  tool: Tool;
-  setTool: (t: Tool) => void;
-  snapStep: 0 | 0.2 | 0.5 | 1;
-  setSnapStep: (s: 0 | 0.2 | 0.5 | 1) => void;
-  magnetic: boolean;
-  setMagnetic: (b: boolean) => void;
-  onFinishDraw: () => void;
-  canFinish: boolean;
-  onClear: () => void;
-  onDuplicate: () => void;
-  hasSelection: boolean;
-  canUndo: boolean;
-  canRedo: boolean;
-  onUndo: () => void;
-  onRedo: () => void;
-  magnifierOn: boolean;
-  setMagnifierOn: (b: boolean) => void;
-  boardMode: boolean;
-  setBoardMode: (b: boolean) => void;
-  onClearMeasurements: () => void;
-  measurementsCount: number;
-  onClearGuides: () => void;
-  guidesCount: number;
-  showPalette: boolean;
-  setShowPalette: (b: boolean) => void;
-  showScenarios: boolean;
-  setShowScenarios: (b: boolean) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-end gap-x-3 gap-y-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-      <ToolGroup label="도구">
-        <div className="flex gap-1 rounded-xl bg-slate-100 p-1">
+      {boardMode && (
+        <button
+          onClick={() => setBoardMode(false)}
+          className="absolute right-3 top-3 z-10 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-sm font-bold text-slate-700 shadow-lg backdrop-blur hover:bg-white"
+        >
+          📺 전자칠판 끄기
+        </button>
+      )}
+
+      {/* 왼쪽 도구 레일 */}
+      <div className="absolute left-3 top-1/2 z-10 -translate-y-1/2">
+        <div className="flex flex-col gap-1.5 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-xl backdrop-blur">
           {TOOL_META.map((t) => {
-            const active = props.tool === t.id;
+            const active = tool === t.id;
             return (
               <button
                 key={t.id}
-                onClick={() => props.setTool(t.id)}
+                onClick={() => setTool(t.id)}
                 title={t.label}
-                className={`flex min-w-[54px] flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
-                  active
-                    ? "bg-white text-slate-900 shadow ring-1 ring-slate-900/10"
-                    : "text-slate-500 hover:bg-white/70 hover:text-slate-800"
+                className={`group relative flex h-12 w-12 items-center justify-center rounded-xl text-xl transition ${
+                  active ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
                 }`}
               >
-                <span className="text-lg leading-none">{t.icon}</span>
-                {t.label}
+                <span>{t.icon}</span>
+                <span className="pointer-events-none absolute left-full ml-2 hidden whitespace-nowrap rounded-lg bg-slate-900 px-2 py-1 text-xs font-semibold text-white group-hover:block">
+                  {t.label}
+                </span>
               </button>
             );
           })}
         </div>
-      </ToolGroup>
+      </div>
 
-      <ToolGroup label="편집">
-        <div className="flex gap-1">
-          <ActBtn tone="emerald" disabled={!props.canFinish} onClick={props.onFinishDraw} icon="✅" label="완성" />
-          <ActBtn disabled={!props.hasSelection} onClick={props.onDuplicate} icon="📋" label="복사" />
-          <ActBtn disabled={!props.canUndo} onClick={props.onUndo} icon="↶" label="되돌리기" title="Ctrl/Cmd+Z" />
-          <ActBtn disabled={!props.canRedo} onClick={props.onRedo} icon="↷" label="다시" title="Ctrl/Cmd+Shift+Z" />
-        </div>
-      </ToolGroup>
-
-      <ToolGroup label="격자 스냅">
-        <div className="flex items-center gap-1.5">
-          <div className="flex gap-1 rounded-lg bg-slate-100 p-1">
-            {([1, 0.5, 0.2, 0] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => props.setSnapStep(s)}
-                className={`rounded-md px-2 py-1 text-xs font-semibold transition ${
-                  props.snapStep === s ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-800"
-                }`}
-              >
-                {s === 0 ? "끄기" : `${s}`}
-              </button>
-            ))}
-          </div>
-          <ToggleChip active={props.magnetic} onClick={() => props.setMagnetic(!props.magnetic)} icon="🧲" label="자석" />
-        </div>
-      </ToolGroup>
-
-      <ToolGroup label="보기">
-        <div className="flex gap-1">
-          <ToggleChip active={props.magnifierOn} onClick={() => props.setMagnifierOn(!props.magnifierOn)} icon="🔍" label="돋보기" tone="amber" />
-          <ToggleChip active={props.boardMode} onClick={() => props.setBoardMode(!props.boardMode)} icon="📺" label="전자칠판" tone="sky" />
-          <ToggleChip active={props.showPalette} onClick={() => props.setShowPalette(!props.showPalette)} icon="📐" label="도형" />
-          <ToggleChip active={props.showScenarios} onClick={() => props.setShowScenarios(!props.showScenarios)} icon="📚" label="예시" />
-        </div>
-      </ToolGroup>
-
-      <div className="ml-auto flex items-end gap-2">
-        {(props.measurementsCount > 0 || props.guidesCount > 0) && (
-          <ToolGroup label="지우기">
-            <div className="flex gap-1">
-              {props.measurementsCount > 0 && (
-                <ActBtn tone="purple" onClick={props.onClearMeasurements} icon="📏" label={`측정선 ${props.measurementsCount}`} />
-              )}
-              {props.guidesCount > 0 && (
-                <ActBtn onClick={props.onClearGuides} icon="📐" label={`가이드 ${props.guidesCount}`} />
-              )}
-            </div>
-          </ToolGroup>
-        )}
+      {/* 줌 컨트롤 (좌하단) */}
+      <div className="absolute bottom-3 left-3 z-10 flex items-center gap-1 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur">
+        <IconBtn onClick={() => zoomCenter(1 / 1.2)} title="축소 ( − )">
+          −
+        </IconBtn>
         <button
-          onClick={props.onClear}
-          className="self-end rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+          onClick={() => fitView()}
+          className="min-w-[58px] rounded-lg px-2 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100"
+          title="전체 보기 (Fit)"
         >
-          🗑 전체 초기화
+          {Math.round(cam.scale * 100)}%
+        </button>
+        <IconBtn onClick={() => zoomCenter(1.2)} title="확대 ( + )">
+          +
+        </IconBtn>
+        <span className="mx-0.5 h-5 w-px bg-slate-200" />
+        <button
+          onClick={() => fitView()}
+          className="rounded-lg px-2 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100"
+          title="전체 보기"
+        >
+          ⤢ 맞춤
         </button>
       </div>
+
+      {/* 정보 카드 (우하단) */}
+      <InfoCard
+        selected={selected}
+        boardMode={boardMode}
+        count={shapes.length}
+        totalArea={totalArea}
+        totalPeri={totalPeri}
+      />
+
+      {/* 측정/가이드 정리 (우하단, 정보카드 위) */}
+      {(measurements.length > 0 || guides.length > 0) && (
+        <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 gap-2">
+          {measurements.length > 0 && (
+            <button
+              onClick={() => setMeasurements([])}
+              className="rounded-xl border border-purple-200 bg-purple-50/95 px-3 py-2 text-xs font-bold text-purple-700 shadow-lg backdrop-blur hover:bg-purple-100"
+            >
+              📏 측정선 지우기 ({measurements.length})
+            </button>
+          )}
+          {guides.length > 0 && (
+            <button
+              onClick={() => setGuides([])}
+              className="rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-xs font-bold text-slate-600 shadow-lg backdrop-blur hover:bg-slate-100"
+            >
+              📐 가이드 지우기 ({guides.length})
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 선택 도형 컨텍스트 액션 (하단 중앙) */}
+      {selected && (
+        <ContextBar
+          shape={selected}
+          onRotate={(deg) => transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))}
+          onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
+          onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
+          onDuplicate={duplicateSelected}
+          onDelete={deleteSelected}
+        />
+      )}
+
+      {/* 도구 힌트 (하단 중앙, 컨텍스트바 없을 때) */}
+      {!selected && !boardMode && shapes.length > 0 && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-0 -translate-x-1/2 rounded-full border border-slate-200 bg-white/85 px-4 py-1.5 text-xs text-slate-500 shadow backdrop-blur">
+          {TOOL_HINT[tool]}
+        </div>
+      )}
+
+      {/* 토스트 (상단 중앙) */}
+      <div className="pointer-events-none absolute left-1/2 top-16 z-20 flex w-[min(92vw,640px)] -translate-x-1/2 flex-col gap-2">
+        {flash && (
+          <div className="pointer-events-auto rounded-2xl border border-sky-200 bg-sky-50/95 px-4 py-2.5 text-sm text-sky-900 shadow-lg backdrop-blur">
+            {flash}
+          </div>
+        )}
+        {scenarioHint && (
+          <div className="pointer-events-auto flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50/95 px-4 py-3 text-sm text-amber-900 shadow-lg backdrop-blur">
+            <span>💡</span>
+            <span className="flex-1">{scenarioHint}</span>
+            <button className="shrink-0 text-xs font-bold text-amber-700 underline" onClick={() => setScenarioHint(null)}>
+              닫기
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 드로어 */}
+      <Drawer side="left" open={drawer === "shapes"} title="📐 도형 추가" onClose={() => setDrawer(null)}>
+        <div className="grid grid-cols-2 gap-2">
+          {PRESETS.map((p) => (
+            <ShapeThumb key={p.id} preset={p} onClick={() => addPreset(p)} />
+          ))}
+        </div>
+      </Drawer>
+      <Drawer side="right" open={drawer === "scenarios"} title="📚 학습 예시" onClose={() => setDrawer(null)}>
+        <div className="flex flex-col gap-2">
+          {SCENARIO_GROUPS.map((g, gi) => (
+            <details key={g.shape} open={gi === 0} className="rounded-xl border border-indigo-100 bg-indigo-50/50 px-3 py-2">
+              <summary className="flex min-h-[36px] cursor-pointer items-center text-sm font-bold text-indigo-900 marker:text-indigo-400">
+                {g.shape}
+              </summary>
+              <div className="mt-1 text-xs font-medium text-indigo-700">공식: {g.formula}</div>
+              <div className="mt-2 flex flex-col gap-1.5">
+                {g.scenarios.map((sc) => (
+                  <button
+                    key={sc.label}
+                    onClick={() => loadScenario(sc)}
+                    className="rounded-md border border-indigo-200 bg-white px-2.5 py-2 text-left text-[13px] text-indigo-900 hover:bg-indigo-100"
+                  >
+                    {sc.label}
+                  </button>
+                ))}
+              </div>
+            </details>
+          ))}
+        </div>
+      </Drawer>
     </div>
   );
 }
 
-const TOOL_META: { id: Tool; icon: string; label: string }[] = [
-  { id: "draw", icon: "✏️", label: "그리기" },
-  { id: "select", icon: "🖱️", label: "선택" },
-  { id: "cut", icon: "✂️", label: "자르기" },
-  { id: "merge", icon: "🔗", label: "합치기" },
-  { id: "measure", icon: "📏", label: "길이" },
-  { id: "guide", icon: "📐", label: "가이드" },
-  { id: "delete", icon: "🗑️", label: "삭제" },
-];
+// ====================== UI 부품 ======================
 
-function ToolGroup({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="px-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</span>
-      {children}
-    </div>
-  );
-}
-
-function ActBtn({
-  icon,
-  label,
+function IconBtn({
+  children,
   onClick,
   disabled,
   title,
-  tone,
 }: {
-  icon: string;
-  label: string;
+  children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
   title?: string;
-  tone?: "emerald" | "purple";
 }) {
-  const toneCls =
-    tone === "emerald"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-      : tone === "purple"
-      ? "border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
-      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`flex items-center gap-1 rounded-lg border px-2.5 py-2 text-xs font-semibold transition disabled:opacity-40 ${toneCls}`}
+      className="grid h-8 w-8 place-items-center rounded-lg text-lg font-bold text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
     >
-      <span className="text-sm leading-none">{icon}</span>
-      {label}
+      {children}
     </button>
   );
 }
 
-function ToggleChip({
+function Chip({
   icon,
   label,
   active,
@@ -1393,47 +1534,208 @@ function ToggleChip({
   label: string;
   active: boolean;
   onClick: () => void;
-  tone?: "amber" | "sky";
+  tone?: "sky";
 }) {
-  const activeCls =
-    tone === "amber"
-      ? "border-amber-500 bg-amber-500 text-white"
-      : tone === "sky"
-      ? "border-sky-600 bg-sky-600 text-white"
-      : "border-slate-900 bg-slate-900 text-white";
+  const activeCls = tone === "sky" ? "border-sky-600 bg-sky-600 text-white" : "border-slate-900 bg-slate-900 text-white";
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1 rounded-lg border px-2.5 py-2 text-xs font-semibold transition ${
+      className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-semibold transition ${
         active ? activeCls : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
       }`}
     >
-      <span className="text-sm leading-none">{icon}</span>
+      <span>{icon}</span>
       {label}
     </button>
   );
 }
 
-function ShapePalette({ presets, onAdd }: { presets: Preset[]; onAdd: (p: Preset) => void }) {
+function DrawerToggle({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
-    <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:min-h-0 lg:overflow-y-auto">
-      <div className="mb-2 text-sm sm:text-base font-semibold text-slate-700">📐 도형 추가</div>
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-2 gap-2">
-        {presets.map((p) => (
-          <ShapeThumb key={p.id} preset={p} onClick={() => onAdd(p)} />
-        ))}
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-bold transition ${
+        active ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+      }`}
+    >
+      <span>{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+function InfoCard({
+  selected,
+  boardMode,
+  count,
+  totalArea,
+  totalPeri,
+}: {
+  selected: Shape | null;
+  boardMode: boolean;
+  count: number;
+  totalArea: number;
+  totalPeri: number;
+}) {
+  const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
+  if (count === 0) return null;
+  const area = selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
+  const peri = selected ? polygonPerimeter(selected.points) / GRID : totalPeri;
+  const big = boardMode ? "text-2xl" : "text-xl";
+  return (
+    <div className="absolute bottom-3 right-3 z-10 w-[min(86vw,260px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+      {selected && kind ? (
+        <div className="mb-2 flex items-center gap-2">
+          <span className="h-6 w-6 shrink-0 rounded-md ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
+          <div className="leading-tight">
+            <div className="font-extrabold text-slate-800">{kind.name}</div>
+            {kind.formula && <div className="text-[11px] font-medium text-amber-700">공식 · {kind.formula}</div>}
+          </div>
+        </div>
+      ) : (
+        <div className="mb-2 text-sm font-bold text-slate-500">📊 전체 도형 {count}개</div>
+      )}
+      <div className="flex items-stretch gap-2">
+        <div className="flex-1 rounded-xl bg-slate-50 px-3 py-2">
+          <div className="text-[11px] font-semibold text-slate-400">넓이</div>
+          <div className={`font-extrabold text-slate-900 ${big}`}>{fmtArea(area)}</div>
+        </div>
+        <div className="flex-1 rounded-xl bg-slate-50 px-3 py-2">
+          <div className="text-[11px] font-semibold text-slate-400">둘레</div>
+          <div className={`font-extrabold text-slate-900 ${big}`}>{fmtLen(peri)}</div>
+        </div>
       </div>
-    </aside>
+    </div>
+  );
+}
+
+function ContextBar({
+  shape,
+  onRotate,
+  onFlip,
+  onScale,
+  onDuplicate,
+  onDelete,
+}: {
+  shape: Shape;
+  onRotate: (deg: number) => void;
+  onFlip: (axis: "horizontal" | "vertical") => void;
+  onScale: (f: number) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}) {
+  const mini =
+    "grid h-9 min-w-[38px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
+  return (
+    <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
+      <div className="flex items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur">
+        <MiniGroup label="회전">
+          <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90°">
+            ↶90°
+          </button>
+          <button className={mini} onClick={() => onRotate(90)} title="시계 90°">
+            ↷90°
+          </button>
+          <button className={mini} onClick={() => onRotate(180)} title="180°">
+            180°
+          </button>
+        </MiniGroup>
+        <MiniGroup label="뒤집기">
+          <button className={mini} onClick={() => onFlip("horizontal")} title="좌우 뒤집기">
+            ↔
+          </button>
+          <button className={mini} onClick={() => onFlip("vertical")} title="위아래 뒤집기">
+            ↕
+          </button>
+        </MiniGroup>
+        <MiniGroup label="크기">
+          <button className={mini} onClick={() => onScale(0.5)} title="절반으로">
+            ×½
+          </button>
+          <button className={mini} onClick={() => onScale(2)} title="2배로">
+            ×2
+          </button>
+        </MiniGroup>
+        <MiniGroup label="편집">
+          <button className={mini} onClick={onDuplicate} title="복사">
+            📋
+          </button>
+          <button
+            className="grid h-9 min-w-[38px] place-items-center rounded-lg border border-rose-200 bg-rose-50 px-2 text-sm font-semibold text-rose-600 hover:bg-rose-100"
+            onClick={onDelete}
+            title="삭제 (Delete)"
+          >
+            🗑️
+          </button>
+        </MiniGroup>
+      </div>
+    </div>
+  );
+}
+
+function MiniGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</span>
+      <div className="flex gap-1">{children}</div>
+    </div>
+  );
+}
+
+function Drawer({
+  side,
+  open,
+  title,
+  onClose,
+  children,
+}: {
+  side: "left" | "right";
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      {open && <div className="absolute inset-0 z-20 bg-slate-900/10" onClick={onClose} />}
+      <div
+        className={`absolute top-0 z-30 flex h-full w-[290px] max-w-[82vw] flex-col bg-white shadow-2xl transition-transform duration-200 ${
+          side === "left" ? "left-0 border-r" : "right-0 border-l"
+        } border-slate-200 ${open ? "translate-x-0" : side === "left" ? "-translate-x-full" : "translate-x-full"}`}
+      >
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <span className="font-bold text-slate-700">{title}</span>
+          <button onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100">
+            ✕
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3">{children}</div>
+      </div>
+    </>
   );
 }
 
 function ShapeThumb({ preset, onClick }: { preset: Preset; onClick: () => void }) {
-  const W = 96, H = 72, PAD = 8;
+  const W = 110,
+    H = 80,
+    PAD = 8;
   const pts = preset.build();
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const minX = Math.min(...xs),
+    maxX = Math.max(...xs);
+  const minY = Math.min(...ys),
+    maxY = Math.max(...ys);
   const bw = Math.max(1, maxX - minX);
   const bh = Math.max(1, maxY - minY);
   const s = Math.min((W - PAD * 2) / bw, (H - PAD * 2) / bh);
@@ -1445,10 +1747,10 @@ function ShapeThumb({ preset, onClick }: { preset: Preset; onClick: () => void }
   return (
     <button
       onClick={onClick}
-      className="group flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white p-2 hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100 transition min-h-[44px]"
+      className="group flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white p-2 transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100"
       title={preset.formula}
     >
-      <svg width={W} height={H} className="rounded-md overflow-hidden">
+      <svg width={W} height={H} className="overflow-hidden rounded-md">
         <defs>
           <pattern id={patternId} width={gridStep} height={gridStep} patternUnits="userSpaceOnUse">
             <path d={`M ${gridStep} 0 L 0 0 0 ${gridStep}`} stroke="#e2e8f0" strokeWidth="1" fill="none" />
@@ -1457,191 +1759,8 @@ function ShapeThumb({ preset, onClick }: { preset: Preset; onClick: () => void }
         <rect width={W} height={H} fill={`url(#${patternId})`} />
         <polygon points={ptsStr} fill="#60a5fa66" stroke="#0ea5e9" strokeWidth="1.8" />
       </svg>
-      <div className="text-[12px] sm:text-[13px] font-semibold text-slate-700 group-hover:text-sky-700">
-        {preset.label}
-      </div>
-      <div className="text-[10px] sm:text-[11px] text-slate-500 text-center leading-tight">
-        {preset.formula}
-      </div>
+      <div className="text-[13px] font-bold text-slate-700 group-hover:text-sky-700">{preset.label}</div>
+      <div className="text-center text-[11px] leading-tight text-slate-500">{preset.formula}</div>
     </button>
-  );
-}
-
-
-function SummaryBar({
-  shapes,
-  selectedId,
-  onSelect,
-  boardMode,
-}: {
-  shapes: Shape[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  boardMode: boolean;
-}) {
-  if (shapes.length === 0) return null;
-  const stat = boardMode ? "text-base sm:text-lg" : "text-sm";
-  return (
-    <div className="flex items-center gap-3 overflow-x-auto rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-      <span className="shrink-0 text-xs font-bold text-slate-400">📊 도형 {shapes.length}개</span>
-      <div className="flex gap-2">
-        {shapes.map((s, i) => {
-          const area = polygonArea(s.points) / (GRID * GRID);
-          const peri = polygonPerimeter(s.points) / GRID;
-          const sel = s.id === selectedId;
-          return (
-            <button
-              key={s.id}
-              onClick={() => onSelect(s.id)}
-              className={`shrink-0 flex items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition ${
-                sel
-                  ? "border-slate-900 bg-slate-50 ring-2 ring-slate-900/10"
-                  : "border-slate-200 bg-white hover:bg-slate-50"
-              }`}
-            >
-              <span
-                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-[11px] font-bold text-white"
-                style={{ backgroundColor: s.color }}
-              >
-                {i + 1}
-              </span>
-              <span className="flex flex-col items-start leading-tight">
-                <span className="text-[10px] font-medium text-slate-400">{s.points.length}각형</span>
-                <span className={`flex items-baseline gap-2 ${stat}`}>
-                  <b className="text-slate-900">{fmtArea(area)}</b>
-                  <span className="text-slate-400">둘레 {fmtLen(peri)}</span>
-                </span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ScenariosAside({
-  groups,
-  onLoad,
-}: {
-  groups: ScenarioGroup[];
-  onLoad: (sc: Scenario) => void;
-}) {
-  return (
-    <aside className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm lg:min-h-0 lg:max-h-full lg:overflow-y-auto">
-      <div className="mb-2 text-sm sm:text-base font-semibold text-indigo-800">📚 학습 예시</div>
-      <div className="flex flex-col gap-2">
-        {groups.map((g, gi) => (
-          <details
-            key={g.shape}
-            open={gi === 0}
-            className="rounded-xl bg-white border border-indigo-100 px-3 py-2"
-          >
-            <summary className="cursor-pointer text-sm sm:text-base font-semibold text-indigo-900 marker:text-indigo-400 min-h-[40px] flex items-center">
-              {g.shape}
-            </summary>
-            <div className="mt-1 text-[12px] sm:text-sm text-indigo-700 font-medium">
-              공식: {g.formula}
-            </div>
-            <div className="mt-2 flex flex-col gap-1.5">
-              {g.scenarios.map((sc) => (
-                <button
-                  key={sc.label}
-                  className="text-left text-[13px] sm:text-sm px-2.5 py-2 rounded-md border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-900 min-h-[36px]"
-                  onClick={() => onLoad(sc)}
-                >
-                  {sc.label}
-                </button>
-              ))}
-            </div>
-          </details>
-        ))}
-      </div>
-    </aside>
-  );
-}
-
-function SelectedStrip({
-  shape,
-  boardMode,
-  onRotate,
-  onFlip,
-  onScale,
-}: {
-  shape: Shape;
-  boardMode: boolean;
-  onRotate: (deg: number) => void;
-  onFlip: (axis: "horizontal" | "vertical") => void;
-  onScale: (f: number) => void;
-}) {
-  const kind = useMemo(() => detectShapeKind(shape.points), [shape]);
-  const area = polygonArea(shape.points) / (GRID * GRID);
-  const peri = polygonPerimeter(shape.points) / GRID;
-  const name = boardMode ? "text-xl" : "text-base";
-  const stat = boardMode ? "text-base sm:text-lg" : "text-sm";
-  const mini =
-    "grid h-9 min-w-[40px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-3 py-2 shadow-sm">
-      <div className="flex items-center gap-2.5">
-        <span className="h-7 w-7 shrink-0 rounded-md ring-1 ring-black/5" style={{ backgroundColor: shape.color }} />
-        <div className="flex flex-col leading-tight">
-          <span className={`font-bold text-amber-900 ${name}`}>{kind.name}</span>
-          {kind.formula && <span className="text-xs font-medium text-amber-700">공식 · {kind.formula}</span>}
-        </div>
-      </div>
-
-      <div className={`flex gap-4 ${stat}`}>
-        <span>
-          <span className="text-slate-500">넓이 </span>
-          <b className="text-slate-900">{fmtArea(area)}</b>
-        </span>
-        <span>
-          <span className="text-slate-500">둘레 </span>
-          <b className="text-slate-900">{fmtLen(peri)}</b>
-        </span>
-      </div>
-
-      <div className="ml-auto flex items-end gap-3">
-        <ToolGroup label="회전">
-          <div className="flex gap-1">
-            <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90°">↶90°</button>
-            <button className={mini} onClick={() => onRotate(90)} title="시계 90°">↷90°</button>
-            <button className={mini} onClick={() => onRotate(180)} title="180°">180°</button>
-          </div>
-        </ToolGroup>
-        <ToolGroup label="뒤집기">
-          <div className="flex gap-1">
-            <button className={mini} onClick={() => onFlip("horizontal")} title="좌우 뒤집기">↔</button>
-            <button className={mini} onClick={() => onFlip("vertical")} title="위아래 뒤집기">↕</button>
-          </div>
-        </ToolGroup>
-        <ToolGroup label="크기">
-          <div className="flex gap-1">
-            <button className={mini} onClick={() => onScale(0.5)} title="절반으로">×½</button>
-            <button className={mini} onClick={() => onScale(2)} title="2배로">×2</button>
-          </div>
-        </ToolGroup>
-      </div>
-    </div>
-  );
-}
-
-function ToolHint({ tool, mergeFirst }: { tool: Tool; mergeFirst: boolean }) {
-  const tips: Record<Tool, string> = {
-    draw: "✏️ 캔버스를 클릭해 꼭짓점을 찍어요. 첫 점 다시 클릭하거나 ‘도형 완성’으로 마감.",
-    select: "🖱️ 도형을 눌러 선택. 안쪽 드래그=이동, 꼭짓점 드래그=변형, 초록 손잡이=회전.",
-    cut: "✂️ 드래그해서 도형을 자르세요. 가로/세로/대각선 모두 가능.",
-    merge: mergeFirst
-      ? "🔗 두 번째 도형을 누르세요. 한 변이 정확히 맞붙어야 합쳐져요."
-      : "🔗 합칠 첫 번째 도형을 누르세요.",
-    measure: "📏 두 점 드래그로 길이 재기. 1cm 눈금 표시. ‘측정선 지우기’로 초기화.",
-    guide: "📐 자르기 전 ‘여기서 자를까’ 점선 가이드를 미리 그어 보세요.",
-    delete: "🗑️ 지우고 싶은 도형을 누르세요.",
-  };
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs sm:text-sm text-slate-600">
-      {tips[tool]}
-    </div>
   );
 }

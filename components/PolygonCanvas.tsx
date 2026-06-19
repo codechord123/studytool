@@ -128,6 +128,54 @@ function axisAlignedRect(pts: Point[]): { x: number; y: number; w: number; h: nu
   return { x: minX, y: minY, w, h };
 }
 
+function boundsOf(pts: Point[]) {
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return { minX, maxX, minY, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+}
+
+// 이동 중 다른 도형의 모서리/중심에 정렬(스마트 가이드). dx,dy=보정량, vx/hy=정렬선 좌표
+function alignSnap(pts: Point[], all: Shape[], excludeId: string, tol: number) {
+  const me = boundsOf(pts);
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const s of all) {
+    if (s.id === excludeId) continue;
+    const b = boundsOf(s.points);
+    xs.push(b.minX, b.cx, b.maxX);
+    ys.push(b.minY, b.cy, b.maxY);
+  }
+  const mX = [me.minX, me.cx, me.maxX];
+  const mY = [me.minY, me.cy, me.maxY];
+  let dx = 0;
+  let bestX = tol;
+  for (const a of mX) for (const t of xs) {
+    const d = Math.abs(t - a);
+    if (d < bestX) {
+      bestX = d;
+      dx = t - a;
+    }
+  }
+  let dy = 0;
+  let bestY = tol;
+  for (const a of mY) for (const t of ys) {
+    const d = Math.abs(t - a);
+    if (d < bestY) {
+      bestY = d;
+      dy = t - a;
+    }
+  }
+  const vx = new Set<number>();
+  const hy = new Set<number>();
+  for (const t of xs) for (const a of mX) if (Math.abs(a + dx - t) < 0.5) vx.add(t);
+  for (const t of ys) for (const a of mY) if (Math.abs(a + dy - t) < 0.5) hy.add(t);
+  return { dx, dy, vx: Array.from(vx), hy: Array.from(hy) };
+}
+
 function placeAtCenter(pts: Point[], cx: number, cy: number): Point[] {
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
@@ -318,6 +366,7 @@ export default function PolygonCanvas() {
   const sizeRef = useRef({ w: 0, h: 0 });
 
   const dragRef = useRef<DragMode>({ type: "none" });
+  const alignGuidesRef = useRef<{ vx: number[]; hy: number[] }>({ vx: [], hy: [] });
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{ startDist: number; startCam: Camera; startMid: { x: number; y: number } } | null>(null);
   const spaceRef = useRef(false);
@@ -775,10 +824,16 @@ export default function PolygonCanvas() {
           const dx0 = p.x - dm.startPointer.x;
           const dy0 = p.y - dm.startPointer.y;
           const moved = dm.startPoints.map((q) => ({ x: q.x + dx0, y: q.y + dy0 }));
-          const { dx: mdx, dy: mdy } = magnetTranslate(moved, dm.shapeId, 16 * k);
-          const finalPts = moved.map((q) => ({ x: q.x + mdx, y: q.y + mdy }));
+          // 1) 꼭짓점 자석 → 2) 모서리/중심 정렬(스마트 가이드)
+          const mag = magnetTranslate(moved, dm.shapeId, 16 * k);
+          const afterMag = moved.map((q) => ({ x: q.x + mag.dx, y: q.y + mag.dy }));
+          const al = magnetic ? alignSnap(afterMag, all, dm.shapeId, 7 * k) : { dx: 0, dy: 0, vx: [], hy: [] };
+          alignGuidesRef.current = { vx: al.vx, hy: al.hy };
+          const tdx = mag.dx + al.dx;
+          const tdy = mag.dy + al.dy;
+          const finalPts = moved.map((q) => ({ x: q.x + tdx, y: q.y + tdy }));
           const finalGhosts = dm.startGhosts?.map((g) =>
-            g.map((q) => ({ x: q.x + dx0 + mdx, y: q.y + dy0 + mdy }))
+            g.map((q) => ({ x: q.x + dx0 + tdx, y: q.y + dy0 + tdy }))
           );
           return { ...s, points: finalPts, ghosts: finalGhosts };
         }
@@ -841,6 +896,7 @@ export default function PolygonCanvas() {
       }
     }
     dragRef.current = { type: "none" };
+    alignGuidesRef.current = { vx: [], hy: [] };
   }
 
   function finishDraft() {
@@ -1025,6 +1081,25 @@ export default function PolygonCanvas() {
     setGuides([]);
   }
 
+  function exportPNG() {
+    const c = canvasRef.current;
+    if (!c) return;
+    try {
+      const url = c.toDataURL("image/png");
+      const a = document.createElement("a");
+      const d = new Date();
+      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(
+        d.getHours()
+      ).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+      a.href = url;
+      a.download = `다각형-${stamp}.png`;
+      a.click();
+      setFlash("현재 화면을 PNG 이미지로 저장했어요. 📷");
+    } catch {
+      setFlash("이미지 저장에 실패했어요. 다시 시도해 주세요.");
+    }
+  }
+
   // ----- 캔버스 렌더링 -----
   useEffect(() => {
     const c = canvasRef.current;
@@ -1097,6 +1172,28 @@ export default function PolygonCanvas() {
     ctx.stroke();
 
     for (const s of shapes) drawShape(ctx, s, s.id === selectedId, s.id === mergeFirstId, k);
+
+    // 스마트 정렬 가이드 (도형 이동 중 모서리/중심 정렬)
+    if (dragRef.current.type === "translate") {
+      const ag = alignGuidesRef.current;
+      if (ag.vx.length || ag.hy.length) {
+        ctx.save();
+        ctx.setLineDash([6 * k, 6 * k]);
+        ctx.strokeStyle = "#ec4899";
+        ctx.lineWidth = 1.5 * k;
+        ctx.beginPath();
+        for (const x of ag.vx) {
+          ctx.moveTo(x, y0);
+          ctx.lineTo(x, y1);
+        }
+        for (const y of ag.hy) {
+          ctx.moveTo(x0, y);
+          ctx.lineTo(x1, y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
 
     // 그리는 중 도형
     if (draft.length > 0) {
@@ -1551,6 +1648,13 @@ export default function PolygonCanvas() {
                 ↷
               </IconBtn>
               <Chip active={boardMode} onClick={() => setBoardMode(true)} icon="📺" label="전자칠판" tone="sky" />
+              <button
+                onClick={exportPNG}
+                className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                title="현재 화면을 PNG 이미지로 저장"
+              >
+                📷 저장
+              </button>
               <button
                 onClick={clearAll}
                 className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100"

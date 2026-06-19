@@ -33,7 +33,7 @@ type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide"
 // 1cm = 80px (이전 40px → 2배로 크게 보이도록)
 const GRID = 80;
 const CANVAS_W = 1600;
-const CANVAS_H = 1000;
+const CANVAS_H = 720; // 9cm 높이. 1080p 한 화면에 헤더+툴바+캔버스+힌트 모두 들어가도록
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
 const HISTORY_LIMIT = 50;
 
@@ -1415,183 +1415,6 @@ function ShapeThumb({ preset, onClick }: { preset: Preset; onClick: () => void }
   );
 }
 
-function TransformBar(props: {
-  onRotate: (deg: number) => void;
-  onFlip: (axis: "horizontal" | "vertical") => void;
-  onScale: (factor: number) => void;
-}) {
-  const btn =
-    "px-3 py-2.5 text-sm sm:text-base rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 active:bg-slate-100 min-h-[44px]";
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-2 sm:p-3 shadow-sm">
-      <span className="text-sm sm:text-base font-semibold text-emerald-800 pr-2">선택한 도형 변환</span>
-      <div className="flex gap-1.5">
-        <button className={btn} onClick={() => props.onRotate(-90)}>↶ 90°</button>
-        <button className={btn} onClick={() => props.onRotate(90)}>↷ 90°</button>
-        <button className={btn} onClick={() => props.onRotate(180)}>180°</button>
-      </div>
-      <div className="h-6 w-px bg-emerald-200 hidden sm:block" />
-      <div className="flex gap-1.5">
-        <button className={btn} onClick={() => props.onFlip("horizontal")}>↔ 좌우</button>
-        <button className={btn} onClick={() => props.onFlip("vertical")}>↕ 위아래</button>
-      </div>
-      <div className="h-6 w-px bg-emerald-200 hidden sm:block" />
-      <div className="flex gap-1.5">
-        <button className={btn} onClick={() => props.onScale(0.5)}>🔻 ×0.5</button>
-        <button className={btn} onClick={() => props.onScale(0.8)}>🔽 ×0.8</button>
-        <button className={btn} onClick={() => props.onScale(1.25)}>🔼 ×1.25</button>
-        <button className={btn} onClick={() => props.onScale(2)}>🔺 ×2</button>
-      </div>
-    </div>
-  );
-}
-
-function PerimeterDetail({ shape }: { shape: Shape }) {
-  const sides = useMemo(() => {
-    const out: number[] = [];
-    const n = shape.points.length;
-    for (let i = 0; i < n; i++) {
-      const a = shape.points[i];
-      const b = shape.points[(i + 1) % n];
-      out.push(Math.hypot(b.x - a.x, b.y - a.y) / GRID);
-    }
-    return out;
-  }, [shape]);
-  const sum = sides.reduce((a, b) => a + b, 0);
-  const area = polygonArea(shape.points) / (GRID * GRID);
-  const shapeName = `${shape.points.length}각형`;
-  return (
-    <div className="rounded-2xl border border-sky-200 bg-sky-50/60 p-3 sm:p-4 shadow-sm">
-      <div className="text-sm sm:text-base font-semibold text-sky-900 mb-2">
-        🧮 선택한 도형의 길이와 넓이 ({shapeName})
-      </div>
-      <div className="space-y-1.5">
-        <div className="text-base sm:text-lg">
-          <span className="font-semibold text-sky-800">넓이</span>
-          <span className="ml-2">= {fmtArea(area)}</span>
-        </div>
-        <div className="text-base sm:text-lg">
-          <span className="font-semibold text-sky-800">둘레</span>
-          <span className="ml-2">
-            ={" "}
-            <span className="font-mono">
-              {sides.map((v, i) => (
-                <span key={i}>
-                  {i > 0 && <span className="text-sky-600 mx-1">+</span>}
-                  <span className="bg-white rounded px-1.5 py-0.5 border border-sky-200">
-                    {fmtLenNum(v)}
-                  </span>
-                </span>
-              ))}
-            </span>
-            <span className="text-sky-600 mx-1">=</span>
-            <span className="font-bold text-sky-900">{fmtLen(sum)}</span>
-          </span>
-        </div>
-        <div className="text-xs sm:text-sm text-sky-700">
-          모든 변의 길이를 더한 값이 다각형의 둘레예요.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ScenariosAside({
-  groups,
-  onLoad,
-}: {
-  groups: ScenarioGroup[];
-  onLoad: (sc: Scenario) => void;
-}) {
-  return (
-    <aside className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm xl:max-h-[760px] xl:overflow-y-auto">
-      <div className="mb-2 text-sm sm:text-base font-semibold text-indigo-800">📚 학습 예시</div>
-      <div className="flex flex-col gap-2">
-        {groups.map((g, gi) => (
-          <details
-            key={g.shape}
-            open={gi === 0}
-            className="rounded-xl bg-white border border-indigo-100 px-3 py-2"
-          >
-            <summary className="cursor-pointer text-sm sm:text-base font-semibold text-indigo-900 marker:text-indigo-400 min-h-[44px] flex items-center">
-              {g.shape}
-            </summary>
-            <div className="mt-1 text-[12px] sm:text-sm text-indigo-700 font-medium">
-              공식: {g.formula}
-            </div>
-            <div className="mt-2 flex flex-col gap-1.5">
-              {g.scenarios.map((sc) => (
-                <button
-                  key={sc.label}
-                  className="text-left text-[13px] sm:text-sm px-2.5 py-2 rounded-md border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-900 min-h-[40px]"
-                  onClick={() => onLoad(sc)}
-                >
-                  {sc.label}
-                </button>
-              ))}
-            </div>
-          </details>
-        ))}
-      </div>
-    </aside>
-  );
-}
-
-function InfoPanel(props: {
-  selected: Shape | null;
-  totalArea: number;
-  totalPeri: number;
-  shapeCount: number;
-  tool: Tool;
-  mergeFirst: boolean;
-}) {
-  const tips: Record<Tool, string> = {
-    draw: "캔버스를 클릭(또는 터치)해서 꼭짓점을 차례대로 찍어 보세요. 첫 점을 다시 누르거나 ‘도형 완성’ 버튼을 누르면 다각형이 만들어져요.",
-    select: "도형을 눌러 선택하고, 도형 안쪽을 끌면 옮겨요. 꼭짓점을 끌면 모양이 변하고, 위쪽 초록 점은 회전 손잡이예요.",
-    cut: "도형 위에서 ‘드래그(누른 채로 끌기)’해서 잘라요. 가로·세로·비스듬한 직선 모두 가능.",
-    merge: props.mergeFirst
-      ? "첫 번째 도형을 골랐어요! 이제 ‘붙이고 싶은 도형’을 누르세요. 두 도형이 한 변을 정확히 맞대고 있어야 합쳐져요."
-      : "합칠 첫 번째 도형을 누르세요. 그 다음 두 번째 도형을 누르면 한 도형으로 합쳐져요. 합쳐진 자국이 점선으로 남아요.",
-    measure: "두 점을 ‘드래그(누른 채로 끌기)’해서 길이를 재요. 1cm 눈금이 함께 그려져요. 같은 도구로 여러 번 재고, 측정선은 ‘측정선 지우기’로 모두 지울 수 있어요.",
-    guide: "도형을 자르기 전에 ‘이쯤에서 자를까?’ 직선을 미리 그어 보세요. 두 점을 끌면 점선 가이드가 남아요. 가이드는 자르기에 영향을 주지 않고, ‘가이드선 지우기’로 모두 지울 수 있어요.",
-    delete: "지우고 싶은 도형을 누르세요.",
-  };
-  return (
-    <div className="grid gap-3 md:grid-cols-3">
-      <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm md:col-span-2">
-        <div className="text-sm sm:text-base font-semibold text-slate-500">사용 방법</div>
-        <p className="mt-1 text-sm sm:text-base text-slate-700 leading-relaxed">{tips[props.tool]}</p>
-        <p className="mt-2 text-xs sm:text-sm text-slate-500">
-          🔸 격자 한 칸 = 1cm · 굵은 선 = 5cm · Ctrl/Cmd+Z 되돌리기 · 🧲 자석을 켜면 도형끼리·모서리끼리 딱 붙어요
-        </p>
-      </div>
-      <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-        <div className="text-sm sm:text-base font-semibold text-slate-500">전체 합계</div>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <Stat label="도형 수" value={`${props.shapeCount}개`} />
-          <Stat label="둘레 합" value={fmtLen(props.totalPeri)} />
-          <Stat label="넓이 합" value={fmtArea(props.totalArea)} />
-          {props.selected && (
-            <Stat
-              label="선택 넓이"
-              value={fmtArea(polygonArea(props.selected.points) / (GRID * GRID))}
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg bg-slate-50 px-3 py-2">
-      <div className="text-[11px] sm:text-xs text-slate-500">{label}</div>
-      <div className="text-sm sm:text-base font-semibold text-slate-900">{value}</div>
-    </div>
-  );
-}
-
 
 function SummaryBar({
   shapes,
@@ -1651,26 +1474,44 @@ function SummaryBar({
   );
 }
 
-function FormulaBanner({ shape, boardMode }: { shape: Shape; boardMode: boolean }) {
-  const kind = useMemo(() => detectShapeKind(shape.points), [shape]);
-  const sizing = boardMode ? "text-xl sm:text-2xl" : "text-base sm:text-lg";
-  const nameSize = boardMode ? "text-2xl sm:text-3xl" : "text-lg sm:text-xl";
+function ScenariosAside({
+  groups,
+  onLoad,
+}: {
+  groups: ScenarioGroup[];
+  onLoad: (sc: Scenario) => void;
+}) {
   return (
-    <div
-      className="rounded-2xl border-2 border-amber-300 bg-amber-50 shadow-sm px-4 py-3 sm:px-5 sm:py-4 flex flex-wrap items-center gap-3 sm:gap-5"
-      style={{ borderLeftWidth: 10, borderLeftColor: shape.color }}
-    >
-      <div className={`font-bold text-amber-900 ${nameSize}`}>📐 {kind.name}</div>
-      {kind.formula && (
-        <div className={`text-amber-800 ${sizing}`}>
-          <span className="font-semibold">넓이 공식</span>
-          <span className="mx-2 text-amber-500">=</span>
-          <span className="font-bold bg-white px-3 py-1.5 rounded-lg border border-amber-200">
-            {kind.formula}
-          </span>
-        </div>
-      )}
-    </div>
+    <aside className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm lg:max-h-[640px] lg:overflow-y-auto">
+      <div className="mb-2 text-sm sm:text-base font-semibold text-indigo-800">📚 학습 예시</div>
+      <div className="flex flex-col gap-2">
+        {groups.map((g, gi) => (
+          <details
+            key={g.shape}
+            open={gi === 0}
+            className="rounded-xl bg-white border border-indigo-100 px-3 py-2"
+          >
+            <summary className="cursor-pointer text-sm sm:text-base font-semibold text-indigo-900 marker:text-indigo-400 min-h-[40px] flex items-center">
+              {g.shape}
+            </summary>
+            <div className="mt-1 text-[12px] sm:text-sm text-indigo-700 font-medium">
+              공식: {g.formula}
+            </div>
+            <div className="mt-2 flex flex-col gap-1.5">
+              {g.scenarios.map((sc) => (
+                <button
+                  key={sc.label}
+                  className="text-left text-[13px] sm:text-sm px-2.5 py-2 rounded-md border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-900 min-h-[36px]"
+                  onClick={() => onLoad(sc)}
+                >
+                  {sc.label}
+                </button>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
+    </aside>
   );
 }
 

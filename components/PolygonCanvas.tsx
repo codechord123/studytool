@@ -59,6 +59,14 @@ function fmtArea(cm2: number): string {
 type Camera = { scale: number; tx: number; ty: number };
 type Measurement = { id: string; a: Point; b: Point };
 type Guide = { id: string; a: Point; b: Point };
+type Segment = Measurement; // {id,a,b} 공통 구조
+type ActiveAux = { kind: "guide" | "measure"; id: string } | null;
+
+// 되돌리기 단위 — 도형뿐 아니라 측정선·가이드까지 함께 스냅샷
+type Snapshot = { shapes: Shape[]; measurements: Measurement[]; guides: Guide[] };
+function cloneSegs<T extends Segment>(arr: T[]): T[] {
+  return arr.map((m) => ({ ...m, a: { ...m.a }, b: { ...m.b } }));
+}
 
 type DragMode =
   | { type: "none" }
@@ -81,7 +89,44 @@ type DragMode =
     }
   | { type: "cut"; start: Point; current: Point }
   | { type: "measure"; start: Point; current: Point }
-  | { type: "guide"; start: Point; current: Point };
+  | { type: "guide"; start: Point; current: Point }
+  // 가이드/측정선 편집
+  | { type: "auxEnd"; kind: "guide" | "measure"; id: string; end: "a" | "b" }
+  | { type: "auxMove"; kind: "guide" | "measure"; id: string; startA: Point; startB: Point; startPointer: Point };
+
+// 점 p에서 선분 a-b까지의 최단 거리
+function distToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const L2 = dx * dx + dy * dy || 1;
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+}
+
+// 축에 평행한 직사각형이면 {x,y,w,h}(월드px) 반환, 아니면 null — 격자 칸 시각화용
+function axisAlignedRect(pts: Point[]): { x: number; y: number; w: number; h: number } | null {
+  if (pts.length !== 4) return null;
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const w = maxX - minX;
+  const h = maxY - minY;
+  if (w < 1 || h < 1) return null;
+  const corners = [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+  for (const p of pts) {
+    if (!corners.some((c) => Math.abs(c.x - p.x) < 0.5 && Math.abs(c.y - p.y) < 0.5)) return null;
+  }
+  return { x: minX, y: minY, w, h };
+}
 
 function placeAtCenter(pts: Point[], cx: number, cy: number): Point[] {
   const xs = pts.map((p) => p.x);
@@ -233,8 +278,8 @@ const TOOL_HINT: Record<Tool, string> = {
   draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
   cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요.",
-  measure: "두 점을 드래그해 길이를 재요. 1cm 눈금이 표시돼요.",
-  guide: "자르기 전 ‘여기서 자를까?’ 점선 보조선을 미리 그어 보세요.",
+  measure: "두 점을 드래그해 길이를 재요. 끝점·선을 잡아 옮기고, Delete로 지울 수 있어요.",
+  guide: "점선 보조선을 그어요. 끝점·선을 잡아 옮기고 조절, Delete로 지우기. (자르기 전 ‘여기서 자를까?’)",
   delete: "지우고 싶은 도형을 누르세요.",
 };
 
@@ -244,9 +289,11 @@ export default function PolygonCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [shapes, setShapes] = useState<Shape[]>([]);
-  const [past, setPast] = useState<Shape[][]>([]);
-  const [future, setFuture] = useState<Shape[][]>([]);
+  const [past, setPast] = useState<Snapshot[]>([]);
+  const [future, setFuture] = useState<Snapshot[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [activeAux, setActiveAux] = useState<ActiveAux>(null);
+  const [showAreaBadge, setShowAreaBadge] = useState(true);
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
   const [snapStep, setSnapStep] = useState<0 | 0.2 | 0.5 | 1>(0.5);
@@ -389,35 +436,46 @@ export default function PolygonCanvas() {
     return () => clearTimeout(t);
   }, [flash]);
 
-  // ----- 히스토리 -----
+  // ----- 히스토리 (도형 + 측정선 + 가이드) -----
+  const snapshot = useCallback(
+    (): Snapshot => ({ shapes: cloneShapes(shapes), measurements: cloneSegs(measurements), guides: cloneSegs(guides) }),
+    [shapes, measurements, guides]
+  );
+
   const commitHistory = useCallback(() => {
     setPast((p) => {
-      const next = [...p, cloneShapes(shapes)];
+      const next = [...p, snapshot()];
       return next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
     });
     setFuture([]);
-  }, [shapes]);
+  }, [snapshot]);
 
   const undo = useCallback(() => {
     if (past.length === 0) return;
     const prev = past[past.length - 1];
-    setFuture((f) => [cloneShapes(shapes), ...f]);
+    setFuture((f) => [snapshot(), ...f]);
     setPast((p) => p.slice(0, -1));
-    setShapes(prev);
-    setSelectedId((id) => (prev.find((s) => s.id === id) ? id : null));
+    setShapes(prev.shapes);
+    setMeasurements(prev.measurements);
+    setGuides(prev.guides);
+    setSelectedId((id) => (prev.shapes.find((s) => s.id === id) ? id : null));
+    setActiveAux(null);
     setMergeFirstId(null);
     setDraft([]);
     dragRef.current = { type: "none" };
-  }, [past, shapes]);
+  }, [past, snapshot]);
 
   const redo = useCallback(() => {
     if (future.length === 0) return;
     const next = future[0];
-    setPast((p) => [...p, cloneShapes(shapes)]);
+    setPast((p) => [...p, snapshot()]);
     setFuture((f) => f.slice(1));
-    setShapes(next);
-    setSelectedId((id) => (next.find((s) => s.id === id) ? id : null));
-  }, [future, shapes]);
+    setShapes(next.shapes);
+    setMeasurements(next.measurements);
+    setGuides(next.guides);
+    setSelectedId((id) => (next.shapes.find((s) => s.id === id) ? id : null));
+    setActiveAux(null);
+  }, [future, snapshot]);
 
   // ----- 자석 스냅 -----
   const vertexSnap = useCallback(
@@ -558,14 +616,34 @@ export default function PolygonCanvas() {
       dragRef.current = { type: "cut", start: startPt, current: startPt };
       return;
     }
-    if (tool === "measure") {
+    if (tool === "measure" || tool === "guide") {
+      const kind: "measure" | "guide" = tool;
+      const list = kind === "measure" ? measurements : guides;
+      // 1) 기존 끝점 잡기 → 끝점 조절 (격자 스냅 오차를 고려해 넉넉한 허용오차)
+      for (const seg of list) {
+        const end = Math.hypot(raw.x - seg.a.x, raw.y - seg.a.y) < 18 * k ? "a" : Math.hypot(raw.x - seg.b.x, raw.y - seg.b.y) < 18 * k ? "b" : null;
+        if (end) {
+          commitHistory();
+          setSelectedId(null);
+          setActiveAux({ kind, id: seg.id });
+          dragRef.current = { type: "auxEnd", kind, id: seg.id, end };
+          return;
+        }
+      }
+      // 2) 선분 몸통 잡기 → 전체 평행이동
+      for (const seg of list) {
+        if (distToSegment(raw, seg.a, seg.b) < 10 * k) {
+          commitHistory();
+          setSelectedId(null);
+          setActiveAux({ kind, id: seg.id });
+          dragRef.current = { type: "auxMove", kind, id: seg.id, startA: { ...seg.a }, startB: { ...seg.b }, startPointer: p };
+          return;
+        }
+      }
+      // 3) 빈 곳 → 새로 그리기
       const startPt = vertexSnap(p, undefined, 16 * k);
-      dragRef.current = { type: "measure", start: startPt, current: startPt };
-      return;
-    }
-    if (tool === "guide") {
-      const startPt = vertexSnap(p, undefined, 16 * k);
-      dragRef.current = { type: "guide", start: startPt, current: startPt };
+      setActiveAux(null);
+      dragRef.current = { type: kind, start: startPt, current: startPt };
       return;
     }
 
@@ -623,6 +701,7 @@ export default function PolygonCanvas() {
     const hit = topShapeAt(raw);
     if (hit) {
       setSelectedId(hit.id);
+      setActiveAux(null);
       commitHistory();
       dragRef.current = {
         type: "translate",
@@ -671,6 +750,24 @@ export default function PolygonCanvas() {
       dragRef.current = { ...dm, current: vertexSnap(p, undefined, 16 * k) };
       return;
     }
+    if (dm.type === "auxEnd") {
+      const np = vertexSnap(p, undefined, 14 * k);
+      const patch = (s: Segment): Segment => (s.id === dm.id ? { ...s, ...(dm.end === "a" ? { a: np } : { b: np }) } : s);
+      if (dm.kind === "measure") setMeasurements((m) => m.map(patch));
+      else setGuides((g) => g.map(patch));
+      return;
+    }
+    if (dm.type === "auxMove") {
+      const dx = p.x - dm.startPointer.x;
+      const dy = p.y - dm.startPointer.y;
+      const patch = (s: Segment): Segment =>
+        s.id === dm.id
+          ? { ...s, a: { x: dm.startA.x + dx, y: dm.startA.y + dy }, b: { x: dm.startB.x + dx, y: dm.startB.y + dy } }
+          : s;
+      if (dm.kind === "measure") setMeasurements((m) => m.map(patch));
+      else setGuides((g) => g.map(patch));
+      return;
+    }
     setShapes((all) =>
       all.map((s) => {
         if (s.id !== dm.shapeId) return s;
@@ -694,7 +791,11 @@ export default function PolygonCanvas() {
           };
         }
         if (dm.type === "rotate") {
-          const ang = Math.atan2(p.y - dm.center.y, p.x - dm.center.x) - dm.startAngle;
+          const rawAng = Math.atan2(p.y - dm.center.y, p.x - dm.center.x) - dm.startAngle;
+          // 15° 배수(15·30·45·90…)에 7° 이내면 자석 스냅
+          const SNAP = Math.PI / 12;
+          const near = Math.round(rawAng / SNAP) * SNAP;
+          const ang = Math.abs(rawAng - near) < (Math.PI / 180) * 7 ? near : rawAng;
           return {
             ...s,
             points: rotatePoints(dm.startPoints, dm.center, ang),
@@ -718,16 +819,26 @@ export default function PolygonCanvas() {
       const b = vertexSnap(gridSnap(toWorld(sx, sy)), undefined, 16 * k);
       const a = dm.start;
       if (Math.hypot(a.x - b.x, a.y - b.y) > 4 * k) applyCut(a, b);
-    } else if (dm.type === "measure") {
+    } else if (dm.type === "measure" || dm.type === "guide") {
       const { sx, sy } = localXY(e);
       const b = vertexSnap(gridSnap(toWorld(sx, sy)), undefined, 16 * k);
       const a = dm.start;
-      if (Math.hypot(a.x - b.x, a.y - b.y) > 8 * k) setMeasurements((m) => [...m, { id: uid(), a, b }]);
-    } else if (dm.type === "guide") {
-      const { sx, sy } = localXY(e);
-      const b = vertexSnap(gridSnap(toWorld(sx, sy)), undefined, 16 * k);
-      const a = dm.start;
-      if (Math.hypot(a.x - b.x, a.y - b.y) > 8 * k) setGuides((g) => [...g, { id: uid(), a, b }]);
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 8 * k) {
+        commitHistory();
+        const seg = { id: uid(), a, b };
+        if (dm.type === "measure") setMeasurements((m) => [...m, seg]);
+        else setGuides((g) => [...g, seg]);
+        setActiveAux({ kind: dm.type, id: seg.id });
+      }
+    } else if (dm.type === "auxEnd" || dm.type === "auxMove") {
+      // 편집 후 길이가 거의 0이면 자동 제거
+      const list = dm.kind === "measure" ? measurements : guides;
+      const seg = list.find((s) => s.id === dm.id);
+      if (seg && Math.hypot(seg.a.x - seg.b.x, seg.a.y - seg.b.y) < 6 * k) {
+        if (dm.kind === "measure") setMeasurements((m) => m.filter((s) => s.id !== dm.id));
+        else setGuides((g) => g.filter((s) => s.id !== dm.id));
+        setActiveAux(null);
+      }
     }
     dragRef.current = { type: "none" };
   }
@@ -807,10 +918,33 @@ export default function PolygonCanvas() {
         dragRef.current = { type: "none" };
       } else if (e.key === "Enter" && tool === "draw" && draft.length >= 3) {
         finishDraft();
-      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        commitHistory();
-        setShapes((all) => all.filter((s) => s.id !== selectedId));
-        setSelectedId(null);
+      } else if (e.key.startsWith("Arrow") && selectedId) {
+        e.preventDefault();
+        const base = (snapStep > 0 ? snapStep : 0.5) * GRID;
+        const step = e.shiftKey ? GRID : base;
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+        if (dx || dy) {
+          commitHistory();
+          setShapes((all) =>
+            all.map((s) =>
+              s.id === selectedId
+                ? { ...s, points: translatePoints(s.points, dx, dy), ghosts: s.ghosts?.map((g) => translatePoints(g, dx, dy)) }
+                : s
+            )
+          );
+        }
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedId) {
+          commitHistory();
+          setShapes((all) => all.filter((s) => s.id !== selectedId));
+          setSelectedId(null);
+        } else if (activeAux) {
+          commitHistory();
+          if (activeAux.kind === "measure") setMeasurements((m) => m.filter((s) => s.id !== activeAux.id));
+          else setGuides((g) => g.filter((s) => s.id !== activeAux.id));
+          setActiveAux(null);
+        }
       }
     }
     function onKeyUp(e: KeyboardEvent) {
@@ -823,7 +957,7 @@ export default function PolygonCanvas() {
       window.removeEventListener("keyup", onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, draft.length, selectedId, undo, redo, commitHistory, zoomCenter]);
+  }, [tool, draft.length, selectedId, activeAux, snapStep, undo, redo, commitHistory, zoomCenter]);
 
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
     if (!selected) return;
@@ -1022,7 +1156,7 @@ export default function PolygonCanvas() {
     }
 
     // 측정선
-    const drawRuler = (a: Point, b: Point, color: string) => {
+    const drawRuler = (a: Point, b: Point, color: string, active = false) => {
       const dist = Math.hypot(b.x - a.x, b.y - a.y) / GRID;
       ctx.strokeStyle = color;
       ctx.lineWidth = 3 * k;
@@ -1073,16 +1207,28 @@ export default function PolygonCanvas() {
       ctx.fillText(text, mx, my);
       ctx.textAlign = "start";
       ctx.textBaseline = "alphabetic";
+      if (active) {
+        [a, b].forEach((q) => {
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(q.x, q.y, 8 * k, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.5 * k;
+          ctx.stroke();
+        });
+      }
     };
-    for (const m of measurements) drawRuler(m.a, m.b, "#7c3aed");
+    for (const m of measurements)
+      drawRuler(m.a, m.b, "#7c3aed", activeAux?.kind === "measure" && activeAux.id === m.id);
     if (tool === "measure" && dm.type === "measure") drawRuler(dm.start, dm.current, "#a855f7");
 
     // 가이드선
-    const drawGuide = (a: Point, b: Point, color: string) => {
+    const drawGuide = (a: Point, b: Point, color: string, active = false) => {
       ctx.save();
       ctx.setLineDash([12 * k, 8 * k]);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3 * k;
+      ctx.strokeStyle = active ? "#2563eb" : color;
+      ctx.lineWidth = (active ? 4 : 3) * k;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const L = Math.hypot(dx, dy) || 1;
@@ -1093,14 +1239,24 @@ export default function PolygonCanvas() {
       ctx.lineTo(b.x + ex, b.y + ey);
       ctx.stroke();
       ctx.restore();
-      ctx.fillStyle = color;
       [a, b].forEach((q) => {
-        ctx.beginPath();
-        ctx.arc(q.x, q.y, 5 * k, 0, Math.PI * 2);
-        ctx.fill();
+        if (active) {
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(q.x, q.y, 8 * k, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#2563eb";
+          ctx.lineWidth = 2.5 * k;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(q.x, q.y, 5 * k, 0, Math.PI * 2);
+          ctx.fill();
+        }
       });
     };
-    for (const g of guides) drawGuide(g.a, g.b, "#0f172a");
+    for (const g of guides) drawGuide(g.a, g.b, "#0f172a", activeAux?.kind === "guide" && activeAux.id === g.id);
     if (tool === "guide" && dm.type === "guide") drawGuide(dm.start, dm.current, "#475569");
 
     // 모눈 눈금 숫자 (화면 가장자리에 고정 = 자 느낌)
@@ -1117,7 +1273,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cam, size, measurements, guides, boardMode]);
+  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -1133,6 +1289,40 @@ export default function PolygonCanvas() {
     ctx.closePath();
     ctx.fillStyle = isMergeFirst ? "#f59e0b55" : s.color + "55";
     ctx.fill();
+
+    // 격자 칸 채우기 시각화 (선택된 축평행 직사각형) — 넓이 = 칸 수
+    const rectCells = isSelected ? axisAlignedRect(s.points) : null;
+    let cellInfo: { cols: number; rows: number } | null = null;
+    if (rectCells) {
+      const cols = Math.round(rectCells.w / GRID);
+      const rows = Math.round(rectCells.h / GRID);
+      if (
+        cols >= 1 &&
+        rows >= 1 &&
+        cols * rows <= 600 &&
+        Math.abs(rectCells.w - cols * GRID) < 2 &&
+        Math.abs(rectCells.h - rows * GRID) < 2
+      ) {
+        cellInfo = { cols, rows };
+        for (let i = 0; i < cols; i++)
+          for (let j = 0; j < rows; j++) {
+            ctx.fillStyle = (i + j) % 2 === 0 ? s.color + "33" : s.color + "1f";
+            ctx.fillRect(rectCells.x + i * GRID, rectCells.y + j * GRID, GRID, GRID);
+          }
+        ctx.strokeStyle = s.color + "aa";
+        ctx.lineWidth = 1 * k;
+        ctx.beginPath();
+        for (let i = 0; i <= cols; i++) {
+          ctx.moveTo(rectCells.x + i * GRID, rectCells.y);
+          ctx.lineTo(rectCells.x + i * GRID, rectCells.y + rectCells.h);
+        }
+        for (let j = 0; j <= rows; j++) {
+          ctx.moveTo(rectCells.x, rectCells.y + j * GRID);
+          ctx.lineTo(rectCells.x + rectCells.w, rectCells.y + j * GRID);
+        }
+        ctx.stroke();
+      }
+    }
 
     if (s.ghosts && s.ghosts.length > 1) {
       ctx.save();
@@ -1229,6 +1419,40 @@ export default function PolygonCanvas() {
       ctx.font = `bold ${16 * k}px sans-serif`;
       ctx.fillText("1️⃣", s.points[0].x - 10 * k, s.points[0].y - 14 * k);
     }
+
+    // 중앙 라벨: 칸 수(직사각형 시각화) 또는 넓이 배지 — 회전 점선 위에 그려 가독성 확보
+    const centerLabel = cellInfo
+      ? `${cellInfo.cols} × ${cellInfo.rows} = ${cellInfo.cols * cellInfo.rows}칸`
+      : showAreaBadge
+      ? fmtArea(polygonArea(s.points) / (GRID * GRID))
+      : null;
+    if (centerLabel) {
+      const lf = (cellInfo ? (boardMode ? 19 : 16) : boardMode ? 17 : 14) * k;
+      ctx.font = `bold ${lf}px sans-serif`;
+      const tw = ctx.measureText(centerLabel).width;
+      const padH = 8 * k;
+      const boxH = lf + 9 * k;
+      const bx = cx0.x - tw / 2 - padH;
+      const by = cx0.y - boxH / 2;
+      const bw = tw + padH * 2;
+      if (cellInfo) {
+        ctx.fillStyle = "rgba(255,255,255,0.96)";
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = 2 * k;
+        ctx.fillRect(bx, by, bw, boxH);
+        ctx.strokeRect(bx, by, bw, boxH);
+        ctx.fillStyle = "#0f172a";
+      } else {
+        ctx.fillStyle = s.color;
+        ctx.fillRect(bx, by, bw, boxH);
+        ctx.fillStyle = "#ffffff";
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(centerLabel, cx0.x, cx0.y);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    }
   }
 
   const totalArea = useMemo(
@@ -1316,6 +1540,7 @@ export default function PolygonCanvas() {
                 ))}
               </div>
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" />
+              <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" />
             </div>
 
             <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">

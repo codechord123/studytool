@@ -327,6 +327,59 @@ const SCENARIO_GROUPS: ScenarioGroup[] = [
   },
 ];
 
+// ===== 탐구(조작) 레슨 — 아이가 직접 조작해 공식을 유도 =====
+type LessonStep = {
+  prompt: string;
+  hint?: string;
+  tool?: Tool;
+  manual?: boolean; // 자동 감지 불가(관찰형) → '다음' 버튼
+  final?: boolean; // 공식 공개 단계
+  done?: (shapes: Shape[]) => boolean; // 목표 상태 감지
+  success?: string;
+};
+type Lesson = {
+  id: string;
+  title: string;
+  formula: string;
+  build: (cx: number, cy: number) => Shape[];
+  steps: LessonStep[];
+};
+
+const LESSONS: Lesson[] = [
+  {
+    id: "trapezoid",
+    title: "사다리꼴 넓이 공식 만들기",
+    formula: "(윗변 + 아랫변) × 높이 ÷ 2",
+    build: (cx, cy) => [
+      S(COLORS[3], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx - 5 * GRID, cy)),
+      S(COLORS[1], placeAtCenter(makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID), cx + 5 * GRID, cy)),
+    ],
+    steps: [
+      {
+        prompt:
+          "🎯 똑같은 사다리꼴 두 개로 '평행사변형'을 만들어 보세요! 분홍 사다리꼴을 선택해 ↻180° 로 돌린 뒤, 노란 사다리꼴의 빗변에 딱 붙이고 🔗 합치기를 누르면 돼요.",
+        hint: "기울어진 변(빗변)끼리 정확히 맞붙여야 합쳐져요. 🧲 자석을 켜고 천천히 가까이 가져가 보세요!",
+        tool: "select",
+        done: (shapes) =>
+          shapes.length === 1 &&
+          detectShapeKind(shapes[0].points).name === "평행사변형" &&
+          Math.abs(polygonArea(shapes[0].points) / (GRID * GRID) - 32) < 1.5,
+        success: "🎉 평행사변형이 됐어요! 밑변이 (윗변 + 아랫변)만큼 길어졌죠?",
+      },
+      {
+        prompt:
+          "📏 이 평행사변형의 넓이 = 밑변 × 높이 = (윗변 + 아랫변) × 높이. 그런데 이건 똑같은 사다리꼴 '두 개'로 만든 거예요!",
+        manual: true,
+      },
+      {
+        prompt: "💡 그러니까 사다리꼴 한 개의 넓이는 그 절반이에요. 직접 만들어 알아냈어요!",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+];
+
 const TOOL_META: { id: Tool; icon: string; label: string }[] = [
   { id: "select", icon: "🖱️", label: "선택·이동" },
   { id: "draw", icon: "✏️", label: "그리기" },
@@ -370,6 +423,9 @@ export default function PolygonCanvas() {
   const [guides, setGuides] = useState<Guide[]>([]);
   const [boardMode, setBoardMode] = useState(false);
   const [drawer, setDrawer] = useState<null | "shapes" | "scenarios">(null);
+  const [lesson, setLesson] = useState<Lesson | null>(null);
+  const [lessonStep, setLessonStep] = useState(0);
+  const [showHint, setShowHint] = useState(false);
 
   const [cam, setCamState] = useState<Camera>({ scale: 1, tx: 0, ty: 0 });
   const camRef = useRef<Camera>({ scale: 1, tx: 0, ty: 0 });
@@ -1092,6 +1148,63 @@ export default function PolygonCanvas() {
     requestAnimationFrame(() => fitView(built));
   }
 
+  // ----- 탐구 레슨 -----
+  function startLesson(L: Lesson) {
+    commitHistory();
+    const { x: cx, y: cy } = viewCenterWorld();
+    const built = L.build(cx, cy);
+    setShapes(built);
+    setSelectedId(null);
+    setMergeFirstId(null);
+    setDraft([]);
+    setMeasurements([]);
+    setGuides([]);
+    setScenarioHint(null);
+    setTool(L.steps[0]?.tool ?? "select");
+    setLesson(L);
+    setLessonStep(0);
+    setShowHint(false);
+    setDrawer(null);
+    requestAnimationFrame(() => fitView(built));
+  }
+
+  function restartLesson() {
+    if (!lesson) return;
+    const { x: cx, y: cy } = viewCenterWorld();
+    const built = lesson.build(cx, cy);
+    commitHistory();
+    setShapes(built);
+    setSelectedId(null);
+    setMergeFirstId(null);
+    setLessonStep(0);
+    setShowHint(false);
+    requestAnimationFrame(() => fitView(built));
+  }
+
+  function exitLesson() {
+    setLesson(null);
+    setLessonStep(0);
+    setShowHint(false);
+  }
+
+  function advanceLesson() {
+    if (!lesson) return;
+    setShowHint(false);
+    setLessonStep((i) => Math.min(i + 1, lesson.steps.length - 1));
+  }
+
+  // 자동 감지: 현재 단계의 목표 상태가 달성되면 다음 단계로
+  useEffect(() => {
+    if (!lesson) return;
+    const step = lesson.steps[lessonStep];
+    if (!step || step.manual || !step.done) return;
+    if (step.done(shapes)) {
+      if (step.success) setFlash(step.success);
+      setShowHint(false);
+      setLessonStep((i) => Math.min(i + 1, lesson.steps.length - 1));
+    }
+  }, [shapes, lesson, lessonStep]);
+
   function clearAll() {
     commitHistory();
     setShapes([]);
@@ -1101,6 +1214,7 @@ export default function PolygonCanvas() {
     setScenarioHint(null);
     setMeasurements([]);
     setGuides([]);
+    exitLesson();
   }
 
   function exportPNG() {
@@ -1804,7 +1918,7 @@ export default function PolygonCanvas() {
             {flash}
           </div>
         )}
-        {scenarioHint && (
+        {scenarioHint && !lesson && (
           <div className="pointer-events-auto flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50/95 px-4 py-3 text-sm text-amber-900 shadow-lg backdrop-blur">
             <span>💡</span>
             <span className="flex-1">{scenarioHint}</span>
@@ -1814,6 +1928,19 @@ export default function PolygonCanvas() {
           </div>
         )}
       </div>
+
+      {/* 탐구 레슨 패널 (상단 중앙) */}
+      {lesson && (
+        <LessonPanel
+          lesson={lesson}
+          stepIndex={lessonStep}
+          showHint={showHint}
+          onToggleHint={() => setShowHint((v) => !v)}
+          onNext={advanceLesson}
+          onRestart={restartLesson}
+          onExit={exitLesson}
+        />
+      )}
 
       {/* 드로어 */}
       <Drawer side="left" open={drawer === "shapes"} title="📐 도형 추가" onClose={() => setDrawer(null)}>
@@ -1825,6 +1952,20 @@ export default function PolygonCanvas() {
       </Drawer>
       <Drawer side="right" open={drawer === "scenarios"} title="📚 학습 예시" onClose={() => setDrawer(null)}>
         <div className="flex flex-col gap-2">
+          <div className="rounded-xl border-2 border-emerald-300 bg-emerald-50 p-3">
+            <div className="mb-1 text-sm font-extrabold text-emerald-900">🧪 직접 만드는 공식 (탐구)</div>
+            <div className="mb-2 text-xs text-emerald-700">도형을 직접 돌리고 붙여 공식을 스스로 발견해요.</div>
+            {LESSONS.map((L) => (
+              <button
+                key={L.id}
+                onClick={() => startLesson(L)}
+                className="w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-left text-sm font-bold text-white shadow hover:bg-emerald-700"
+              >
+                ▶ {L.title}
+              </button>
+            ))}
+          </div>
+          <div className="mt-1 px-0.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">눈으로 보는 예시</div>
           {SCENARIO_GROUPS.map((g, gi) => (
             <details key={g.shape} open={gi === 0} className="rounded-xl border border-indigo-100 bg-indigo-50/50 px-3 py-2">
               <summary className="flex min-h-[36px] cursor-pointer items-center text-sm font-bold text-indigo-900 marker:text-indigo-400">
@@ -2057,6 +2198,101 @@ function MiniGroup({ label, children }: { label: string; children: ReactNode }) 
     <div className="flex flex-col items-center gap-1">
       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</span>
       <div className="flex gap-1">{children}</div>
+    </div>
+  );
+}
+
+function LessonPanel({
+  lesson,
+  stepIndex,
+  showHint,
+  onToggleHint,
+  onNext,
+  onRestart,
+  onExit,
+}: {
+  lesson: Lesson;
+  stepIndex: number;
+  showHint: boolean;
+  onToggleHint: () => void;
+  onNext: () => void;
+  onRestart: () => void;
+  onExit: () => void;
+}) {
+  const step = lesson.steps[stepIndex];
+  const isFinal = !!step?.final;
+  return (
+    <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,620px)] -translate-x-1/2">
+      <div className="pointer-events-auto rounded-2xl border-2 border-emerald-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-extrabold text-emerald-800">🧪 {lesson.title}</span>
+            <div className="flex gap-1">
+              {lesson.steps.map((_, i) => (
+                <span
+                  key={i}
+                  className={`h-2 w-2 rounded-full ${
+                    i < stepIndex ? "bg-emerald-500" : i === stepIndex ? "bg-emerald-600 ring-2 ring-emerald-200" : "bg-slate-200"
+                  }`}
+                />
+              ))}
+            </div>
+          </div>
+          <button onClick={onExit} className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600">
+            그만두기 ✕
+          </button>
+        </div>
+
+        {isFinal ? (
+          <div className="rounded-xl bg-emerald-50 p-3 text-center">
+            <div className="text-sm font-bold text-emerald-700">🎉 직접 조작해서 알아냈어요!</div>
+            <div className="mt-2 text-sm text-slate-600">{step?.prompt}</div>
+            <div className="mt-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xl font-extrabold text-slate-900">
+              {lesson.formula}
+            </div>
+            <div className="mt-3 flex justify-center gap-2">
+              <button onClick={onRestart} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50">
+                ↺ 다시 해보기
+              </button>
+              <button onClick={onExit} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">
+                완료
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="text-sm leading-relaxed text-slate-800">{step?.prompt}</div>
+            {showHint && step?.hint && (
+              <div className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">💡 {step.hint}</div>
+            )}
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <div className="flex gap-1.5">
+                {step?.hint && (
+                  <button
+                    onClick={onToggleHint}
+                    className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100"
+                  >
+                    {showHint ? "힌트 숨기기" : "💡 힌트"}
+                  </button>
+                )}
+                <button
+                  onClick={onRestart}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-50"
+                >
+                  ↺ 처음부터
+                </button>
+              </div>
+              {step?.manual ? (
+                <button onClick={onNext} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">
+                  다음 ▶
+                </button>
+              ) : (
+                <span className="text-xs font-medium text-emerald-600">조작하면 자동으로 넘어가요 ✨</span>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

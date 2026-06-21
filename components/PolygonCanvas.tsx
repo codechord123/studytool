@@ -348,14 +348,18 @@ const SCENARIO_GROUPS: ScenarioGroup[] = [
 ];
 
 // ===== 탐구(조작) 레슨 — 아이가 직접 조작해 공식을 유도 =====
+type FillBlank = { parts: string[]; answers: string[]; options: string[] }; // parts.length === answers.length + 1
+type Challenge = { question: string; answer: number; unit: string; solution: string; tolerance?: number };
 type LessonStep = {
-  prompt: string;
+  prompt?: string;
   hint?: string;
   tool?: Tool;
   manual?: boolean; // 자동 감지 불가(관찰형) → '다음' 버튼
   final?: boolean; // 공식 공개 단계
   done?: (shapes: Shape[]) => boolean; // 목표 상태 감지(작업 도형만, reference 제외)
   success?: string;
+  fill?: FillBlank; // 빈칸 채우기 정리
+  challenge?: Challenge; // 적용 챌린지(자동 채점)
 };
 type Lesson = {
   id: string;
@@ -412,6 +416,21 @@ const LESSONS: Lesson[] = [
         manual: true,
       },
       {
+        fill: {
+          parts: ["똑같은 사다리꼴 ", "개를 붙이면 ", "이 돼요. 그 넓이는 (윗변 + 아랫변) × ", " 이고, 사다리꼴은 그 ", " 이에요."],
+          answers: ["2", "평행사변형", "높이", "절반"],
+          options: ["2", "3", "평행사변형", "삼각형", "높이", "둘레", "절반", "두 배"],
+        },
+      },
+      {
+        challenge: {
+          question: "윗변 3cm, 아랫변 7cm, 높이 4cm인 사다리꼴의 넓이는?",
+          answer: 20,
+          unit: "cm²",
+          solution: "(3 + 7) × 4 ÷ 2 = 20",
+        },
+      },
+      {
         prompt: "💡 그러니까 사다리꼴 한 개의 넓이 = (윗변 + 아랫변) × 높이 ÷ 2 — 직접 만들어 알아냈어요!",
         manual: true,
         final: true,
@@ -446,6 +465,21 @@ const LESSONS: Lesson[] = [
       {
         prompt: "📏 평행사변형 넓이 = 밑변 × 높이. 이건 똑같은 삼각형 '두 개'로 만든 거예요. 위 원본과 같은 모양·크기죠?",
         manual: true,
+      },
+      {
+        fill: {
+          parts: ["똑같은 삼각형 ", "개를 붙이면 ", "이 돼요. 그 넓이는 밑변 × ", " 이고, 삼각형은 그 ", " 이에요."],
+          answers: ["2", "평행사변형", "높이", "절반"],
+          options: ["2", "3", "평행사변형", "사다리꼴", "높이", "둘레", "절반", "두 배"],
+        },
+      },
+      {
+        challenge: {
+          question: "밑변 8cm, 높이 5cm인 삼각형의 넓이는?",
+          answer: 20,
+          unit: "cm²",
+          solution: "8 × 5 ÷ 2 = 20",
+        },
       },
       {
         prompt: "💡 삼각형 한 개의 넓이 = 밑변 × 높이 ÷ 2 — 직접 발견했어요!",
@@ -485,6 +519,21 @@ const LESSONS: Lesson[] = [
         manual: true,
       },
       {
+        fill: {
+          parts: ["평행사변형의 끝을 잘라 옮기면 ", "이 돼요. 가로는 ", ", 세로는 ", " 예요. 그래서 넓이는 밑변 × ", " 이에요."],
+          answers: ["직사각형", "밑변", "높이", "높이"],
+          options: ["직사각형", "삼각형", "밑변", "대각선", "높이", "둘레"],
+        },
+      },
+      {
+        challenge: {
+          question: "밑변 6cm, 높이 5cm인 평행사변형의 넓이는?",
+          answer: 30,
+          unit: "cm²",
+          solution: "6 × 5 = 30",
+        },
+      },
+      {
         prompt: "💡 평행사변형 넓이 = 밑변 × 높이 — 똑같은 공식! 직사각형으로 변신시켜 알아냈어요.",
         manual: true,
         final: true,
@@ -520,6 +569,21 @@ const LESSONS: Lesson[] = [
         manual: true,
       },
       {
+        fill: {
+          parts: ["마름모는 두 대각선을 가로·세로로 하는 ", "의 ", " 이에요. 그래서 넓이는 (대각선 × 대각선) ÷ ", " 예요."],
+          answers: ["직사각형", "절반", "2"],
+          options: ["직사각형", "평행사변형", "절반", "두 배", "2", "4"],
+        },
+      },
+      {
+        challenge: {
+          question: "두 대각선이 6cm, 8cm인 마름모의 넓이는?",
+          answer: 24,
+          unit: "cm²",
+          solution: "6 × 8 ÷ 2 = 24",
+        },
+      },
+      {
         prompt: "💡 마름모 넓이 = 한 대각선 × 다른 대각선 ÷ 2",
         manual: true,
         final: true,
@@ -547,6 +611,21 @@ const LESSONS: Lesson[] = [
       {
         prompt: "📏 가로 6칸 × 세로 4칸 = 24칸. 한 칸은 1cm²이니까 넓이도 24cm²!",
         manual: true,
+      },
+      {
+        fill: {
+          parts: ["직사각형은 가로 ", "칸 × 세로 ", "칸 = ", "칸. 한 칸이 1cm²니까 넓이는 ", "cm² 예요."],
+          answers: ["6", "4", "24", "24"],
+          options: ["4", "6", "10", "12", "24"],
+        },
+      },
+      {
+        challenge: {
+          question: "가로 7cm, 세로 5cm인 직사각형의 넓이는?",
+          answer: 35,
+          unit: "cm²",
+          solution: "7 × 5 = 35",
+        },
       },
       {
         prompt: "💡 직사각형 넓이 = 가로 × 세로 — 칸을 세는 게 곧 곱하기였어요!",
@@ -2492,8 +2571,60 @@ function LessonPanel({
   const conserved = refArea > 0 && Math.abs(refArea - curArea) < 0.5;
   const step = lesson.steps[stepIndex];
   const isFinal = !!step?.final;
+  const fill = step?.fill;
+  const challenge = step?.challenge;
+
+  const [fillVals, setFillVals] = useState<(string | null)[]>([]);
+  const [activeBlank, setActiveBlank] = useState(0);
+  const [fillChecked, setFillChecked] = useState(false);
+  const [ans, setAns] = useState("");
+  const [chResult, setChResult] = useState<"idle" | "correct" | "wrong">("idle");
+  const [revealed, setRevealed] = useState(false);
+
+  useEffect(() => {
+    setFillVals(fill ? fill.answers.map(() => null) : []);
+    setActiveBlank(0);
+    setFillChecked(false);
+    setAns("");
+    setChResult("idle");
+    setRevealed(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepIndex, lesson.id]);
+
+  const fillAllFilled = !!fill && fillVals.length === fill.answers.length && fillVals.every((v) => v !== null);
+  const fillAllCorrect = !!fill && fillVals.length === fill.answers.length && fill.answers.every((a, i) => fillVals[i] === a);
+
+  function pickChip(opt: string) {
+    if (!fill) return;
+    const next = [...fillVals];
+    next[activeBlank] = opt;
+    setFillVals(next);
+    const empty = next.findIndex((v) => v === null);
+    setActiveBlank(empty === -1 ? activeBlank : empty);
+    setFillChecked(false);
+  }
+  function checkChallenge() {
+    if (!challenge) return;
+    const v = parseFloat(ans.replace(/[^0-9.\-]/g, ""));
+    const tol = challenge.tolerance ?? 0.001;
+    if (!isNaN(v) && Math.abs(v - challenge.answer) <= tol) {
+      setChResult("correct");
+      setRevealed(true);
+    } else {
+      setChResult("wrong");
+    }
+  }
+
+  const blankCls = (i: number) => {
+    if (fillVals[i] == null)
+      return activeBlank === i ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-dashed border-slate-300 text-slate-300";
+    if (fillChecked)
+      return fillVals[i] === fill!.answers[i] ? "border-emerald-500 bg-emerald-100 text-emerald-800" : "border-rose-400 bg-rose-50 text-rose-600";
+    return activeBlank === i ? "border-emerald-500 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-white text-slate-800";
+  };
+
   return (
-    <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,620px)] -translate-x-1/2">
+    <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,640px)] -translate-x-1/2">
       <div className="pointer-events-auto rounded-2xl border-2 border-emerald-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
         <div className="mb-2 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -2514,7 +2645,7 @@ function LessonPanel({
           </button>
         </div>
 
-        {refArea > 0 && (
+        {refArea > 0 && !fill && !challenge && (
           <div className="mb-2 flex items-center gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
             <span className="text-slate-400">💎 원본 넓이</span>
             <b className="text-slate-700">{fmtArea(refArea)}</b>
@@ -2529,9 +2660,7 @@ function LessonPanel({
           <div className="rounded-xl bg-emerald-50 p-3 text-center">
             <div className="text-sm font-bold text-emerald-700">🎉 직접 조작해서 알아냈어요!</div>
             <div className="mt-2 text-sm text-slate-600">{step?.prompt}</div>
-            <div className="mt-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xl font-extrabold text-slate-900">
-              {lesson.formula}
-            </div>
+            <div className="mt-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xl font-extrabold text-slate-900">{lesson.formula}</div>
             <div className="mt-3 flex justify-center gap-2">
               <button onClick={onRestart} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50">
                 ↺ 다시 해보기
@@ -2541,6 +2670,107 @@ function LessonPanel({
               </button>
             </div>
           </div>
+        ) : fill ? (
+          <>
+            <div className="mb-2 text-sm font-bold text-emerald-800">🖊️ 빈칸을 채워 ‘내 말로’ 정리해 볼까요?</div>
+            <div className="text-[15px] leading-loose text-slate-800">
+              {fill.parts.map((part, i) => (
+                <span key={i}>
+                  {part}
+                  {i < fill.answers.length && (
+                    <button
+                      onClick={() => setActiveBlank(i)}
+                      className={`mx-0.5 inline-flex min-w-[46px] items-center justify-center rounded-md border px-2 py-0.5 align-middle text-sm font-bold ${blankCls(i)}`}
+                    >
+                      {fillVals[i] ?? "?"}
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {fill.options.map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => pickChip(opt)}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-bold text-slate-700 transition hover:border-emerald-400 hover:bg-emerald-50"
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+            {fillChecked && fillAllCorrect && <div className="mt-2 text-xs font-bold text-emerald-600">✓ 정확해요! 멋지게 정리했어요.</div>}
+            {fillChecked && !fillAllCorrect && (
+              <div className="mt-2 text-xs font-bold text-rose-600">빨간 칸을 다시 골라 볼까요? 칸을 눌러 바꿀 수 있어요.</div>
+            )}
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <button onClick={onRestart} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-50">
+                ↺ 처음부터
+              </button>
+              {fillChecked && fillAllCorrect ? (
+                <button onClick={onNext} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">
+                  다음 ▶
+                </button>
+              ) : (
+                <button
+                  onClick={() => setFillChecked(true)}
+                  disabled={!fillAllFilled}
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                >
+                  확인
+                </button>
+              )}
+            </div>
+          </>
+        ) : challenge ? (
+          <>
+            <div className="mb-2 text-sm font-bold text-emerald-800">🎯 적용 챌린지 — 공식을 직접 써 봐요</div>
+            <div className="text-[15px] text-slate-800">{challenge.question}</div>
+            <div className="mt-3 flex items-center gap-2">
+              <input
+                value={ans}
+                onChange={(e) => {
+                  setAns(e.target.value);
+                  setChResult("idle");
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") checkChallenge();
+                }}
+                inputMode="numeric"
+                placeholder="답"
+                className="w-24 rounded-lg border-2 border-slate-300 px-3 py-2 text-lg font-bold text-slate-900 outline-none focus:border-emerald-500"
+              />
+              <span className="text-sm font-medium text-slate-500">{challenge.unit}</span>
+              {chResult !== "correct" && (
+                <button onClick={checkChallenge} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">
+                  확인
+                </button>
+              )}
+            </div>
+            {chResult === "correct" && <div className="mt-2 text-sm font-bold text-emerald-600">🎉 정답! {challenge.solution}</div>}
+            {chResult === "wrong" && !revealed && <div className="mt-2 text-sm font-bold text-rose-600">아쉬워요! 다시 한 번 계산해 볼까요?</div>}
+            {revealed && chResult !== "correct" && <div className="mt-2 text-sm text-slate-700">풀이: {challenge.solution}</div>}
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <button onClick={onRestart} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-50">
+                ↺ 처음부터
+              </button>
+              <div className="flex gap-1.5">
+                {chResult !== "correct" && !revealed && (
+                  <button
+                    onClick={() => setRevealed(true)}
+                    className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100"
+                  >
+                    정답 보기
+                  </button>
+                )}
+                {(chResult === "correct" || revealed) && (
+                  <button onClick={onNext} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">
+                    다음 ▶
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
         ) : (
           <>
             <div className="text-sm leading-relaxed text-slate-800">{step?.prompt}</div>

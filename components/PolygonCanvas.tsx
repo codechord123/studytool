@@ -708,10 +708,11 @@ function pickColor(): string {
   return COLORS[Math.floor(Math.random() * COLORS.length)];
 }
 
-function makeQuizProblem(kind: QuizKind): QuizProblem {
+// 난이도(0=쉬움,1=보통,2=어려움)별 치수 범위
+function makeQuizProblem(kind: QuizKind, lv: number): QuizProblem {
   if (kind === "rect") {
-    const w = randInt(3, 9);
-    const h = randInt(2, 6);
+    const w = lv === 0 ? randInt(2, 5) : lv === 1 ? randInt(3, 9) : randInt(6, 12);
+    const h = lv === 0 ? randInt(2, 4) : lv === 1 ? randInt(2, 6) : randInt(4, 8);
     const color = pickColor();
     return {
       id: uid(),
@@ -722,8 +723,8 @@ function makeQuizProblem(kind: QuizKind): QuizProblem {
     };
   }
   if (kind === "para") {
-    const b = randInt(4, 8);
-    const h = randInt(3, 5);
+    const b = lv === 0 ? randInt(3, 5) : lv === 1 ? randInt(4, 8) : randInt(6, 10);
+    const h = lv === 0 ? randInt(2, 3) : lv === 1 ? randInt(3, 5) : randInt(4, 6);
     const sk = randInt(1, 2);
     const color = pickColor();
     return {
@@ -735,10 +736,11 @@ function makeQuizProblem(kind: QuizKind): QuizProblem {
     };
   }
   if (kind === "tri") {
-    const combos: [number, number][] = [
-      [4, 3], [6, 4], [4, 5], [8, 3], [6, 5], [4, 6], [8, 5], [10, 4], [6, 6], [8, 6],
+    const all: [number, number][] = [
+      [4, 3], [6, 4], [4, 5], [8, 3], [6, 5], [4, 6], [8, 5], [10, 4], [6, 6], [8, 6], [10, 6], [12, 5],
     ];
-    const [b, h] = combos[randInt(0, combos.length - 1)];
+    const pool = all.filter(([b, h]) => (lv === 0 ? b * h <= 18 : lv === 1 ? b * h <= 48 : b * h >= 30));
+    const [b, h] = (pool.length ? pool : all)[randInt(0, (pool.length ? pool : all).length - 1)];
     const color = pickColor();
     const useRight = Math.random() < 0.5;
     return {
@@ -756,10 +758,12 @@ function makeQuizProblem(kind: QuizKind): QuizProblem {
     };
   }
   if (kind === "trap") {
+    const maxB = lv === 0 ? 5 : lv === 1 ? 8 : 10;
+    const maxH = lv === 0 ? 3 : lv === 1 ? 6 : 6;
     const tries: [number, number, number][] = [];
-    for (let t = 2; t <= 4; t++)
-      for (let bv = t + 2; bv <= 8; bv++)
-        for (let hv = 2; hv <= 6; hv++)
+    for (let t = 2; t <= maxB - 2; t++)
+      for (let bv = t + 2; bv <= maxB; bv++)
+        for (let hv = 2; hv <= maxH; hv++)
           if (((t + bv) * hv) % 2 === 0) tries.push([t, bv, hv]);
     const [t, b, h] = tries[randInt(0, tries.length - 1)];
     const color = pickColor();
@@ -776,8 +780,8 @@ function makeQuizProblem(kind: QuizKind): QuizProblem {
   // compound: ㄴ자 또는 십자 (격자로 셀 수 있는 정수)
   const useL = Math.random() < 0.5;
   if (useL) {
-    const W = randInt(4, 8);
-    const H = randInt(4, 7);
+    const W = lv === 0 ? randInt(3, 5) : lv === 1 ? randInt(4, 8) : randInt(6, 10);
+    const H = lv === 0 ? randInt(3, 5) : lv === 1 ? randInt(4, 7) : randInt(5, 8);
     const cw = randInt(1, Math.max(1, W - 2));
     const ch = randInt(1, Math.max(1, H - 2));
     const area = W * H - cw * ch;
@@ -790,12 +794,9 @@ function makeQuizProblem(kind: QuizKind): QuizProblem {
       build: (cx, cy) => [{ id: uid(), color, points: placeAtCenter(makeLShape(0, 0, W * GRID, H * GRID, cw * GRID, ch * GRID), cx, cy) }],
     };
   }
-  // 십자: armW × armW 가운데 + 4팔(armW × armLen)
-  const armCells = randInt(1, 2); // 가운데 정사각형 한 변(cells)
-  const armLenCells = randInt(2, 3);
-  const armW = armCells * 2 * GRID; // 십자 가운데 한 변 = 2*armCells cm (makeCross armW가 정사각형 한 변)
-  // makeCross 파라미터: armW=가운데 사각형 변, armLen=팔 한쪽 길이
-  // 면적 = armW^2 + 4 * armW * armLen (cm 단위에서)
+  // 십자: 가운데 정사각형(aCm) + 4팔(aCm × lCm)
+  const armCells = lv === 2 ? randInt(1, 2) : 1;
+  const armLenCells = lv === 0 ? randInt(1, 2) : lv === 1 ? randInt(2, 3) : randInt(2, 4);
   const aCm = armCells * 2;
   const lCm = armLenCells;
   const area = aCm * aCm + 4 * aCm * lCm;
@@ -805,20 +806,21 @@ function makeQuizProblem(kind: QuizKind): QuizProblem {
     kind: "compound",
     prompt: "십자 도형의 넓이는? 가운데 정사각형 + 4개의 팔, 또는 격자 칸을 세 보세요.",
     answer: area,
-    build: (cx, cy) => [{ id: uid(), color, points: placeAtCenter(makeCross(0, 0, armW, lCm * GRID), cx, cy) }],
+    build: (cx, cy) => [{ id: uid(), color, points: placeAtCenter(makeCross(0, 0, aCm * GRID, lCm * GRID), cx, cy) }],
   };
 }
 
-function makeQuizSet(): QuizProblem[] {
-  const kinds: QuizKind[] = [];
-  (["rect", "para", "tri", "trap", "compound"] as QuizKind[]).forEach((k) => {
-    for (let i = 0; i < 4; i++) kinds.push(k);
-  });
-  for (let i = kinds.length - 1; i > 0; i--) {
+type QuizConfig = { count: number; kinds: QuizKind[]; level: number };
+
+function makeQuizSet(cfg: QuizConfig): QuizProblem[] {
+  const kindsPool = cfg.kinds.length ? cfg.kinds : (["rect", "para", "tri", "trap", "compound"] as QuizKind[]);
+  const seq: QuizKind[] = [];
+  for (let i = 0; i < cfg.count; i++) seq.push(kindsPool[i % kindsPool.length]);
+  for (let i = seq.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [kinds[i], kinds[j]] = [kinds[j], kinds[i]];
+    [seq[i], seq[j]] = [seq[j], seq[i]];
   }
-  return kinds.map((k) => makeQuizProblem(k));
+  return seq.map((k) => makeQuizProblem(k, cfg.level));
 }
 
 // ----- 합치기 후 변 라벨 추론: 원본 변이 결과 변과 같은 직선상에 겹치면 라벨을 결과 변에 부여 -----
@@ -911,6 +913,9 @@ export default function PolygonCanvas() {
   const [showHint, setShowHint] = useState(false);
   const [lessonReference, setLessonReference] = useState<Shape[]>([]);
   const [quiz, setQuiz] = useState<QuizState | null>(null);
+  const [quizSetup, setQuizSetup] = useState(false);
+  const [progress, setProgress] = useState<{ quizBestPct: number; lessonsDone: string[] }>({ quizBestPct: 0, lessonsDone: [] });
+  const [muted, setMuted] = useState(false);
 
   const [cam, setCamState] = useState<Camera>({ scale: 1, tx: 0, ty: 0 });
   const camRef = useRef<Camera>({ scale: 1, tx: 0, ty: 0 });
@@ -1696,9 +1701,14 @@ export default function PolygonCanvas() {
     requestAnimationFrame(() => fitView(built));
   }
 
-  function startQuiz() {
+  function startQuiz(cfg: QuizConfig) {
     exitLesson();
-    const problems = makeQuizSet();
+    setQuizSetup(false);
+    const problems = makeQuizSet(cfg);
+    setQuizFromProblems(problems);
+  }
+
+  function setQuizFromProblems(problems: QuizProblem[]) {
     const built = buildQuizShapes(problems[0]);
     setQuiz({
       problems,
@@ -1763,8 +1773,57 @@ export default function PolygonCanvas() {
   }
 
   function restartQuiz() {
-    startQuiz();
+    if (!quiz) return;
+    setQuizFromProblems(quiz.problems.map((pr) => makeQuizProblem(pr.kind, 1)));
   }
+
+  // 오답 리뷰: 틀린(또는 답 본) 문제만 다시 풀기
+  function retryWrong() {
+    if (!quiz) return;
+    const wrongs = quiz.problems.filter((_, i) => quiz.answered[i] !== "correct");
+    if (!wrongs.length) return;
+    setQuizFromProblems(wrongs);
+  }
+
+  // ----- 진도/점수 저장 (F) -----
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("studytool.progress");
+      if (raw) setProgress(JSON.parse(raw));
+      const m = localStorage.getItem("studytool.muted");
+      if (m) setMuted(m === "1");
+    } catch {}
+  }, []);
+  function persist(p: { quizBestPct: number; lessonsDone: string[] }) {
+    setProgress(p);
+    try {
+      localStorage.setItem("studytool.progress", JSON.stringify(p));
+    } catch {}
+  }
+  function toggleMuted() {
+    setMuted((v) => {
+      const nv = !v;
+      try {
+        localStorage.setItem("studytool.muted", nv ? "1" : "0");
+      } catch {}
+      return nv;
+    });
+  }
+  // 레슨 완료 기록
+  useEffect(() => {
+    if (lesson && lesson.steps[lessonStep]?.final && !progress.lessonsDone.includes(lesson.id)) {
+      persist({ ...progress, lessonsDone: [...progress.lessonsDone, lesson.id] });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lesson, lessonStep]);
+  // 퀴즈 완주 시 최고 기록(%)
+  useEffect(() => {
+    if (quiz && quiz.index >= quiz.problems.length) {
+      const pct = Math.round((quiz.score / quiz.problems.length) * 100);
+      if (pct > progress.quizBestPct) persist({ ...progress, quizBestPct: pct });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quiz?.index]);
 
   function advanceLesson() {
     if (!lesson) return;
@@ -2558,6 +2617,11 @@ export default function PolygonCanvas() {
         />
       )}
 
+      {/* 문제 구성 선택(G) */}
+      {quizSetup && !quiz && (
+        <QuizSetup onStart={(cfg) => startQuiz(cfg)} onCancel={() => setQuizSetup(false)} bestPct={progress.quizBestPct} />
+      )}
+
       {/* 문제 풀이 모드 패널 */}
       {quiz && (
         <QuizPanel
@@ -2569,6 +2633,10 @@ export default function PolygonCanvas() {
           onExit={exitQuiz}
           onReset={resetQuizShape}
           onGiveUp={giveUpQuiz}
+          onRetryWrong={retryWrong}
+          bestPct={progress.quizBestPct}
+          muted={muted}
+          onToggleMute={toggleMuted}
         />
       )}
 
@@ -2583,13 +2651,21 @@ export default function PolygonCanvas() {
       <Drawer side="right" open={drawer === "scenarios"} title="📚 학습 예시" onClose={() => setDrawer(null)}>
         <div className="flex flex-col gap-2">
           <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-3">
-            <div className="mb-1 text-sm font-extrabold text-rose-900">🎮 문제 풀이 모드</div>
-            <div className="mb-2 text-xs text-rose-700">랜덤 20문제! 도형을 조작하며 넓이를 알아내고 정답을 입력해요.</div>
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-sm font-extrabold text-rose-900">🎮 문제 풀이 모드</span>
+              {progress.quizBestPct > 0 && (
+                <span className="rounded-full bg-rose-200 px-2 py-0.5 text-[10px] font-bold text-rose-800">최고 {progress.quizBestPct}%</span>
+              )}
+            </div>
+            <div className="mb-2 text-xs text-rose-700">도형을 조작하며 넓이를 알아내고 정답을 입력해요.</div>
             <button
-              onClick={startQuiz}
+              onClick={() => {
+                setDrawer(null);
+                setQuizSetup(true);
+              }}
               className="w-full rounded-lg bg-rose-600 px-3 py-2.5 text-center text-sm font-bold text-white shadow hover:bg-rose-700"
             >
-              ▶ 20문제 시작하기
+              ▶ 문제 풀기 시작
             </button>
           </div>
           <div className="rounded-xl border-2 border-emerald-300 bg-emerald-50 p-3">
@@ -2599,9 +2675,12 @@ export default function PolygonCanvas() {
               <button
                 key={L.id}
                 onClick={() => startLesson(L)}
-                className="w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-left text-sm font-bold text-white shadow hover:bg-emerald-700"
+                className="mb-1.5 flex w-full items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2.5 text-left text-sm font-bold text-white shadow hover:bg-emerald-700"
               >
-                ▶ {L.title}
+                <span className="flex-1">▶ {L.title}</span>
+                {progress.lessonsDone.includes(L.id) && (
+                  <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold">✓ 완료</span>
+                )}
               </button>
             ))}
           </div>
@@ -3108,6 +3187,109 @@ function LessonPanel({
   );
 }
 
+// 정답 효과음 (WebAudio 2음 차임)
+function playDing() {
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    const a = new Ctx();
+    [880, 1320].forEach((f, i) => {
+      const o = a.createOscillator();
+      const g = a.createGain();
+      o.type = "sine";
+      o.frequency.value = f;
+      o.connect(g);
+      g.connect(a.destination);
+      const t0 = a.currentTime + i * 0.12;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.18, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.26);
+      o.start(t0);
+      o.stop(t0 + 0.28);
+    });
+    setTimeout(() => a.close(), 700);
+  } catch {}
+}
+
+const CONFETTI = ["🎉", "⭐", "✨", "🎊", "🌟", "💛", "💙", "💚"];
+
+function QuizSetup({
+  onStart,
+  onCancel,
+  bestPct,
+}: {
+  onStart: (cfg: QuizConfig) => void;
+  onCancel: () => void;
+  bestPct: number;
+}) {
+  const [count, setCount] = useState(20);
+  const [level, setLevel] = useState(1);
+  const [kinds, setKinds] = useState<QuizKind[]>(["rect", "para", "tri", "trap", "compound"]);
+  const allKinds: QuizKind[] = ["rect", "para", "tri", "trap", "compound"];
+  const toggleKind = (k: QuizKind) =>
+    setKinds((cur) => (cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]));
+  const seg = (active: boolean) =>
+    `rounded-lg px-3 py-1.5 text-sm font-bold transition ${active ? "bg-rose-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"}`;
+  return (
+    <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,520px)] -translate-x-1/2">
+      <div className="pointer-events-auto rounded-2xl border-2 border-rose-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
+        <div className="mb-3 flex items-center justify-between">
+          <span className="text-base font-extrabold text-rose-700">🎮 문제 풀기 설정</span>
+          {bestPct > 0 && <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-bold text-rose-700">최고 {bestPct}%</span>}
+        </div>
+        <div className="mb-3">
+          <div className="mb-1 text-xs font-bold text-slate-400">문항 수</div>
+          <div className="flex gap-1.5">
+            {[10, 20, 30].map((c) => (
+              <button key={c} onClick={() => setCount(c)} className={seg(count === c)}>
+                {c}문제
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mb-3">
+          <div className="mb-1 text-xs font-bold text-slate-400">난이도</div>
+          <div className="flex gap-1.5">
+            {["쉬움", "보통", "어려움"].map((lbl, i) => (
+              <button key={lbl} onClick={() => setLevel(i)} className={seg(level === i)}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mb-4">
+          <div className="mb-1 text-xs font-bold text-slate-400">유형 (탭하여 켜고 끄기)</div>
+          <div className="flex flex-wrap gap-1.5">
+            {allKinds.map((k) => (
+              <button
+                key={k}
+                onClick={() => toggleKind(k)}
+                className={`rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${
+                  kinds.includes(k) ? "border-rose-400 bg-rose-50 text-rose-700" : "border-slate-200 bg-white text-slate-400"
+                }`}
+              >
+                {KIND_LABEL[k]}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button onClick={onCancel} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+            취소
+          </button>
+          <button
+            onClick={() => onStart({ count, level, kinds })}
+            disabled={kinds.length === 0}
+            className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-bold text-white hover:bg-rose-700 disabled:opacity-40"
+          >
+            시작 ▶
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QuizPanel({
   quiz,
   onChange,
@@ -3117,6 +3299,10 @@ function QuizPanel({
   onExit,
   onReset,
   onGiveUp,
+  onRetryWrong,
+  bestPct,
+  muted,
+  onToggleMute,
 }: {
   quiz: QuizState;
   onChange: (s: QuizState) => void;
@@ -3126,13 +3312,18 @@ function QuizPanel({
   onExit: () => void;
   onReset: () => void;
   onGiveUp: () => void;
+  onRetryWrong: () => void;
+  bestPct: number;
+  muted: boolean;
+  onToggleMute: () => void;
 }) {
   const total = quiz.problems.length;
   const done = quiz.index >= total;
   const p = !done ? quiz.problems[quiz.index] : null;
 
-  // 정답/답공개 시 잠깐 답을 보여준 뒤 자동으로 다음 문제로
+  // 정답/답공개 시 잠깐 답을 보여준 뒤 자동으로 다음 문제로 + 정답이면 효과음
   useEffect(() => {
+    if (quiz.result === "correct" && !muted) playDing();
     if (quiz.result === "correct" || quiz.result === "shown") {
       const t = setTimeout(onNext, quiz.result === "shown" ? 2400 : 1600);
       return () => clearTimeout(t);
@@ -3142,16 +3333,33 @@ function QuizPanel({
 
   if (done) {
     const pct = Math.round((quiz.score / total) * 100);
-    const stars = quiz.score >= 18 ? "🏆" : quiz.score >= 14 ? "🌟" : quiz.score >= 10 ? "✨" : "🌱";
+    const stars = pct >= 90 ? "🏆" : pct >= 70 ? "🌟" : pct >= 50 ? "✨" : "🌱";
+    const wrongCount = quiz.answered.filter((a) => a !== "correct").length;
+    const newBest = pct >= bestPct;
     return (
       <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,560px)] -translate-x-1/2">
-        <div className="pointer-events-auto rounded-2xl border-2 border-rose-300 bg-white/95 p-5 text-center shadow-2xl backdrop-blur">
-          <div className="text-4xl">{stars}</div>
+        <div className="pointer-events-auto relative overflow-hidden rounded-2xl border-2 border-rose-300 bg-white/95 p-5 text-center shadow-2xl backdrop-blur">
+          {pct >= 50 && (
+            <div className="pointer-events-none absolute inset-0">
+              {Array.from({ length: 18 }).map((_, i) => (
+                <span
+                  key={i}
+                  className="confetti-piece"
+                  style={{ left: `${(i * 5.5 + 3) % 100}%`, animationDelay: `${(i % 6) * 0.12}s` }}
+                >
+                  {CONFETTI[i % CONFETTI.length]}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="pop-in text-4xl">{stars}</div>
           <div className="mt-2 text-lg font-extrabold text-slate-800">완주! 정말 잘했어요</div>
           <div className="mt-2 text-3xl font-extrabold text-rose-600">
             {quiz.score} <span className="text-lg text-slate-500">/ {total}</span>
             <span className="ml-2 text-base text-slate-500">({pct}%)</span>
           </div>
+          {newBest && <div className="mt-1 text-xs font-bold text-amber-600">🎖️ 최고 기록 갱신!</div>}
+          {!newBest && bestPct > 0 && <div className="mt-1 text-xs font-medium text-slate-400">최고 기록 {bestPct}%</div>}
           <div className="mt-3 flex flex-wrap justify-center gap-1">
             {quiz.answered.map((a, i) => (
               <span
@@ -3165,9 +3373,14 @@ function QuizPanel({
               </span>
             ))}
           </div>
-          <div className="mt-4 flex justify-center gap-2">
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            {wrongCount > 0 && (
+              <button onClick={onRetryWrong} className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-white hover:bg-amber-600">
+                ✏️ 틀린 {wrongCount}문제 다시
+              </button>
+            )}
             <button onClick={onRestart} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700">
-              ↺ 새 20문제
+              ↺ 새 문제
             </button>
             <button onClick={onExit} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
               종료
@@ -3201,6 +3414,13 @@ function QuizPanel({
                 ↺ 도형 되돌리기
               </button>
             )}
+            <button
+              onClick={onToggleMute}
+              title={muted ? "소리 켜기" : "소리 끄기"}
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50"
+            >
+              {muted ? "🔇" : "🔊"}
+            </button>
             <button onClick={onExit} className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600">
               그만두기 ✕
             </button>
@@ -3219,8 +3439,17 @@ function QuizPanel({
         </div>
         <div className="text-sm leading-relaxed text-slate-800">{p!.prompt}</div>
         {reveal ? (
-          <div className={`mt-3 rounded-xl px-4 py-3 text-center ${correct ? "bg-emerald-50" : "bg-amber-50"}`}>
-            <div className={`text-base font-extrabold ${correct ? "text-emerald-700" : "text-amber-700"}`}>
+          <div className={`relative mt-3 overflow-hidden rounded-xl px-4 py-3 text-center ${correct ? "bg-emerald-50" : "bg-amber-50"}`}>
+            {correct && (
+              <div className="pointer-events-none absolute inset-0">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <span key={i} className="confetti-piece" style={{ left: `${(i * 8.5 + 4) % 100}%`, animationDelay: `${(i % 5) * 0.1}s` }}>
+                    {CONFETTI[i % CONFETTI.length]}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className={`pop-in text-base font-extrabold ${correct ? "text-emerald-700" : "text-amber-700"}`}>
               {correct ? "🎉 정답!" : "답을 확인해요"}
             </div>
             <div className="mt-1 text-2xl font-extrabold text-slate-900">{p!.answer}cm²</div>

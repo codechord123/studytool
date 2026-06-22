@@ -930,6 +930,9 @@ export default function PolygonCanvas() {
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const sizeRef = useRef({ w: 0, h: 0 });
+  // 상단 바 실제 높이 — 좁은 화면(태블릿 세로 등)에서 줄바꿈돼도 패널이 겹치지 않게 동적 측정
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerH, setHeaderH] = useState(56);
 
   const dragRef = useRef<DragMode>({ type: "none" });
   const alignGuidesRef = useRef<{ vx: number[]; hy: number[] }>({ vx: [], hy: [] });
@@ -959,7 +962,17 @@ export default function PolygonCanvas() {
       setSize({ w, h });
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    const hel = headerRef.current;
+    let hro: ResizeObserver | null = null;
+    if (hel) {
+      hro = new ResizeObserver(() => setHeaderH(hel.offsetHeight));
+      hro.observe(hel);
+      setHeaderH(hel.offsetHeight);
+    }
+    return () => {
+      ro.disconnect();
+      hro?.disconnect();
+    };
   }, []);
 
   // ----- 카메라 헬퍼 -----
@@ -1707,8 +1720,8 @@ export default function PolygonCanvas() {
     setMeasurements([]);
     setGuides([]);
     setActiveAux(null);
-    // 상단 문제 카드(≈240) + 하단 컨텍스트바(≈100) 사이에 도형을 배치
-    requestAnimationFrame(() => fitView(built, { topInset: 240, bottomInset: 100 }));
+    // 헤더(동적) + 문제 카드 높이만큼 위를, 하단 컨텍스트바만큼 아래를 비워 그 사이에 도형 배치
+    requestAnimationFrame(() => fitView(built, { topInset: headerH + 180, bottomInset: 100 }));
   }
 
   function startQuiz(cfg: QuizConfig) {
@@ -2435,18 +2448,18 @@ export default function PolygonCanvas() {
 
       {/* 상단 바 */}
       {!boardMode && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
-          <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-lg backdrop-blur">
-            <span className="text-base font-extrabold tracking-tight text-slate-800">📐 다각형 체험실</span>
-            <span className="hidden text-xs text-slate-400 md:inline">초등 5학년 · 둘레와 넓이</span>
-            <span className="mx-1 h-5 w-px bg-slate-200" />
+        <div ref={headerRef} className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-2 sm:p-3">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur sm:px-3">
+            <span className="whitespace-nowrap text-base font-extrabold tracking-tight text-slate-800">📐 <span className="hidden sm:inline">다각형 체험실</span></span>
+            <span className="hidden text-xs text-slate-400 xl:inline">초등 5학년 · 둘레와 넓이</span>
+            <span className="mx-1 hidden h-5 w-px bg-slate-200 sm:block" />
             <DrawerToggle active={drawer === "shapes"} onClick={() => setDrawer(drawer === "shapes" ? null : "shapes")} icon="📐" label="도형 추가" />
             <DrawerToggle active={drawer === "scenarios"} onClick={() => setDrawer(drawer === "scenarios" ? null : "scenarios")} icon="📚" label="학습 예시" />
           </div>
 
           <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
             <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
-              <span className="px-0.5 text-[11px] font-bold text-slate-400" title="모눈 칸 간격: 도형을 움직일 때 이 간격에 맞춰 딱 맞게 붙어요">격자</span>
+              <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="모눈 칸 간격: 도형을 움직일 때 이 간격에 맞춰 딱 맞게 붙어요">격자</span>
               <div className="flex gap-0.5 rounded-lg bg-slate-100 p-0.5">
                 {([1, 0.5, 0.2, 0] as const).map((s) => (
                   <button
@@ -2475,16 +2488,17 @@ export default function PolygonCanvas() {
               <Chip active={boardMode} onClick={() => setBoardMode(true)} icon="📺" label="전자칠판" tone="sky" />
               <button
                 onClick={exportPNG}
-                className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 sm:px-2.5"
                 title="현재 화면을 PNG 이미지로 저장"
               >
-                📷 저장
+                📷 <span className="hidden lg:inline">저장</span>
               </button>
               <button
                 onClick={clearAll}
-                className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100"
+                title="전체 초기화"
+                className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 sm:px-2.5"
               >
-                전체 초기화
+                <span className="lg:hidden">🗑</span><span className="hidden lg:inline">전체 초기화</span>
               </button>
             </div>
           </div>
@@ -2600,7 +2614,7 @@ export default function PolygonCanvas() {
       )}
 
       {/* 토스트 (상단 중앙) */}
-      <div className="pointer-events-none absolute left-1/2 top-16 z-20 flex w-[min(92vw,640px)] -translate-x-1/2 flex-col gap-2">
+      <div style={{ top: headerH + 8 }} className="pointer-events-none absolute left-1/2 z-20 flex w-[min(92vw,640px)] -translate-x-1/2 flex-col gap-2">
         {flash && (
           <div className="pointer-events-auto rounded-2xl border border-sky-200 bg-sky-50/95 px-4 py-2.5 text-sm text-sky-900 shadow-lg backdrop-blur">
             {flash}
@@ -2620,6 +2634,7 @@ export default function PolygonCanvas() {
       {/* 탐구 레슨 패널 (상단 중앙) */}
       {lesson && (
         <LessonPanel
+          topPx={headerH + 8}
           lesson={lesson}
           stepIndex={lessonStep}
           showHint={showHint}
@@ -2634,12 +2649,13 @@ export default function PolygonCanvas() {
 
       {/* 문제 구성 선택(G) */}
       {quizSetup && !quiz && (
-        <QuizSetup onStart={(cfg) => startQuiz(cfg)} onCancel={() => setQuizSetup(false)} bestPct={progress.quizBestPct} />
+        <QuizSetup topPx={headerH + 8} onStart={(cfg) => startQuiz(cfg)} onCancel={() => setQuizSetup(false)} bestPct={progress.quizBestPct} />
       )}
 
       {/* 문제 풀이 모드 패널 */}
       {quiz && (
         <QuizPanel
+          topPx={headerH + 8}
           quiz={quiz}
           onChange={(s) => setQuiz(s)}
           onSubmit={submitQuiz}
@@ -2769,13 +2785,13 @@ function Chip({
   return (
     <button
       onClick={onClick}
-      title={title}
-      className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-semibold transition ${
+      title={title ?? label}
+      className={`flex items-center gap-1 whitespace-nowrap rounded-lg border px-2 py-1.5 text-xs font-semibold transition ${
         active ? activeCls : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
       }`}
     >
       <span>{icon}</span>
-      {label}
+      <span className="hidden lg:inline">{label}</span>
     </button>
   );
 }
@@ -2794,12 +2810,13 @@ function DrawerToggle({
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-bold transition ${
+      title={label}
+      className={`flex items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-xs font-bold transition sm:px-2.5 ${
         active ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
       }`}
     >
       <span>{icon}</span>
-      {label}
+      <span className="hidden sm:inline">{label}</span>
     </button>
   );
 }
@@ -2953,6 +2970,7 @@ function LessonPanel({
   onExit,
   refArea,
   curArea,
+  topPx,
 }: {
   lesson: Lesson;
   stepIndex: number;
@@ -2963,6 +2981,7 @@ function LessonPanel({
   onExit: () => void;
   refArea: number;
   curArea: number;
+  topPx: number;
 }) {
   const conserved = refArea > 0 && Math.abs(refArea - curArea) < 0.5;
   const step = lesson.steps[stepIndex];
@@ -3020,7 +3039,7 @@ function LessonPanel({
   };
 
   return (
-    <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,640px)] -translate-x-1/2">
+    <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,640px)] -translate-x-1/2">
       <div className="pointer-events-auto rounded-2xl border-2 border-emerald-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
         <div className="mb-2 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -3236,10 +3255,12 @@ function QuizSetup({
   onStart,
   onCancel,
   bestPct,
+  topPx,
 }: {
   onStart: (cfg: QuizConfig) => void;
   onCancel: () => void;
   bestPct: number;
+  topPx: number;
 }) {
   const [count, setCount] = useState(20);
   const [level, setLevel] = useState(1);
@@ -3250,7 +3271,7 @@ function QuizSetup({
   const seg = (active: boolean) =>
     `rounded-lg px-3 py-1.5 text-sm font-bold transition ${active ? "bg-rose-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"}`;
   return (
-    <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,520px)] -translate-x-1/2">
+    <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,520px)] -translate-x-1/2">
       <div className="pointer-events-auto rounded-2xl border-2 border-rose-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
         <div className="mb-3 flex items-center justify-between">
           <span className="text-base font-extrabold text-rose-700">🎮 문제 풀기 설정</span>
@@ -3322,6 +3343,7 @@ function QuizPanel({
   bestPct,
   muted,
   onToggleMute,
+  topPx,
 }: {
   quiz: QuizState;
   onChange: (s: QuizState) => void;
@@ -3335,6 +3357,7 @@ function QuizPanel({
   bestPct: number;
   muted: boolean;
   onToggleMute: () => void;
+  topPx: number;
 }) {
   const total = quiz.problems.length;
   const done = quiz.index >= total;
@@ -3369,7 +3392,7 @@ function QuizPanel({
     const wrongCount = quiz.answered.filter((a) => a !== "correct").length;
     const newBest = pct >= bestPct;
     return (
-      <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,560px)] -translate-x-1/2">
+      <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,560px)] -translate-x-1/2">
         <div className="pointer-events-auto relative overflow-hidden rounded-2xl border-2 border-rose-300 bg-white/95 p-5 text-center shadow-2xl backdrop-blur">
           {pct >= 50 && (
             <div className="pointer-events-none absolute inset-0">
@@ -3428,7 +3451,7 @@ function QuizPanel({
   const reveal = correct || shown;
   const stuck = quiz.attempts >= 3; // 3회 이상 오답 → 도움 제공
   return (
-    <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,620px)] -translate-x-1/2">
+    <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,620px)] -translate-x-1/2">
       <div className="pointer-events-auto rounded-2xl border-2 border-rose-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
         <div className="mb-2 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">

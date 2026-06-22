@@ -717,7 +717,7 @@ function makeQuizProblem(kind: QuizKind, lv: number): QuizProblem {
     return {
       id: uid(),
       kind,
-      prompt: "이 직사각형의 넓이는 몇 cm²일까요? 도형을 눌러 격자 칸을 세거나 가로×세로를 곱해 보세요.",
+      prompt: "이 직사각형의 넓이는 몇 cm²일까요?",
       answer: w * h,
       build: (cx, cy) => [withLabels(color, placeAtCenter(makeRectangle(0, 0, w * GRID, h * GRID), cx, cy), RECT_LABELS)],
     };
@@ -730,7 +730,7 @@ function makeQuizProblem(kind: QuizKind, lv: number): QuizProblem {
     return {
       id: uid(),
       kind,
-      prompt: "이 평행사변형의 넓이는? 높이는 모눈 칸으로 세 보세요 (밑변 × 높이).",
+      prompt: "이 평행사변형의 넓이는 몇 cm²일까요?",
       answer: b * h,
       build: (cx, cy) => [withLabels(color, placeAtCenter(makeParallelogram(0, 0, b * GRID, h * GRID, sk * GRID), cx, cy), PARA_LABELS)],
     };
@@ -746,7 +746,7 @@ function makeQuizProblem(kind: QuizKind, lv: number): QuizProblem {
     return {
       id: uid(),
       kind,
-      prompt: `이 ${useRight ? "직각" : ""}삼각형의 넓이는? (밑변 × 높이 ÷ 2)`,
+      prompt: `이 ${useRight ? "직각" : ""}삼각형의 넓이는 몇 cm²일까요?`,
       answer: (b * h) / 2,
       build: (cx, cy) => [
         withLabels(
@@ -770,7 +770,7 @@ function makeQuizProblem(kind: QuizKind, lv: number): QuizProblem {
     return {
       id: uid(),
       kind,
-      prompt: "이 사다리꼴의 넓이는? ((윗변 + 아랫변) × 높이 ÷ 2)",
+      prompt: "이 사다리꼴의 넓이는 몇 cm²일까요?",
       answer: ((t + b) * h) / 2,
       build: (cx, cy) => [
         withLabels(color, placeAtCenter(makeTrapezoid(0, 0, t * GRID, b * GRID, h * GRID), cx, cy), TRAP_LABELS),
@@ -789,7 +789,7 @@ function makeQuizProblem(kind: QuizKind, lv: number): QuizProblem {
     return {
       id: uid(),
       kind: "compound",
-      prompt: "ㄴ자 도형의 넓이는? 두 직사각형으로 ✂️자르거나 격자 칸을 세 보세요.",
+      prompt: "이 ㄴ자 도형의 넓이는 몇 cm²일까요?",
       answer: area,
       build: (cx, cy) => [{ id: uid(), color, points: placeAtCenter(makeLShape(0, 0, W * GRID, H * GRID, cw * GRID, ch * GRID), cx, cy) }],
     };
@@ -804,7 +804,7 @@ function makeQuizProblem(kind: QuizKind, lv: number): QuizProblem {
   return {
     id: uid(),
     kind: "compound",
-    prompt: "십자 도형의 넓이는? 가운데 정사각형 + 4개의 팔, 또는 격자 칸을 세 보세요.",
+    prompt: "이 십자 도형의 넓이는 몇 cm²일까요?",
     answer: area,
     build: (cx, cy) => [{ id: uid(), color, points: placeAtCenter(makeCross(0, 0, aCm * GRID, lCm * GRID), cx, cy) }],
   };
@@ -997,7 +997,7 @@ export default function PolygonCanvas() {
   );
 
   const fitView = useCallback(
-    (list?: Shape[], opts?: { topInset?: number }) => {
+    (list?: Shape[], opts?: { topInset?: number; bottomInset?: number }) => {
       const { w, h } = sizeRef.current;
       if (!w || !h) return;
       const src = list ?? shapes;
@@ -1019,9 +1019,10 @@ export default function PolygonCanvas() {
           }
       }
       const pad = 80;
-      // 상단 패널(문제 카드 등)을 가리지 않도록 위쪽 여백을 비워 도형을 아래쪽에 배치
+      // 상단 문제 카드/하단 컨텍스트바를 가리지 않도록 위·아래 여백을 비워 그 사이에 도형 배치
       const topInset = opts?.topInset ?? 0;
-      const availH = Math.max(GRID, h - topInset);
+      const bottomInset = opts?.bottomInset ?? 0;
+      const availH = Math.max(GRID, h - topInset - bottomInset);
       const bw = Math.max(GRID, maxX - minX);
       const bh = Math.max(GRID, maxY - minY);
       const s = clamp(Math.min((w - pad * 2) / bw, (availH - pad * 2) / bh), MIN_SCALE, MAX_SCALE);
@@ -1157,7 +1158,8 @@ export default function PolygonCanvas() {
   function rotationHandle(s: Shape, k: number): Point {
     const c = polygonCentroid(s.points);
     const minY = Math.min(...s.points.map((q) => q.y));
-    return { x: c.x, y: minY - 40 * k };
+    // 윗변 길이 라벨(≈ minY-30*k)을 가리지 않도록 충분히 위로 띄움
+    return { x: c.x, y: minY - 56 * k };
   }
 
   // ----- 포인터 입력 -----
@@ -1705,8 +1707,8 @@ export default function PolygonCanvas() {
     setMeasurements([]);
     setGuides([]);
     setActiveAux(null);
-    // 문제 카드(상단 중앙)가 도형을 가리지 않도록 위쪽 약 240px 비움
-    requestAnimationFrame(() => fitView(built, { topInset: 240 }));
+    // 상단 문제 카드(≈240) + 하단 컨텍스트바(≈100) 사이에 도형을 배치
+    requestAnimationFrame(() => fitView(built, { topInset: 240, bottomInset: 100 }));
   }
 
   function startQuiz(cfg: QuizConfig) {
@@ -1746,6 +1748,11 @@ export default function PolygonCanvas() {
 
   function submitQuiz() {
     if (!quiz) return;
+    // 빈칸·숫자 아닌 입력은 오답으로 세지 않고 친절히 안내
+    if (!/[0-9]/.test(quiz.userAnswer)) {
+      setFlash("답에 숫자를 입력해요 ✏️");
+      return;
+    }
     const v = parseFloat(quiz.userAnswer.replace(/[^0-9.\-]/g, ""));
     const target = quiz.problems[quiz.index].answer;
     if (!isNaN(v) && Math.abs(v - target) <= 0.001) {
@@ -2234,6 +2241,28 @@ export default function PolygonCanvas() {
       ctx.textAlign = "start";
     }
 
+    // 회전 손잡이(점선+초록 원) — 변 길이 라벨보다 먼저 그려, 점선이 라벨 글자를 가로지르지 않게 함
+    if (isSelected) {
+      const c = polygonCentroid(s.points);
+      const h = rotationHandle(s, k);
+      ctx.save();
+      ctx.setLineDash([8 * k, 6 * k]);
+      ctx.strokeStyle = "#0f172a";
+      ctx.lineWidth = 2 * k;
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(h.x, h.y);
+      ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = "#10b981";
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, 12 * k, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#065f46";
+      ctx.lineWidth = 2 * k;
+      ctx.stroke();
+    }
+
     // 변 길이 라벨
     const baseFont = boardMode ? 20 : 16;
     ctx.font = `bold ${baseFont * k}px sans-serif`;
@@ -2297,27 +2326,6 @@ export default function PolygonCanvas() {
       ctx.beginPath();
       ctx.arc(v.x, v.y, (isSelected || isMergeFirst ? 6 : 4) * k, 0, Math.PI * 2);
       ctx.fill();
-    }
-
-    if (isSelected) {
-      const c = polygonCentroid(s.points);
-      const h = rotationHandle(s, k);
-      ctx.save();
-      ctx.setLineDash([8 * k, 6 * k]);
-      ctx.strokeStyle = "#0f172a";
-      ctx.lineWidth = 2 * k;
-      ctx.beginPath();
-      ctx.moveTo(c.x, c.y);
-      ctx.lineTo(h.x, h.y);
-      ctx.stroke();
-      ctx.restore();
-      ctx.fillStyle = "#10b981";
-      ctx.beginPath();
-      ctx.arc(h.x, h.y, 12 * k, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#065f46";
-      ctx.lineWidth = 2 * k;
-      ctx.stroke();
     }
 
     if (isMergeFirst) {
@@ -2438,12 +2446,13 @@ export default function PolygonCanvas() {
 
           <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
             <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
-              <span className="px-0.5 text-[11px] font-bold text-slate-400">격자</span>
+              <span className="px-0.5 text-[11px] font-bold text-slate-400" title="모눈 칸 간격: 도형을 움직일 때 이 간격에 맞춰 딱 맞게 붙어요">격자</span>
               <div className="flex gap-0.5 rounded-lg bg-slate-100 p-0.5">
                 {([1, 0.5, 0.2, 0] as const).map((s) => (
                   <button
                     key={s}
                     onClick={() => setSnapStep(s)}
+                    title={s === 0 ? "격자 맞춤 끄기 (자유롭게 이동)" : `${s}칸 단위로 딱 맞게 이동`}
                     className={`rounded-md px-1.5 py-1 text-xs font-semibold transition ${
                       snapStep === s ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-800"
                     }`}
@@ -2452,8 +2461,8 @@ export default function PolygonCanvas() {
                   </button>
                 ))}
               </div>
-              <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" />
-              <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" />
+              <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
+              <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
             </div>
 
             <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
@@ -2501,14 +2510,12 @@ export default function PolygonCanvas() {
                 key={t.id}
                 onClick={() => setTool(t.id)}
                 title={t.label}
-                className={`group relative flex h-12 w-12 items-center justify-center rounded-xl text-xl transition ${
+                className={`group relative flex h-14 w-14 flex-col items-center justify-center gap-0.5 rounded-xl transition ${
                   active ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
                 }`}
               >
-                <span>{t.icon}</span>
-                <span className="pointer-events-none absolute left-full ml-2 hidden whitespace-nowrap rounded-lg bg-slate-900 px-2 py-1 text-xs font-semibold text-white group-hover:block">
-                  {t.label}
-                </span>
+                <span className="text-lg leading-none">{t.icon}</span>
+                <span className={`text-[9px] font-bold leading-none ${active ? "text-white" : "text-slate-400"}`}>{t.label}</span>
               </button>
             );
           })}
@@ -2749,17 +2756,20 @@ function Chip({
   active,
   onClick,
   tone,
+  title,
 }: {
   icon: string;
   label: string;
   active: boolean;
   onClick: () => void;
   tone?: "sky";
+  title?: string;
 }) {
   const activeCls = tone === "sky" ? "border-sky-600 bg-sky-600 text-white" : "border-slate-900 bg-slate-900 text-white";
   return (
     <button
       onClick={onClick}
+      title={title}
       className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-semibold transition ${
         active ? activeCls : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
       }`}
@@ -3195,13 +3205,14 @@ function LessonPanel({
   );
 }
 
-// 정답 효과음 (WebAudio 2음 차임)
-function playDing() {
+// 정답 효과음 (WebAudio 2음 차임) — semi: 연속 정답일수록 음을 올려 신나게
+function playDing(semi = 0) {
   try {
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!Ctx) return;
     const a = new Ctx();
-    [880, 1320].forEach((f, i) => {
+    const mult = Math.pow(2, semi / 12);
+    [880 * mult, 1320 * mult].forEach((f, i) => {
       const o = a.createOscillator();
       const g = a.createGain();
       o.type = "sine";
@@ -3328,10 +3339,23 @@ function QuizPanel({
   const total = quiz.problems.length;
   const done = quiz.index >= total;
   const p = !done ? quiz.problems[quiz.index] : null;
+  const [showMethod, setShowMethod] = useState(false);
+
+  // 문제가 바뀌면 '푸는 방법' 펼침 초기화
+  useEffect(() => {
+    setShowMethod(false);
+  }, [quiz.index]);
 
   // 정답/답공개 시 잠깐 답을 보여준 뒤 자동으로 다음 문제로 + 정답이면 효과음
   useEffect(() => {
-    if (quiz.result === "correct" && !muted) playDing();
+    if (quiz.result === "correct" && !muted) {
+      let streak = 0;
+      for (let i = quiz.index; i >= 0; i--) {
+        if (quiz.answered[i] === "correct") streak++;
+        else break;
+      }
+      playDing(Math.min(Math.max(streak - 1, 0), 6)); // 연속 정답 1→0반음, 7+→+6반음
+    }
     if (quiz.result === "correct" || quiz.result === "shown") {
       const t = setTimeout(onNext, quiz.result === "shown" ? 2400 : 1600);
       return () => clearTimeout(t);
@@ -3445,7 +3469,17 @@ function QuizPanel({
             />
           ))}
         </div>
-        <div className="text-sm leading-relaxed text-slate-800">{p!.prompt}</div>
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-sm font-bold leading-relaxed text-slate-800">{p!.prompt}</div>
+          {!reveal && (
+            <button onClick={() => setShowMethod((v) => !v)} className="shrink-0 text-xs font-bold text-rose-500 hover:text-rose-700">
+              {showMethod ? "방법 숨기기" : "💡 푸는 방법"}
+            </button>
+          )}
+        </div>
+        {!reveal && showMethod && (
+          <div className="mt-1.5 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">{KIND_HINT[p!.kind]}</div>
+        )}
         {reveal ? (
           <div className={`relative mt-3 overflow-hidden rounded-xl px-4 py-3 text-center ${correct ? "bg-emerald-50" : "bg-amber-50"}`}>
             {correct && (

@@ -651,7 +651,7 @@ type QuizState = {
   score: number;
   answered: ("correct" | "wrong" | null)[];
   userAnswer: string;
-  result: "idle" | "correct" | "wrong" | "revealed";
+  result: "idle" | "correct" | "wrong";
 };
 
 const KIND_LABEL: Record<QuizKind, string> = {
@@ -1674,18 +1674,14 @@ export default function PolygonCanvas() {
     const target = quiz.problems[quiz.index].answer;
     if (!isNaN(v) && Math.abs(v - target) <= 0.001) {
       const answered = [...quiz.answered];
-      if (answered[quiz.index] === null) answered[quiz.index] = "correct";
-      setQuiz({ ...quiz, result: "correct", score: answered[quiz.index] === "correct" ? quiz.score + 1 : quiz.score, answered });
+      const firstTry = answered[quiz.index] === null;
+      if (firstTry) answered[quiz.index] = "correct";
+      setQuiz({ ...quiz, result: "correct", score: firstTry ? quiz.score + 1 : quiz.score, answered });
     } else {
-      setQuiz({ ...quiz, result: "wrong" });
+      const answered = [...quiz.answered];
+      if (answered[quiz.index] === null) answered[quiz.index] = "wrong";
+      setQuiz({ ...quiz, result: "wrong", answered });
     }
-  }
-
-  function revealQuiz() {
-    if (!quiz) return;
-    const answered = [...quiz.answered];
-    if (answered[quiz.index] === null) answered[quiz.index] = "wrong";
-    setQuiz({ ...quiz, result: "revealed", answered });
   }
 
   function nextQuiz() {
@@ -2208,7 +2204,7 @@ export default function PolygonCanvas() {
     }
 
     // 중앙 라벨: 칸 수(직사각형 시각화) 또는 넓이 배지 — 회전 점선 위에 그려 가독성 확보
-    const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "revealed";
+    const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct";
     const centerLabel = cellInfo
       ? `${cellInfo.cols} × ${cellInfo.rows} = ${cellInfo.cols * cellInfo.rows}칸`
       : showAreaBadge && !quizHiding
@@ -2422,7 +2418,7 @@ export default function PolygonCanvas() {
         count={shapes.length}
         totalArea={totalArea}
         totalPeri={totalPeri}
-        hideArea={!!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "revealed"}
+        hideArea={!!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct"}
       />
 
       {/* 측정/가이드 정리 (우하단, 정보카드 위) */}
@@ -2506,7 +2502,6 @@ export default function PolygonCanvas() {
           quiz={quiz}
           onChange={(s) => setQuiz(s)}
           onSubmit={submitQuiz}
-          onReveal={revealQuiz}
           onNext={nextQuiz}
           onRestart={restartQuiz}
           onExit={exitQuiz}
@@ -3053,7 +3048,6 @@ function QuizPanel({
   quiz,
   onChange,
   onSubmit,
-  onReveal,
   onNext,
   onRestart,
   onExit,
@@ -3061,7 +3055,6 @@ function QuizPanel({
   quiz: QuizState;
   onChange: (s: QuizState) => void;
   onSubmit: () => void;
-  onReveal: () => void;
   onNext: () => void;
   onRestart: () => void;
   onExit: () => void;
@@ -3069,6 +3062,16 @@ function QuizPanel({
   const total = quiz.problems.length;
   const done = quiz.index >= total;
   const p = !done ? quiz.problems[quiz.index] : null;
+
+  // 정답을 맞히면 잠깐 답을 보여준 뒤 자동으로 다음 문제로
+  useEffect(() => {
+    if (quiz.result === "correct") {
+      const t = setTimeout(onNext, 1600);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quiz.result, quiz.index]);
+
   if (done) {
     const pct = Math.round((quiz.score / total) * 100);
     const stars = quiz.score >= 18 ? "🏆" : quiz.score >= 14 ? "🌟" : quiz.score >= 10 ? "✨" : "🌱";
@@ -3108,7 +3111,6 @@ function QuizPanel({
   }
   const correct = quiz.result === "correct";
   const wrong = quiz.result === "wrong";
-  const revealed = quiz.result === "revealed";
   return (
     <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,620px)] -translate-x-1/2">
       <div className="pointer-events-auto rounded-2xl border-2 border-rose-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
@@ -3134,47 +3136,37 @@ function QuizPanel({
           ))}
         </div>
         <div className="text-sm leading-relaxed text-slate-800">{p!.prompt}</div>
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            value={quiz.userAnswer}
-            onChange={(e) => onChange({ ...quiz, userAnswer: e.target.value, result: "idle" })}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !correct && !revealed) onSubmit();
-              if (e.key === "Enter" && (correct || revealed)) onNext();
-            }}
-            inputMode="numeric"
-            placeholder="답"
-            className="w-28 rounded-lg border-2 border-slate-300 px-3 py-2 text-xl font-bold text-slate-900 outline-none focus:border-rose-500"
-            autoFocus
-          />
-          <span className="text-sm font-medium text-slate-500">cm²</span>
-          {!correct && !revealed && (
-            <button onClick={onSubmit} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700">
-              확인
-            </button>
-          )}
-          {(correct || revealed) && (
-            <button onClick={onNext} className="ml-auto rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700">
-              {quiz.index + 1 < total ? "다음 ▶" : "결과 보기"}
-            </button>
-          )}
-        </div>
-        {correct && <div className="mt-2 text-sm font-bold text-emerald-600">🎉 정답! 잘했어요</div>}
-        {wrong && <div className="mt-2 text-sm font-bold text-rose-600">아쉬워요. 도형을 다시 살펴 보거나 칸을 세 보세요.</div>}
-        {revealed && (
-          <div className="mt-2 text-sm font-bold text-slate-700">
-            정답: <span className="text-rose-700">{p!.answer}cm²</span>
+        {correct ? (
+          <div className="mt-3 rounded-xl bg-emerald-50 px-4 py-3 text-center">
+            <div className="text-base font-extrabold text-emerald-700">🎉 정답!</div>
+            <div className="mt-1 text-2xl font-extrabold text-slate-900">{p!.answer}cm²</div>
+            <div className="mt-1 text-xs font-medium text-emerald-600">
+              {quiz.index + 1 < total ? "다음 문제로 넘어갈게요…" : "마지막 문제예요! 결과를 볼게요…"}
+            </div>
           </div>
-        )}
-        {!correct && !revealed && (
-          <div className="mt-2 flex justify-end">
-            <button
-              onClick={onReveal}
-              className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 hover:bg-amber-100"
-            >
-              정답 보기
-            </button>
-          </div>
+        ) : (
+          <>
+            <div className="mt-3 flex items-center gap-2">
+              <input
+                value={quiz.userAnswer}
+                onChange={(e) => onChange({ ...quiz, userAnswer: e.target.value, result: "idle" })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onSubmit();
+                }}
+                inputMode="numeric"
+                placeholder="답"
+                className="w-28 rounded-lg border-2 border-slate-300 px-3 py-2 text-xl font-bold text-slate-900 outline-none focus:border-rose-500"
+                autoFocus
+              />
+              <span className="text-sm font-medium text-slate-500">cm²</span>
+              <button onClick={onSubmit} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700">
+                확인
+              </button>
+            </div>
+            {wrong && (
+              <div className="mt-2 text-sm font-bold text-rose-600">아쉬워요! 도형을 잘라 보거나 모눈 칸을 세어 다시 풀어 볼까요?</div>
+            )}
+          </>
         )}
       </div>
     </div>

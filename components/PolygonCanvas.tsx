@@ -149,15 +149,12 @@ function axisAlignedRect(pts: Point[]): { x: number; y: number; w: number; h: nu
 }
 
 // 축에 평행한 직각 다각형(ㄴ자·십자·직사각형)의 내부 단위 칸 목록을 반환. 아니면 null.
+// 칸은 도형의 좌상단 모서리 기준으로 정렬하므로, 도형이 절대 격자선과 어긋나 있어도(반-칸 이동 등) 동작한다.
 function gridCells(pts: Point[]): { x: number; y: number }[] | null {
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i];
     const b = pts[(i + 1) % pts.length];
     if (Math.abs(a.x - b.x) > 0.5 && Math.abs(a.y - b.y) > 0.5) return null; // 대각선 변 → 제외
-  }
-  for (const p of pts) {
-    if (Math.abs(p.x / GRID - Math.round(p.x / GRID)) > 0.06) return null;
-    if (Math.abs(p.y / GRID - Math.round(p.y / GRID)) > 0.06) return null;
   }
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
@@ -168,6 +165,9 @@ function gridCells(pts: Point[]): { x: number; y: number }[] | null {
   const cols = Math.round((maxX - minX) / GRID);
   const rows = Math.round((maxY - minY) / GRID);
   if (cols < 1 || rows < 1 || cols * rows > 800) return null;
+  // 가로/세로가 정수 칸 수여야 함 (모서리 기준 정렬이므로 절대 위치는 무관)
+  if (Math.abs(maxX - minX - cols * GRID) > 0.1 * GRID) return null;
+  if (Math.abs(maxY - minY - rows * GRID) > 0.1 * GRID) return null;
   const cells: { x: number; y: number }[] = [];
   for (let i = 0; i < cols; i++)
     for (let j = 0; j < rows; j++) {
@@ -820,6 +820,10 @@ function makeQuizSet(cfg: QuizConfig): QuizProblem[] {
     const j = Math.floor(Math.random() * (i + 1));
     [seq[i], seq[j]] = [seq[j], seq[i]];
   }
+  // 첫 문제는 쉬운 유형(직사각형>평행사변형)으로 워밍업 — 가능하면 앞으로 당김
+  const easyIdx = seq.findIndex((k) => k === "rect");
+  const warmIdx = easyIdx >= 0 ? easyIdx : seq.findIndex((k) => k === "para");
+  if (warmIdx > 0) [seq[0], seq[warmIdx]] = [seq[warmIdx], seq[0]];
   return seq.map((k) => makeQuizProblem(k, cfg.level));
 }
 
@@ -993,7 +997,7 @@ export default function PolygonCanvas() {
   );
 
   const fitView = useCallback(
-    (list?: Shape[]) => {
+    (list?: Shape[], opts?: { topInset?: number }) => {
       const { w, h } = sizeRef.current;
       if (!w || !h) return;
       const src = list ?? shapes;
@@ -1015,12 +1019,15 @@ export default function PolygonCanvas() {
           }
       }
       const pad = 80;
+      // 상단 패널(문제 카드 등)을 가리지 않도록 위쪽 여백을 비워 도형을 아래쪽에 배치
+      const topInset = opts?.topInset ?? 0;
+      const availH = Math.max(GRID, h - topInset);
       const bw = Math.max(GRID, maxX - minX);
       const bh = Math.max(GRID, maxY - minY);
-      const s = clamp(Math.min((w - pad * 2) / bw, (h - pad * 2) / bh), MIN_SCALE, MAX_SCALE);
+      const s = clamp(Math.min((w - pad * 2) / bw, (availH - pad * 2) / bh), MIN_SCALE, MAX_SCALE);
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      setCam({ scale: s, tx: w / 2 - cx * s, ty: h / 2 - cy * s });
+      setCam({ scale: s, tx: w / 2 - cx * s, ty: topInset + availH / 2 - cy * s });
     },
     [shapes, setCam]
   );
@@ -1698,7 +1705,8 @@ export default function PolygonCanvas() {
     setMeasurements([]);
     setGuides([]);
     setActiveAux(null);
-    requestAnimationFrame(() => fitView(built));
+    // 문제 카드(상단 중앙)가 도형을 가리지 않도록 위쪽 약 240px 비움
+    requestAnimationFrame(() => fitView(built, { topInset: 240 }));
   }
 
   function startQuiz(cfg: QuizConfig) {

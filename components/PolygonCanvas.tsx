@@ -148,6 +148,35 @@ function axisAlignedRect(pts: Point[]): { x: number; y: number; w: number; h: nu
   return { x: minX, y: minY, w, h };
 }
 
+// 축에 평행한 직각 다각형(ㄴ자·십자·직사각형)의 내부 단위 칸 목록을 반환. 아니면 null.
+function gridCells(pts: Point[]): { x: number; y: number }[] | null {
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    if (Math.abs(a.x - b.x) > 0.5 && Math.abs(a.y - b.y) > 0.5) return null; // 대각선 변 → 제외
+  }
+  for (const p of pts) {
+    if (Math.abs(p.x / GRID - Math.round(p.x / GRID)) > 0.06) return null;
+    if (Math.abs(p.y / GRID - Math.round(p.y / GRID)) > 0.06) return null;
+  }
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const cols = Math.round((maxX - minX) / GRID);
+  const rows = Math.round((maxY - minY) / GRID);
+  if (cols < 1 || rows < 1 || cols * rows > 800) return null;
+  const cells: { x: number; y: number }[] = [];
+  for (let i = 0; i < cols; i++)
+    for (let j = 0; j < rows; j++) {
+      const c = { x: minX + (i + 0.5) * GRID, y: minY + (j + 0.5) * GRID };
+      if (pointInPolygon(c, pts)) cells.push({ x: minX + i * GRID, y: minY + j * GRID });
+    }
+  return cells.length ? cells : null;
+}
+
 function boundsOf(pts: Point[]) {
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
@@ -651,7 +680,17 @@ type QuizState = {
   score: number;
   answered: ("correct" | "wrong" | null)[];
   userAnswer: string;
-  result: "idle" | "correct" | "wrong";
+  result: "idle" | "correct" | "wrong" | "shown"; // shown=막힘 시 답 공개(점수 미인정)
+  attempts: number; // 현재 문제 오답 횟수
+  origin: Shape[]; // 현재 문제의 원본 도형(되돌리기용)
+};
+
+const KIND_HINT: Record<QuizKind, string> = {
+  rect: "가로 칸 수 × 세로 칸 수를 세어 보세요!",
+  para: "밑변 × 높이! 높이는 모눈 칸으로 셀 수 있어요.",
+  tri: "밑변 × 높이 ÷ 2 예요. 똑같은 삼각형 둘이면 평행사변형!",
+  trap: "(윗변 + 아랫변) × 높이 ÷ 2 예요.",
+  compound: "여러 직사각형으로 ✂️나눠 더하거나, 모눈 칸을 하나씩 세어 보세요.",
 };
 
 const KIND_LABEL: Record<QuizKind, string> = {
@@ -1641,9 +1680,12 @@ export default function PolygonCanvas() {
   }
 
   // ----- 문제 모드 -----
-  function loadQuizShape(p: QuizProblem) {
+  // 현재 문제의 도형을 만들고, 되돌리기용 원본 스냅샷도 반환
+  function buildQuizShapes(p: QuizProblem): Shape[] {
     const { x: cx, y: cy } = viewCenterWorld();
-    const built = p.build(cx, cy);
+    return p.build(cx, cy);
+  }
+  function showQuizShapes(built: Shape[]) {
     setShapes(built);
     setSelectedId(null);
     setMergeFirstId(null);
@@ -1657,15 +1699,31 @@ export default function PolygonCanvas() {
   function startQuiz() {
     exitLesson();
     const problems = makeQuizSet();
-    setQuiz({ problems, index: 0, score: 0, answered: problems.map(() => null), userAnswer: "", result: "idle" });
+    const built = buildQuizShapes(problems[0]);
+    setQuiz({
+      problems,
+      index: 0,
+      score: 0,
+      answered: problems.map(() => null),
+      userAnswer: "",
+      result: "idle",
+      attempts: 0,
+      origin: cloneShapes(built),
+    });
     setTool("select");
     setDrawer(null);
     setScenarioHint(null);
-    loadQuizShape(problems[0]);
+    showQuizShapes(built);
   }
 
   function exitQuiz() {
     setQuiz(null);
+  }
+
+  // 현재 문제 도형을 처음 상태로 복원 (자르기/합치기 등으로 망가졌을 때)
+  function resetQuizShape() {
+    if (!quiz) return;
+    showQuizShapes(cloneShapes(quiz.origin));
   }
 
   function submitQuiz() {
@@ -1680,8 +1738,16 @@ export default function PolygonCanvas() {
     } else {
       const answered = [...quiz.answered];
       if (answered[quiz.index] === null) answered[quiz.index] = "wrong";
-      setQuiz({ ...quiz, result: "wrong", answered });
+      setQuiz({ ...quiz, result: "wrong", answered, attempts: quiz.attempts + 1 });
     }
+  }
+
+  // 막힘 방지: 답을 확인하고 넘어가기 (점수 미인정)
+  function giveUpQuiz() {
+    if (!quiz) return;
+    const answered = [...quiz.answered];
+    if (answered[quiz.index] === null) answered[quiz.index] = "wrong";
+    setQuiz({ ...quiz, result: "shown", answered });
   }
 
   function nextQuiz() {
@@ -1691,8 +1757,9 @@ export default function PolygonCanvas() {
       setQuiz({ ...quiz, index: ni, result: "idle", userAnswer: "" });
       return;
     }
-    setQuiz({ ...quiz, index: ni, result: "idle", userAnswer: "" });
-    loadQuizShape(quiz.problems[ni]);
+    const built = buildQuizShapes(quiz.problems[ni]);
+    setQuiz({ ...quiz, index: ni, result: "idle", userAnswer: "", attempts: 0, origin: cloneShapes(built) });
+    showQuizShapes(built);
   }
 
   function restartQuiz() {
@@ -2040,37 +2107,26 @@ export default function PolygonCanvas() {
     ctx.fillStyle = isMergeFirst ? "#f59e0b55" : isRef ? s.color + "22" : s.color + "55";
     ctx.fill();
 
-    // 격자 칸 채우기 시각화 (선택된 축평행 직사각형) — 넓이 = 칸 수
-    const rectCells = isSelected && !isRef ? axisAlignedRect(s.points) : null;
+    // 격자 칸 채우기 시각화 (선택된 축평행 직각 다각형: 직사각형·ㄴ자·십자) — 넓이 = 칸 수
+    const rectDims = isSelected && !isRef ? axisAlignedRect(s.points) : null;
+    const cells = isSelected && !isRef ? gridCells(s.points) : null;
     let cellInfo: { cols: number; rows: number } | null = null;
-    if (rectCells) {
-      const cols = Math.round(rectCells.w / GRID);
-      const rows = Math.round(rectCells.h / GRID);
-      if (
-        cols >= 1 &&
-        rows >= 1 &&
-        cols * rows <= 600 &&
-        Math.abs(rectCells.w - cols * GRID) < 2 &&
-        Math.abs(rectCells.h - rows * GRID) < 2
-      ) {
-        cellInfo = { cols, rows };
-        for (let i = 0; i < cols; i++)
-          for (let j = 0; j < rows; j++) {
-            ctx.fillStyle = (i + j) % 2 === 0 ? s.color + "33" : s.color + "1f";
-            ctx.fillRect(rectCells.x + i * GRID, rectCells.y + j * GRID, GRID, GRID);
-          }
-        ctx.strokeStyle = s.color + "aa";
-        ctx.lineWidth = 1 * k;
-        ctx.beginPath();
-        for (let i = 0; i <= cols; i++) {
-          ctx.moveTo(rectCells.x + i * GRID, rectCells.y);
-          ctx.lineTo(rectCells.x + i * GRID, rectCells.y + rectCells.h);
-        }
-        for (let j = 0; j <= rows; j++) {
-          ctx.moveTo(rectCells.x, rectCells.y + j * GRID);
-          ctx.lineTo(rectCells.x + rectCells.w, rectCells.y + j * GRID);
-        }
-        ctx.stroke();
+    let cellCount: number | null = null;
+    if (cells) {
+      for (const c of cells) {
+        const gi = Math.round(c.x / GRID);
+        const gj = Math.round(c.y / GRID);
+        ctx.fillStyle = (gi + gj) % 2 === 0 ? s.color + "33" : s.color + "1f";
+        ctx.fillRect(c.x, c.y, GRID, GRID);
+      }
+      ctx.strokeStyle = s.color + "aa";
+      ctx.lineWidth = 1 * k;
+      for (const c of cells) ctx.strokeRect(c.x, c.y, GRID, GRID);
+      cellCount = cells.length;
+      if (rectDims) {
+        const cols = Math.round(rectDims.w / GRID);
+        const rows = Math.round(rectDims.h / GRID);
+        if (cols * rows === cells.length) cellInfo = { cols, rows };
       }
     }
 
@@ -2203,15 +2259,21 @@ export default function PolygonCanvas() {
       ctx.fillText("1️⃣", s.points[0].x - 10 * k, s.points[0].y - 14 * k);
     }
 
-    // 중앙 라벨: 칸 수(직사각형 시각화) 또는 넓이 배지 — 회전 점선 위에 그려 가독성 확보
-    const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct";
-    const centerLabel = cellInfo
+    // 중앙 라벨: 칸 수(격자 시각화) 또는 넓이 배지 — 회전 점선 위에 그려 가독성 확보
+    // ⚠️ 문제 모드(quizHiding)에서는 칸 수·넓이를 숨겨 직접 세도록 함(칸 채우기는 보조로 유지)
+    const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "shown";
+    const isCellLabel = !!cellInfo || cellCount != null;
+    const centerLabel = quizHiding
+      ? null
+      : cellInfo
       ? `${cellInfo.cols} × ${cellInfo.rows} = ${cellInfo.cols * cellInfo.rows}칸`
-      : showAreaBadge && !quizHiding
+      : cellCount != null
+      ? `= ${cellCount}칸`
+      : showAreaBadge
       ? fmtArea(polygonArea(s.points) / (GRID * GRID))
       : null;
     if (centerLabel) {
-      const lf = (cellInfo ? (boardMode ? 19 : 16) : boardMode ? 17 : 14) * k;
+      const lf = (isCellLabel ? (boardMode ? 19 : 16) : boardMode ? 17 : 14) * k;
       ctx.font = `bold ${lf}px sans-serif`;
       const tw = ctx.measureText(centerLabel).width;
       const padH = 8 * k;
@@ -2219,7 +2281,7 @@ export default function PolygonCanvas() {
       const bx = cx0.x - tw / 2 - padH;
       const by = cx0.y - boxH / 2;
       const bw = tw + padH * 2;
-      if (cellInfo) {
+      if (isCellLabel) {
         ctx.fillStyle = "rgba(255,255,255,0.96)";
         ctx.strokeStyle = s.color;
         ctx.lineWidth = 2 * k;
@@ -2418,7 +2480,7 @@ export default function PolygonCanvas() {
         count={shapes.length}
         totalArea={totalArea}
         totalPeri={totalPeri}
-        hideArea={!!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct"}
+        hideArea={!!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "shown"}
       />
 
       {/* 측정/가이드 정리 (우하단, 정보카드 위) */}
@@ -2505,6 +2567,8 @@ export default function PolygonCanvas() {
           onNext={nextQuiz}
           onRestart={restartQuiz}
           onExit={exitQuiz}
+          onReset={resetQuizShape}
+          onGiveUp={giveUpQuiz}
         />
       )}
 
@@ -3051,6 +3115,8 @@ function QuizPanel({
   onNext,
   onRestart,
   onExit,
+  onReset,
+  onGiveUp,
 }: {
   quiz: QuizState;
   onChange: (s: QuizState) => void;
@@ -3058,15 +3124,17 @@ function QuizPanel({
   onNext: () => void;
   onRestart: () => void;
   onExit: () => void;
+  onReset: () => void;
+  onGiveUp: () => void;
 }) {
   const total = quiz.problems.length;
   const done = quiz.index >= total;
   const p = !done ? quiz.problems[quiz.index] : null;
 
-  // 정답을 맞히면 잠깐 답을 보여준 뒤 자동으로 다음 문제로
+  // 정답/답공개 시 잠깐 답을 보여준 뒤 자동으로 다음 문제로
   useEffect(() => {
-    if (quiz.result === "correct") {
-      const t = setTimeout(onNext, 1600);
+    if (quiz.result === "correct" || quiz.result === "shown") {
+      const t = setTimeout(onNext, quiz.result === "shown" ? 2400 : 1600);
       return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3111,6 +3179,9 @@ function QuizPanel({
   }
   const correct = quiz.result === "correct";
   const wrong = quiz.result === "wrong";
+  const shown = quiz.result === "shown";
+  const reveal = correct || shown;
+  const stuck = quiz.attempts >= 3; // 3회 이상 오답 → 도움 제공
   return (
     <div className="pointer-events-none absolute left-1/2 top-16 z-30 w-[min(94vw,620px)] -translate-x-1/2">
       <div className="pointer-events-auto rounded-2xl border-2 border-rose-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
@@ -3120,9 +3191,20 @@ function QuizPanel({
             <span className="rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-700">{KIND_LABEL[p!.kind]}</span>
             <span className="text-xs font-bold text-slate-500">점수 {quiz.score}</span>
           </div>
-          <button onClick={onExit} className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600">
-            그만두기 ✕
-          </button>
+          <div className="flex items-center gap-2">
+            {!reveal && (
+              <button
+                onClick={onReset}
+                title="도형을 처음 상태로"
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50"
+              >
+                ↺ 도형 되돌리기
+              </button>
+            )}
+            <button onClick={onExit} className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600">
+              그만두기 ✕
+            </button>
+          </div>
         </div>
         {/* 진행도 칩 */}
         <div className="mb-2 flex flex-wrap gap-0.5">
@@ -3136,11 +3218,13 @@ function QuizPanel({
           ))}
         </div>
         <div className="text-sm leading-relaxed text-slate-800">{p!.prompt}</div>
-        {correct ? (
-          <div className="mt-3 rounded-xl bg-emerald-50 px-4 py-3 text-center">
-            <div className="text-base font-extrabold text-emerald-700">🎉 정답!</div>
+        {reveal ? (
+          <div className={`mt-3 rounded-xl px-4 py-3 text-center ${correct ? "bg-emerald-50" : "bg-amber-50"}`}>
+            <div className={`text-base font-extrabold ${correct ? "text-emerald-700" : "text-amber-700"}`}>
+              {correct ? "🎉 정답!" : "답을 확인해요"}
+            </div>
             <div className="mt-1 text-2xl font-extrabold text-slate-900">{p!.answer}cm²</div>
-            <div className="mt-1 text-xs font-medium text-emerald-600">
+            <div className={`mt-1 text-xs font-medium ${correct ? "text-emerald-600" : "text-amber-600"}`}>
               {quiz.index + 1 < total ? "다음 문제로 넘어갈게요…" : "마지막 문제예요! 결과를 볼게요…"}
             </div>
           </div>
@@ -3163,8 +3247,19 @@ function QuizPanel({
                 확인
               </button>
             </div>
-            {wrong && (
-              <div className="mt-2 text-sm font-bold text-rose-600">아쉬워요! 도형을 잘라 보거나 모눈 칸을 세어 다시 풀어 볼까요?</div>
+            {wrong && !stuck && (
+              <div className="mt-2 text-sm font-bold text-rose-600">아쉬워요! 도형을 ✂️잘라 보거나 모눈 칸을 세어 다시 풀어 볼까요?</div>
+            )}
+            {wrong && stuck && (
+              <div className="mt-2 rounded-lg bg-amber-50 px-3 py-2">
+                <div className="text-xs font-bold text-amber-800">💡 힌트 · {KIND_HINT[p!.kind]}</div>
+                <button
+                  onClick={onGiveUp}
+                  className="mt-2 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100"
+                >
+                  답 확인하고 넘어가기
+                </button>
+              </div>
             )}
           </>
         )}

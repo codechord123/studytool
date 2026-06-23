@@ -177,6 +177,41 @@ function gridCells(pts: Point[]): { x: number; y: number }[] | null {
   return cells.length ? cells : null;
 }
 
+// 칸세기 모드: 어떤 다각형이든 모눈 칸을 '꽉 찬 칸'과 '걸친 칸'으로 분류 (넓이 어림용)
+function gridCountCells(pts: Point[]): { full: Point[]; partial: Point[] } | null {
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const i0 = Math.floor(minX / GRID);
+  const i1 = Math.ceil(maxX / GRID);
+  const j0 = Math.floor(minY / GRID);
+  const j1 = Math.ceil(maxY / GRID);
+  if ((i1 - i0) * (j1 - j0) > 2000) return null; // 너무 큰 도형은 생략
+  const eps = GRID * 0.06;
+  const full: Point[] = [];
+  const partial: Point[] = [];
+  for (let i = i0; i < i1; i++)
+    for (let j = j0; j < j1; j++) {
+      const x = i * GRID;
+      const y = j * GRID;
+      const samples: [number, number][] = [
+        [x + eps, y + eps],
+        [x + GRID - eps, y + eps],
+        [x + GRID - eps, y + GRID - eps],
+        [x + eps, y + GRID - eps],
+        [x + GRID / 2, y + GRID / 2],
+      ];
+      let inside = 0;
+      for (const [sx, sy] of samples) if (pointInPolygon({ x: sx, y: sy }, pts)) inside++;
+      if (inside === 5) full.push({ x, y });
+      else if (inside > 0) partial.push({ x, y });
+    }
+  return full.length || partial.length ? { full, partial } : null;
+}
+
 function boundsOf(pts: Point[]) {
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
@@ -869,15 +904,19 @@ function inferEdgeLabels(merged: Point[], sources: Shape[]): string[] | undefine
   return any ? out : undefined;
 }
 
+// 단축키는 왼손에 모이도록 배치: 주요 4도구는 홈행 A·S·D·F, 보조는 Q·W·E
 const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
-  { id: "select", icon: "🖱️", label: "선택·이동", key: "V" },
-  { id: "draw", icon: "✏️", label: "그리기", key: "P" },
-  { id: "cut", icon: "✂️", label: "자르기", key: "X" },
-  { id: "merge", icon: "🔗", label: "합치기", key: "M" },
-  { id: "measure", icon: "📏", label: "길이재기", key: "R" },
-  { id: "guide", icon: "📐", label: "가이드", key: "G" },
+  { id: "select", icon: "🖱️", label: "선택·이동", key: "A" },
+  { id: "draw", icon: "✏️", label: "그리기", key: "S" },
+  { id: "cut", icon: "✂️", label: "자르기", key: "D" },
+  { id: "merge", icon: "🔗", label: "합치기", key: "F" },
+  { id: "measure", icon: "📏", label: "길이재기", key: "Q" },
+  { id: "guide", icon: "📐", label: "가이드", key: "W" },
   { id: "delete", icon: "🗑️", label: "삭제", key: "E" },
 ];
+
+// 선택 도형 변형/모드 단축키 (왼손 아래줄 Z·X·C·V + G)
+const ACTION_KEYS = { rotL: "z", rotR: "x", flipH: "c", flipV: "v", gridCount: "g" } as const;
 
 const TOOL_HINT: Record<Tool, string> = {
   select: "도형을 눌러 선택 · 안쪽 드래그=이동 · 꼭짓점=변형 · 초록손잡이=회전 · 빈 곳 드래그=화면 이동",
@@ -901,6 +940,7 @@ export default function PolygonCanvas() {
   const [inspectId, setInspectId] = useState<string | null>(null); // 합쳐진 도형의 '조각 보기' 대상 id
   const [activeAux, setActiveAux] = useState<ActiveAux>(null);
   const [showAreaBadge, setShowAreaBadge] = useState(true);
+  const [gridCountMode, setGridCountMode] = useState(false); // 칸세기 모드(어떤 도형이든 모눈 칸 표시)
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
   const [snapStep, setSnapStep] = useState<0 | 0.2 | 0.5 | 1>(0.5);
@@ -1542,11 +1582,25 @@ export default function PolygonCanvas() {
         spaceRef.current = true;
         return;
       }
-      // 도구 단축키 (V/P/X/M/R/G/E) — 수정키 없이
+      // 도구 단축키 (A/S/D/F/Q/W/E) — 수정키 없이
       if (!meta && !e.altKey) {
-        const tk = TOOL_META.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
+        const lk = e.key.toLowerCase();
+        const tk = TOOL_META.find((t) => t.key.toLowerCase() === lk);
         if (tk) {
           setTool(tk.id);
+          return;
+        }
+        // 칸세기 모드 토글 (G)
+        if (lk === ACTION_KEYS.gridCount) {
+          setGridCountMode((v) => !v);
+          return;
+        }
+        // 회전/뒤집기 (Z/X/C/V) — 선택 도형에 적용
+        if (selectedId && (lk === ACTION_KEYS.rotL || lk === ACTION_KEYS.rotR || lk === ACTION_KEYS.flipH || lk === ACTION_KEYS.flipV)) {
+          if (lk === ACTION_KEYS.rotL) transformSelected((pts, c) => rotatePoints(pts, c, -Math.PI / 2));
+          else if (lk === ACTION_KEYS.rotR) transformSelected((pts, c) => rotatePoints(pts, c, Math.PI / 2));
+          else if (lk === ACTION_KEYS.flipH) transformSelected((pts, c) => flipPoints(pts, c, "horizontal"));
+          else transformSelected((pts, c) => flipPoints(pts, c, "vertical"));
           return;
         }
       }
@@ -1608,7 +1662,7 @@ export default function PolygonCanvas() {
       window.removeEventListener("keyup", onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, draft.length, selectedId, activeAux, snapStep, undo, redo, commitHistory, zoomCenter, setTool]);
+  }, [tool, draft.length, selectedId, activeAux, snapStep, undo, redo, commitHistory, zoomCenter, setTool, transformSelected]);
 
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
     if (!selected) return;
@@ -2211,7 +2265,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, lessonReference, quiz]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -2229,9 +2283,31 @@ export default function PolygonCanvas() {
     ctx.fillStyle = isMergeFirst ? "#f59e0b55" : isRef ? s.color + "22" : s.color + "55";
     ctx.fill();
 
+    // 칸세기 모드: 어떤 도형이든 '꽉 찬 칸/걸친 칸'을 덮어 세기 쉽게 (넓이 어림)
+    const gcCells = gridCountMode && !isRef ? gridCountCells(s.points) : null;
+    if (gcCells) {
+      for (const c of gcCells.partial) {
+        ctx.fillStyle = s.color + "26";
+        ctx.fillRect(c.x, c.y, GRID, GRID);
+      }
+      for (const c of gcCells.full) {
+        ctx.fillStyle = s.color + "66";
+        ctx.fillRect(c.x, c.y, GRID, GRID);
+      }
+      ctx.strokeStyle = s.color + "99";
+      ctx.lineWidth = 1 * k;
+      for (const c of gcCells.full) ctx.strokeRect(c.x, c.y, GRID, GRID);
+      // 걸친 칸: 점선 테두리로 구분
+      ctx.save();
+      ctx.setLineDash([3 * k, 3 * k]);
+      ctx.strokeStyle = s.color + "66";
+      for (const c of gcCells.partial) ctx.strokeRect(c.x, c.y, GRID, GRID);
+      ctx.restore();
+    }
+
     // 격자 칸 채우기 시각화 (선택된 축평행 직각 다각형: 직사각형·ㄴ자·십자) — 넓이 = 칸 수
-    const rectDims = isSelected && !isRef ? axisAlignedRect(s.points) : null;
-    const cells = isSelected && !isRef ? gridCells(s.points) : null;
+    const rectDims = !gridCountMode && isSelected && !isRef ? axisAlignedRect(s.points) : null;
+    const cells = !gridCountMode && isSelected && !isRef ? gridCells(s.points) : null;
     let cellInfo: { cols: number; rows: number } | null = null;
     let cellCount: number | null = null;
     if (cells) {
@@ -2386,9 +2462,13 @@ export default function PolygonCanvas() {
     // ⚠️ 문제 모드(quizHiding)에서는 칸 수·넓이를 숨겨 직접 세도록 함(칸 채우기는 보조로 유지)
     const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "shown";
     const inspecting = inspectId === s.id && !!s.ghosts && s.ghosts.length > 1;
-    const isCellLabel = !!cellInfo || cellCount != null;
+    // 칸세기 모드: 꽉 찬 칸/걸친 칸 개수를 보여줘 어림하게 (정확한 넓이는 숨김)
+    const gcLabel = gcCells && !quizHiding ? `🟩 꽉 ${gcCells.full.length} · 걸친 ${gcCells.partial.length}칸` : null;
+    const isCellLabel = !!cellInfo || cellCount != null || !!gcLabel;
     const centerLabel = inspecting
       ? null
+      : gcLabel
+      ? gcLabel
       : quizHiding
       ? null
       : cellInfo
@@ -2546,6 +2626,7 @@ export default function PolygonCanvas() {
               </div>
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
+              <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
             </div>
 
             <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
@@ -3017,10 +3098,10 @@ function ContextBar({
           </div>
         </MiniGroup>
         <MiniGroup label="회전">
-          <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90°">
+          <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90° (Z)">
             ↶90°
           </button>
-          <button className={mini} onClick={() => onRotate(90)} title="시계 90°">
+          <button className={mini} onClick={() => onRotate(90)} title="시계 90° (X)">
             ↷90°
           </button>
           <button className={mini} onClick={() => onRotate(180)} title="180°">
@@ -3028,10 +3109,10 @@ function ContextBar({
           </button>
         </MiniGroup>
         <MiniGroup label="뒤집기">
-          <button className={mini} onClick={() => onFlip("horizontal")} title="좌우 뒤집기">
+          <button className={mini} onClick={() => onFlip("horizontal")} title="좌우 뒤집기 (C)">
             ↔
           </button>
-          <button className={mini} onClick={() => onFlip("vertical")} title="위아래 뒤집기">
+          <button className={mini} onClick={() => onFlip("vertical")} title="위아래 뒤집기 (V)">
             ↕
           </button>
         </MiniGroup>

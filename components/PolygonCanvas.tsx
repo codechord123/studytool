@@ -869,14 +869,14 @@ function inferEdgeLabels(merged: Point[], sources: Shape[]): string[] | undefine
   return any ? out : undefined;
 }
 
-const TOOL_META: { id: Tool; icon: string; label: string }[] = [
-  { id: "select", icon: "🖱️", label: "선택·이동" },
-  { id: "draw", icon: "✏️", label: "그리기" },
-  { id: "cut", icon: "✂️", label: "자르기" },
-  { id: "merge", icon: "🔗", label: "합치기" },
-  { id: "measure", icon: "📏", label: "길이재기" },
-  { id: "guide", icon: "📐", label: "가이드" },
-  { id: "delete", icon: "🗑️", label: "삭제" },
+const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
+  { id: "select", icon: "🖱️", label: "선택·이동", key: "V" },
+  { id: "draw", icon: "✏️", label: "그리기", key: "P" },
+  { id: "cut", icon: "✂️", label: "자르기", key: "X" },
+  { id: "merge", icon: "🔗", label: "합치기", key: "M" },
+  { id: "measure", icon: "📏", label: "길이재기", key: "R" },
+  { id: "guide", icon: "📐", label: "가이드", key: "G" },
+  { id: "delete", icon: "🗑️", label: "삭제", key: "E" },
 ];
 
 const TOOL_HINT: Record<Tool, string> = {
@@ -898,6 +898,7 @@ export default function PolygonCanvas() {
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [inspectId, setInspectId] = useState<string | null>(null); // 합쳐진 도형의 '조각 보기' 대상 id
   const [activeAux, setActiveAux] = useState<ActiveAux>(null);
   const [showAreaBadge, setShowAreaBadge] = useState(true);
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
@@ -1541,6 +1542,14 @@ export default function PolygonCanvas() {
         spaceRef.current = true;
         return;
       }
+      // 도구 단축키 (V/P/X/M/R/G/E) — 수정키 없이
+      if (!meta && !e.altKey) {
+        const tk = TOOL_META.find((t) => t.key.toLowerCase() === e.key.toLowerCase());
+        if (tk) {
+          setTool(tk.id);
+          return;
+        }
+      }
       if (meta && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -1599,7 +1608,7 @@ export default function PolygonCanvas() {
       window.removeEventListener("keyup", onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, draft.length, selectedId, activeAux, snapStep, undo, redo, commitHistory, zoomCenter]);
+  }, [tool, draft.length, selectedId, activeAux, snapStep, undo, redo, commitHistory, zoomCenter, setTool]);
 
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
     if (!selected) return;
@@ -1632,6 +1641,32 @@ export default function PolygonCanvas() {
     setShapes((all) => all.filter((s) => s.id !== selected.id));
     setSelectedId(null);
   }
+
+  // 합쳐진 도형: 조각 보기 토글 (각 원본 조각을 색으로 구분해 넓이와 함께 표시)
+  function toggleInspect() {
+    if (!selected) return;
+    setInspectId((cur) => (cur === selected.id ? null : selected.id));
+  }
+
+  // 합쳐진 도형을 원본 조각들로 분리 (개별로 다시 다룰 수 있게)
+  function splitSelected() {
+    if (!selected || !selected.ghosts || selected.ghosts.length < 2) return;
+    commitHistory();
+    const pieces: Shape[] = selected.ghosts.map((g, i) => ({
+      id: uid(),
+      color: COLORS[i % COLORS.length],
+      points: g.map((p) => ({ ...p })),
+    }));
+    setShapes((all) => [...all.filter((s) => s.id !== selected.id), ...pieces]);
+    setInspectId(null);
+    setSelectedId(pieces[0]?.id ?? null);
+    setFlash(`조각 ${pieces.length}개로 분리했어요. 이제 하나씩 옮길 수 있어요!`);
+  }
+
+  // 선택이 바뀌면 조각 보기 해제
+  useEffect(() => {
+    if (inspectId && inspectId !== selectedId) setInspectId(null);
+  }, [selectedId, inspectId]);
 
   function setSelectedColor(color: string) {
     if (!selected || selected.color === color) return;
@@ -2176,7 +2211,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, lessonReference, quiz]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -2350,8 +2385,11 @@ export default function PolygonCanvas() {
     // 중앙 라벨: 칸 수(격자 시각화) 또는 넓이 배지 — 회전 점선 위에 그려 가독성 확보
     // ⚠️ 문제 모드(quizHiding)에서는 칸 수·넓이를 숨겨 직접 세도록 함(칸 채우기는 보조로 유지)
     const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "shown";
+    const inspecting = inspectId === s.id && !!s.ghosts && s.ghosts.length > 1;
     const isCellLabel = !!cellInfo || cellCount != null;
-    const centerLabel = quizHiding
+    const centerLabel = inspecting
+      ? null
+      : quizHiding
       ? null
       : cellInfo
       ? `${cellInfo.cols} × ${cellInfo.rows} = ${cellInfo.cols * cellInfo.rows}칸`
@@ -2386,6 +2424,38 @@ export default function PolygonCanvas() {
       ctx.fillText(centerLabel, cx0.x, cx0.y);
       ctx.textAlign = "start";
       ctx.textBaseline = "alphabetic";
+    }
+
+    // 조각 보기: 합쳐진 도형 속 원본 조각들을 색으로 구분하고 번호·넓이를 표시
+    if (inspecting && s.ghosts) {
+      s.ghosts.forEach((g, gi) => {
+        if (g.length < 3) return;
+        const col = COLORS[gi % COLORS.length];
+        ctx.beginPath();
+        ctx.moveTo(g[0].x, g[0].y);
+        for (let i = 1; i < g.length; i++) ctx.lineTo(g[i].x, g[i].y);
+        ctx.closePath();
+        ctx.fillStyle = col + "77";
+        ctx.fill();
+        ctx.setLineDash([]);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2.5 * k;
+        ctx.stroke();
+        const gc = polygonCentroid(g);
+        const label = `${gi + 1} · ${fmtArea(polygonArea(g) / (GRID * GRID))}`;
+        ctx.font = `bold ${(boardMode ? 16 : 13) * k}px sans-serif`;
+        const tw = ctx.measureText(label).width;
+        const padH = 7 * k;
+        const boxH = (boardMode ? 16 : 13) * k + 8 * k;
+        ctx.fillStyle = col;
+        ctx.fillRect(gc.x - tw / 2 - padH, gc.y - boxH / 2, tw + padH * 2, boxH);
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, gc.x, gc.y);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+      });
     }
   }
 
@@ -2523,11 +2593,18 @@ export default function PolygonCanvas() {
               <button
                 key={t.id}
                 onClick={() => setTool(t.id)}
-                title={t.label}
+                title={`${t.label} (단축키 ${t.key})`}
                 className={`group relative flex h-14 w-14 flex-col items-center justify-center gap-0.5 rounded-xl transition ${
                   active ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
                 }`}
               >
+                <span
+                  className={`absolute right-1 top-1 rounded px-1 text-[8px] font-bold leading-tight ${
+                    active ? "bg-white/25 text-white" : "bg-slate-100 text-slate-400"
+                  }`}
+                >
+                  {t.key}
+                </span>
                 <span className="text-lg leading-none">{t.icon}</span>
                 <span className={`text-[9px] font-bold leading-none ${active ? "text-white" : "text-slate-400"}`}>{t.label}</span>
               </button>
@@ -2603,6 +2680,10 @@ export default function PolygonCanvas() {
           onColor={setSelectedColor}
           onDuplicate={duplicateSelected}
           onDelete={deleteSelected}
+          merged={!!selected.ghosts && selected.ghosts.length > 1}
+          inspecting={inspectId === selected.id}
+          onToggleInspect={toggleInspect}
+          onSplit={splitSelected}
         />
       )}
 
@@ -2878,6 +2959,10 @@ function ContextBar({
   onColor,
   onDuplicate,
   onDelete,
+  merged,
+  inspecting,
+  onToggleInspect,
+  onSplit,
 }: {
   shape: Shape;
   onRotate: (deg: number) => void;
@@ -2886,12 +2971,36 @@ function ContextBar({
   onColor: (color: string) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  merged: boolean;
+  inspecting: boolean;
+  onToggleInspect: () => void;
+  onSplit: () => void;
 }) {
   const mini =
     "grid h-9 min-w-[38px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
   return (
     <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
       <div className="flex items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur">
+        {merged && (
+          <MiniGroup label="조각">
+            <button
+              className={`grid h-9 place-items-center gap-1 rounded-lg border px-2 text-sm font-semibold transition ${
+                inspecting ? "border-violet-500 bg-violet-600 text-white" : "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100"
+              }`}
+              onClick={onToggleInspect}
+              title="합쳐진 도형 속 조각들을 색으로 구분해 보기"
+            >
+              🧩 보기
+            </button>
+            <button
+              className="grid h-9 place-items-center rounded-lg border border-amber-200 bg-amber-50 px-2 text-sm font-semibold text-amber-700 hover:bg-amber-100"
+              onClick={onSplit}
+              title="원본 조각들로 다시 분리하기"
+            >
+              ✂️ 분리
+            </button>
+          </MiniGroup>
+        )}
         <MiniGroup label="색상">
           <div className="flex h-9 items-center gap-1">
             {COLORS.map((c) => (

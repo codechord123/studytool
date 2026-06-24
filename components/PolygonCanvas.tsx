@@ -2399,6 +2399,8 @@ export default function PolygonCanvas() {
       const ex = b.x - a.x;
       const ey = b.y - a.y;
       const L = Math.hypot(ex, ey) || 1;
+      // 화면에서 변이 너무 짧으면(줌아웃·작은 도형) 라벨을 생략해 겹침 방지 — 줌인하면 다시 표시
+      if (L / k < 40) continue;
       const nA = { x: -ey / L, y: ex / L };
       const nB = { x: ey / L, y: -ex / L };
       const toCx = { x: cx0.x - mx, y: cx0.y - my };
@@ -2412,15 +2414,18 @@ export default function PolygonCanvas() {
       const padH = 5 * k;
       const padV = 4 * k;
       const boxH = baseFont * k + padV * 2;
-      ctx.fillStyle = "rgba(255,255,255,0.96)";
-      ctx.strokeStyle = s.color;
-      ctx.lineWidth = 1.5 * k;
-      ctx.fillRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
-      ctx.strokeRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
-      ctx.fillStyle = "#0f172a";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(text, tx0, ty0);
+      // 칸세기 모드에서는 변 길이(cm) 박스를 숨겨 화면을 비움 (세기에 집중 + 겹침 방지)
+      if (!gridCountMode) {
+        ctx.fillStyle = "rgba(255,255,255,0.96)";
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = 1.5 * k;
+        ctx.fillRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
+        ctx.strokeRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
+        ctx.fillStyle = "#0f172a";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, tx0, ty0);
+      }
 
       // 의미 라벨 (학습 모드) — "윗변", "윗변 + 아랫변" 등
       const meaning = s.edgeLabels?.[i];
@@ -2431,7 +2436,7 @@ export default function PolygonCanvas() {
         const mpx = 6 * k;
         const mpy = 3 * k;
         const mbh = mf + mpy * 2;
-        const mty = ty0 + boxH / 2 + mbh / 2 + 3 * k;
+        const mty = gridCountMode ? ty0 : ty0 + boxH / 2 + mbh / 2 + 3 * k;
         ctx.fillStyle = "#fef3c7";
         ctx.strokeStyle = "#f59e0b";
         ctx.lineWidth = 1.2 * k;
@@ -2462,10 +2467,15 @@ export default function PolygonCanvas() {
     // ⚠️ 문제 모드(quizHiding)에서는 칸 수·넓이를 숨겨 직접 세도록 함(칸 채우기는 보조로 유지)
     const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "shown";
     const inspecting = inspectId === s.id && !!s.ghosts && s.ghosts.length > 1;
+    // 화면에서 도형이 너무 작으면 중앙 라벨(넓이·칸 수)을 생략해 겹침 방지 — 줌인하면 다시 표시
+    const bb = boundsOf(s.points);
+    const tooSmallForBadge = (bb.maxX - bb.minX) / k < 48 || (bb.maxY - bb.minY) / k < 34;
     // 칸세기 모드: 꽉 찬 칸/걸친 칸 개수를 보여줘 어림하게 (정확한 넓이는 숨김)
     const gcLabel = gcCells && !quizHiding ? `🟩 꽉 ${gcCells.full.length} · 걸친 ${gcCells.partial.length}칸` : null;
     const isCellLabel = !!cellInfo || cellCount != null || !!gcLabel;
-    const centerLabel = inspecting
+    const centerLabel = tooSmallForBadge
+      ? null
+      : inspecting
       ? null
       : gcLabel
       ? gcLabel

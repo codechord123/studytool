@@ -2414,21 +2414,20 @@ export default function PolygonCanvas() {
       const padH = 5 * k;
       const padV = 4 * k;
       const boxH = baseFont * k + padV * 2;
-      // 칸세기 모드에서는 변 길이(cm) 박스를 숨겨 화면을 비움 (세기에 집중 + 겹침 방지)
-      if (!gridCountMode) {
-        ctx.fillStyle = "rgba(255,255,255,0.96)";
-        ctx.strokeStyle = s.color;
-        ctx.lineWidth = 1.5 * k;
-        ctx.fillRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
-        ctx.strokeRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
-        ctx.fillStyle = "#0f172a";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(text, tx0, ty0);
-      }
+      // 변 길이(cm) 박스 — 항상 표시 (화면에서 너무 작으면 위에서 이미 생략됨)
+      ctx.fillStyle = "rgba(255,255,255,0.96)";
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 1.5 * k;
+      ctx.fillRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
+      ctx.strokeRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
+      ctx.fillStyle = "#0f172a";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, tx0, ty0);
 
-      // 의미 라벨 (학습 모드) — "윗변", "윗변 + 아랫변" 등
-      const meaning = s.edgeLabels?.[i];
+      // 의미 라벨 (학습 모드) — "윗변", "대각선 절반" 등.
+      // 칸세기 모드에서는 cm 길이를 우선하고 의미 라벨은 숨겨 겹침을 줄임.
+      const meaning = !gridCountMode ? s.edgeLabels?.[i] : undefined;
       if (meaning) {
         const mf = (boardMode ? 14 : 12) * k;
         ctx.font = `bold ${mf}px sans-serif`;
@@ -2436,7 +2435,7 @@ export default function PolygonCanvas() {
         const mpx = 6 * k;
         const mpy = 3 * k;
         const mbh = mf + mpy * 2;
-        const mty = gridCountMode ? ty0 : ty0 + boxH / 2 + mbh / 2 + 3 * k;
+        const mty = ty0 + boxH / 2 + mbh / 2 + 3 * k;
         ctx.fillStyle = "#fef3c7";
         ctx.strokeStyle = "#f59e0b";
         ctx.lineWidth = 1.2 * k;

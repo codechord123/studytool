@@ -2719,15 +2719,17 @@ export default function PolygonCanvas() {
         </button>
       </div>
 
-      {/* 정보 카드 (우하단) */}
-      <InfoCard
-        selected={selected}
-        boardMode={boardMode}
-        count={shapes.length}
-        totalArea={totalArea}
-        totalPeri={totalPeri}
-        hideArea={!!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "shown"}
-      />
+      {/* 정보 카드 (헤더 아래 우측 상단) — 퀴즈·레슨 중에는 전용 패널이 있어 숨김 */}
+      {!quiz && !lesson && (
+        <InfoCard
+          selected={selected}
+          boardMode={boardMode}
+          count={shapes.length}
+          totalArea={totalArea}
+          totalPeri={totalPeri}
+          topPx={boardMode ? 12 : headerH + 8}
+        />
+      )}
 
       {/* 측정/가이드 정리 (우하단, 정보카드 위) */}
       {(measurements.length > 0 || guides.length > 0) && (
@@ -2990,6 +2992,7 @@ function InfoCard({
   totalArea,
   totalPeri,
   hideArea,
+  topPx,
 }: {
   selected: Shape | null;
   boardMode: boolean;
@@ -2997,6 +3000,7 @@ function InfoCard({
   totalArea: number;
   totalPeri: number;
   hideArea?: boolean;
+  topPx: number;
 }) {
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
   if (count === 0) return null;
@@ -3004,7 +3008,7 @@ function InfoCard({
   const peri = selected ? displayPerimeterCm(selected.points) : totalPeri;
   const big = boardMode ? "text-4xl" : "text-3xl";
   return (
-    <div className="absolute bottom-3 right-3 z-10 w-[min(92vw,340px)] rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-xl backdrop-blur">
+    <div style={{ top: topPx }} className="absolute right-3 z-10 w-[min(78vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur sm:p-4">
       {selected && kind ? (
         <div className="mb-3 flex items-center gap-2.5">
           <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
@@ -3060,8 +3064,8 @@ function ContextBar({
   const mini =
     "grid h-9 min-w-[38px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
   return (
-    <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
-      <div className="flex items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur">
+    <div className="absolute bottom-[84px] left-1/2 z-10 max-w-[96vw] -translate-x-1/2 overflow-x-auto sm:bottom-20">
+      <div className="flex w-max items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur">
         {merged && (
           <MiniGroup label="조각">
             <button

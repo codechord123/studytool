@@ -1383,7 +1383,7 @@ export default function PolygonCanvas() {
       dragRef.current = {
         type: "translate",
         shapeId: hit.id,
-        startPointer: p,
+        startPointer: raw, // 격자 스냅 전 raw 좌표로 저장 → 이동은 연속, 자석 우선
         startPoints: hit.points.map((q) => ({ ...q })),
         startGhosts: hit.ghosts?.map((g) => g.map((q) => ({ ...q }))),
       };
@@ -1449,16 +1449,23 @@ export default function PolygonCanvas() {
       all.map((s) => {
         if (s.id !== dm.shapeId) return s;
         if (dm.type === "translate") {
-          const dx0 = p.x - dm.startPointer.x;
-          const dy0 = p.y - dm.startPointer.y;
+          // 이동은 연속(raw) 좌표 기준 — 격자 스냅으로 양자화하지 않음
+          const dx0 = raw.x - dm.startPointer.x;
+          const dy0 = raw.y - dm.startPointer.y;
           const moved = dm.startPoints.map((q) => ({ x: q.x + dx0, y: q.y + dy0 }));
-          // 1) 꼭짓점 자석 → 2) 모서리/중심 정렬(스마트 가이드)
-          const mag = magnetTranslate(moved, dm.shapeId, 16 * k);
+          // 자석 우선: 1) 꼭짓점 자석(코너끼리 착) → 2) 모서리/중심 정렬(스마트 가이드)
+          const mag = magnetTranslate(moved, dm.shapeId, 20 * k);
           const afterMag = moved.map((q) => ({ x: q.x + mag.dx, y: q.y + mag.dy }));
-          const al = magnetic ? alignSnap(afterMag, all, dm.shapeId, 7 * k) : { dx: 0, dy: 0, vx: [], hy: [] };
+          const al = magnetic ? alignSnap(afterMag, all, dm.shapeId, 8 * k) : { dx: 0, dy: 0, vx: [], hy: [] };
           alignGuidesRef.current = { vx: al.vx, hy: al.hy };
-          const tdx = mag.dx + al.dx;
-          const tdy = mag.dy + al.dy;
+          // 축별로 자석이 붙으면 자석을 우선, 아니면 그 축만 격자 단위로 스냅
+          const step = snapStep > 0 ? snapStep * GRID : 0;
+          const magX = mag.dx + al.dx;
+          const magY = mag.dy + al.dy;
+          const engagedX = mag.dx !== 0 || al.dx !== 0;
+          const engagedY = mag.dy !== 0 || al.dy !== 0;
+          const tdx = engagedX ? magX : step ? Math.round(dx0 / step) * step - dx0 : 0;
+          const tdy = engagedY ? magY : step ? Math.round(dy0 / step) * step - dy0 : 0;
           const finalPts = moved.map((q) => ({ x: q.x + tdx, y: q.y + tdy }));
           const finalGhosts = dm.startGhosts?.map((g) =>
             g.map((q) => ({ x: q.x + dx0 + tdx, y: q.y + dy0 + tdy }))
@@ -1466,7 +1473,9 @@ export default function PolygonCanvas() {
           return { ...s, points: finalPts, ghosts: finalGhosts };
         }
         if (dm.type === "vertex") {
-          const snapped = vertexSnap(p, dm.shapeId, 14 * k);
+          // 자석 우선: 다른 도형 꼭짓점에 먼저 붙이고, 없으면 격자 스냅
+          const v = vertexSnap(raw, dm.shapeId, 16 * k);
+          const snapped = v.x === raw.x && v.y === raw.y ? gridSnap(raw) : v;
           return {
             ...s,
             points: s.points.map((q, i) => (i === dm.vertexIndex ? snapped : q)),

@@ -61,6 +61,8 @@ export default function SolidCanvas() {
   const [showEdges, setShowEdges] = useState(true);
   const [showVerts, setShowVerts] = useState(true);
   const [showNames, setShowNames] = useState(true);
+  // 쌓기나무 높이맵 (a×b 칸, 각 칸의 쌓은 높이 0..6)
+  const [heights, setHeights] = useState<number[][]>(() => Array.from({ length: 4 }, () => Array(3).fill(1)));
 
   const color = COLORS[0];
   const solid = SOLIDS.find((s) => s.id === solidId)!;
@@ -93,6 +95,19 @@ export default function SolidCanvas() {
       }
       return !on;
     });
+  }
+
+  // 가로(a)·세로(b)가 바뀌면 높이맵 크기 맞춤(기존 값 유지)
+  useEffect(() => {
+    setHeights((prev) => Array.from({ length: a }, (_, i) => Array.from({ length: b }, (_, j) => prev[i]?.[j] ?? 1)));
+  }, [a, b]);
+
+  const stackVolume = heights.reduce((s, col) => s + col.reduce((t, h) => t + h, 0), 0);
+  const stackMaxH = Math.max(1, ...heights.flat());
+  const frontMax = Array.from({ length: a }, (_, i) => Math.max(0, ...(heights[i] ?? []).map((h) => h)));
+  const sideMax = Array.from({ length: b }, (_, j) => Math.max(0, ...heights.map((col) => col[j] ?? 0)));
+  function bumpCell(i: number, j: number, dir: 1 | -1) {
+    setHeights((prev) => prev.map((col, ci) => (ci === i ? col.map((h, cj) => (cj === j ? Math.max(0, Math.min(6, h + dir)) : h)) : col)));
   }
 
   useEffect(() => {
@@ -147,7 +162,8 @@ export default function SolidCanvas() {
     const cx = size.w / 2;
     const cy = size.h / 2;
     const stackBox = mode === "stack" && isBox;
-    const maxDim = Math.max(a, b, c, isBox ? 3 : a + 2, 3);
+    const stackMaxH = Math.max(1, ...heights.flat());
+    const maxDim = Math.max(a, b, stackBox ? stackMaxH : c, isBox ? 3 : a + 2, 3);
     const baseScale = Math.min(size.w, size.h) / (maxDim * 2.9);
     const L = norm(v(-0.4, 0.7, 0.6));
 
@@ -174,15 +190,18 @@ export default function SolidCanvas() {
     } else if (stackBox) {
       const hx = a / 2;
       const hy = b / 2;
-      const hz = c / 2;
+      const maxH = Math.max(1, ...heights.flat());
+      const hz = maxH / 2;
       for (let i = 0; i < a; i++)
-        for (let j = 0; j < b; j++)
-          for (let kk = 0; kk < c; kk++) {
+        for (let j = 0; j < b; j++) {
+          const col = heights[i]?.[j] ?? 0;
+          for (let kk = 0; kk < col; kk++) {
             const o = v(i - hx, j - hy, kk - hz);
             cuboidFaces(1, 1, 1, color).forEach((f) =>
               faces.push({ pts: f.pts.map((p) => add(p, add(o, v(0.5, 0.5, 0.5)))), color, twoSided: false })
             );
           }
+        }
     }
 
     const drawList = faces
@@ -253,7 +272,7 @@ export default function SolidCanvas() {
         }
       }
     }
-  }, [size, mode, solidId, a, b, c, yaw, pitch, foldT, showFaces, showEdges, showVerts, showNames, color, isBox, solid.kind, solid.n, data]);
+  }, [size, mode, solidId, a, b, c, yaw, pitch, foldT, showFaces, showEdges, showVerts, showNames, color, isBox, solid.kind, solid.n, data, heights]);
 
   const seg = (active: boolean) =>
     `rounded-lg px-3 py-1.5 text-sm font-bold transition ${active ? "bg-indigo-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"}`;
@@ -305,7 +324,9 @@ export default function SolidCanvas() {
           )}
         </div>
         {(isBox
-          ? ([["가로", a, "a"], ["세로", b, "b"], ["높이", c, "c"]] as const)
+          ? mode === "stack"
+            ? ([["가로", a, "a"], ["세로", b, "b"]] as const)
+            : ([["가로", a, "a"], ["세로", b, "b"], ["높이", c, "c"]] as const)
           : ([["밑면 크기", a, "a"], ["높이", c, "c"]] as const)
         ).map(([lbl, val, key]) => (
           <div key={key} className="mb-1.5 flex items-center gap-2">
@@ -314,6 +335,32 @@ export default function SolidCanvas() {
             <span className="w-8 text-right text-sm font-extrabold text-slate-800">{val}</span>
           </div>
         ))}
+        {mode === "stack" && isBox && (
+          <div className="mt-1 rounded-xl bg-slate-50 p-2">
+            <div className="mb-1 text-[11px] font-bold text-slate-500">위에서 본 칸 — 탭하면 ↑쌓기, 우클릭 ↓허물기</div>
+            <div className="inline-grid gap-0.5" style={{ gridTemplateColumns: `repeat(${a}, minmax(0,1fr))` }}>
+              {Array.from({ length: b }).map((_, j) =>
+                Array.from({ length: a }).map((__, i) => {
+                  const h = heights[i]?.[j] ?? 0;
+                  return (
+                    <button
+                      key={`${i}-${j}`}
+                      onClick={() => bumpCell(i, j, 1)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        bumpCell(i, j, -1);
+                      }}
+                      className="grid h-7 w-7 place-items-center rounded text-xs font-extrabold"
+                      style={{ backgroundColor: h ? `rgba(96,165,250,${0.25 + h * 0.12})` : "#e2e8f0", color: h ? "#1e3a8a" : "#94a3b8" }}
+                    >
+                      {h || ""}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
         <div className="mt-2 flex items-center gap-2">
           <button onClick={() => setAuto((v) => !v)} className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-bold ${auto ? "bg-indigo-600 text-white" : "border border-slate-200 bg-white text-slate-600"}`}>
             {auto ? "⏸ 자동회전 끄기" : "▶ 자동회전"}
@@ -343,11 +390,31 @@ export default function SolidCanvas() {
               </div>
             )}
           </>
+        ) : mode === "stack" && isBox ? (
+          <>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-extrabold text-slate-700">🧊 쌓기나무</span>
+              <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">부피 = 쌓은 칸 수</span>
+            </div>
+            <Stat label="쌓은 쌓기나무(부피)" value={`${stackVolume}개 = ${stackVolume}cm³`} big />
+            <div className="mt-2 text-[11px] font-bold text-slate-500">세 방향에서 본 모양</div>
+            <div className="mt-1 flex gap-2">
+              <ViewBox title="위">
+                <NumGrid cols={a} rows={b} val={(i, j) => heights[i]?.[j] ?? 0} />
+              </ViewBox>
+              <ViewBox title="앞">
+                <SilGrid cols={a} maxH={stackMaxH} colH={(i) => frontMax[i]} />
+              </ViewBox>
+              <ViewBox title="옆">
+                <SilGrid cols={b} maxH={stackMaxH} colH={(j) => sideMax[j]} />
+              </ViewBox>
+            </div>
+            <div className="mt-2 text-[11px] leading-relaxed text-slate-400">위 칸을 탭해 쌓고, 세 방향 그림자가 어떻게 바뀌는지 보세요!</div>
+          </>
         ) : (
           <>
             <div className="mb-2 flex items-center gap-2">
               <span className="text-sm font-extrabold text-slate-700">{data.name}</span>
-              {mode === "stack" && isBox && <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">부피 = 쌓은 칸 수</span>}
               {mode === "stack" && !isBox && <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">쌓기나무는 직육면체</span>}
             </div>
             <div className="grid grid-cols-3 gap-1.5 text-center">
@@ -367,9 +434,6 @@ export default function SolidCanvas() {
                 <Toggle on={showNames} set={setShowNames} label="이름" />
               </div>
             )}
-            {mode === "stack" && isBox && (
-              <div className="mt-2 text-xs leading-relaxed text-slate-500">단위 쌓기나무 {a}×{b}×{c} = <b className="text-slate-800">{a * b * c}개</b>. 한 층({a}×{b}={a * b}개)이 {c}층!</div>
-            )}
           </>
         )}
       </div>
@@ -382,6 +446,56 @@ function Stat({ label, value, big }: { label: string; value: string; big?: boole
     <div className="rounded-xl bg-slate-50 px-2 py-1.5">
       <div className="text-[10px] font-semibold text-slate-400">{label}</div>
       <div className={`font-extrabold text-slate-900 ${big ? "text-lg" : "text-base"}`}>{value}</div>
+    </div>
+  );
+}
+
+function ViewBox({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <span className="text-[10px] font-bold text-slate-500">{title}</span>
+      <div className="rounded-lg border border-slate-200 bg-white p-1">{children}</div>
+    </div>
+  );
+}
+
+function NumGrid({ cols, rows, val }: { cols: number; rows: number; val: (i: number, j: number) => number }) {
+  return (
+    <div className="inline-grid gap-px" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+      {Array.from({ length: rows }).map((_, j) =>
+        Array.from({ length: cols }).map((__, i) => {
+          const h = val(i, j);
+          return (
+            <div
+              key={`${i}-${j}`}
+              className="grid h-4 w-4 place-items-center rounded-[2px] text-[9px] font-bold"
+              style={{ backgroundColor: h ? `rgba(96,165,250,${0.3 + h * 0.1})` : "#f1f5f9", color: h ? "#1e3a8a" : "#cbd5e1" }}
+            >
+              {h || ""}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function SilGrid({ cols, maxH, colH }: { cols: number; maxH: number; colH: (i: number) => number }) {
+  return (
+    <div className="inline-grid gap-px" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+      {Array.from({ length: maxH }).map((_, r) =>
+        Array.from({ length: cols }).map((__, i) => {
+          const fromBottom = maxH - 1 - r; // 위에서부터 그리되 아래가 채워지도록
+          const filled = fromBottom < colH(i);
+          return (
+            <div
+              key={`${i}-${r}`}
+              className="h-4 w-4 rounded-[2px]"
+              style={{ backgroundColor: filled ? "#60a5fa" : "#f1f5f9" }}
+            />
+          );
+        })
+      )}
     </div>
   );
 }

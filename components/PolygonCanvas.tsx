@@ -975,6 +975,8 @@ export default function PolygonCanvas() {
   // 상단 바 실제 높이 — 좁은 화면(태블릿 세로 등)에서 줄바꿈돼도 패널이 겹치지 않게 동적 측정
   const headerRef = useRef<HTMLDivElement>(null);
   const [headerH, setHeaderH] = useState(56);
+  // 넓이/둘레 정보카드를 자유롭게 옮긴 위치(없으면 기본=헤더 아래 우측)
+  const [infoPos, setInfoPos] = useState<{ x: number; y: number } | null>(null);
 
   const dragRef = useRef<DragMode>({ type: "none" });
   const alignGuidesRef = useRef<{ vx: number[]; hy: number[] }>({ vx: [], hy: [] });
@@ -1016,6 +1018,16 @@ export default function PolygonCanvas() {
       hro?.disconnect();
     };
   }, []);
+
+  // 전자칠판을 껐다 켜면 헤더가 새로 마운트되므로 높이를 다시 측정·관찰 (스테일 방지)
+  useEffect(() => {
+    const hel = headerRef.current;
+    if (!hel) return;
+    const hro = new ResizeObserver(() => setHeaderH(hel.offsetHeight));
+    hro.observe(hel);
+    setHeaderH(hel.offsetHeight);
+    return () => hro.disconnect();
+  }, [boardMode]);
 
   // ----- 카메라 헬퍼 -----
   const toWorld = useCallback((sx: number, sy: number): Point => {
@@ -2789,6 +2801,9 @@ export default function PolygonCanvas() {
           totalArea={totalArea}
           totalPeri={totalPeri}
           topPx={boardMode ? 64 : headerH + 8}
+          pos={infoPos}
+          onMove={setInfoPos}
+          onResetPos={() => setInfoPos(null)}
         />
       )}
 
@@ -3054,6 +3069,9 @@ function InfoCard({
   totalPeri,
   hideArea,
   topPx,
+  pos,
+  onMove,
+  onResetPos,
 }: {
   selected: Shape | null;
   boardMode: boolean;
@@ -3062,14 +3080,64 @@ function InfoCard({
   totalPeri: number;
   hideArea?: boolean;
   topPx: number;
+  pos: { x: number; y: number } | null;
+  onMove: (p: { x: number; y: number }) => void;
+  onResetPos: () => void;
 }) {
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const grabRef = useRef<{ ox: number; oy: number } | null>(null);
+  function onDownDrag(e: React.PointerEvent) {
+    const el = cardRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    grabRef.current = { ox: e.clientX - r.left, oy: e.clientY - r.top };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+  function onMoveDrag(e: React.PointerEvent) {
+    const g = grabRef.current;
+    if (!g) return;
+    const el = cardRef.current;
+    const w = el?.offsetWidth ?? 300;
+    const h = el?.offsetHeight ?? 120;
+    const x = Math.max(4, Math.min(window.innerWidth - w - 4, e.clientX - g.ox));
+    const y = Math.max(4, Math.min(window.innerHeight - h - 4, e.clientY - g.oy));
+    onMove({ x, y });
+  }
+  function onUpDrag() {
+    grabRef.current = null;
+  }
   if (count === 0) return null;
   const area = selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
   const peri = selected ? displayPerimeterCm(selected.points) : totalPeri;
   const big = boardMode ? "text-4xl" : "text-3xl";
   return (
-    <div style={{ top: topPx }} className="absolute right-3 z-10 w-[min(78vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur sm:p-4">
+    <div
+      ref={cardRef}
+      style={pos ? { left: pos.x, top: pos.y } : { top: topPx }}
+      className={`absolute z-10 w-[min(78vw,300px)] rounded-2xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur ${pos ? "" : "right-3"}`}
+    >
+      {/* 드래그 손잡이 */}
+      <div
+        onPointerDown={onDownDrag}
+        onPointerMove={onMoveDrag}
+        onPointerUp={onUpDrag}
+        className="flex cursor-move touch-none items-center justify-between rounded-t-2xl px-2 py-1 text-slate-300 hover:bg-slate-50"
+        title="드래그해서 옮기기"
+      >
+        <span className="text-xs tracking-widest">⠿⠿</span>
+        {pos && (
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onResetPos}
+            className="rounded px-1 text-[10px] font-bold text-slate-400 hover:text-slate-600"
+            title="기본 위치로"
+          >
+            ↺ 위치
+          </button>
+        )}
+      </div>
+      <div className="p-3 pt-1 sm:p-4 sm:pt-1">
       {selected && kind ? (
         <div className="mb-3 flex items-center gap-2.5">
           <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
@@ -3092,6 +3160,7 @@ function InfoCard({
           <div className="text-xs font-semibold text-slate-400">둘레</div>
           <div className={`font-extrabold leading-tight text-slate-900 ${big}`}>{fmtLen(peri)}</div>
         </div>
+      </div>
       </div>
     </div>
   );

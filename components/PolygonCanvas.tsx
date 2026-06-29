@@ -941,6 +941,7 @@ export default function PolygonCanvas() {
   const [activeAux, setActiveAux] = useState<ActiveAux>(null);
   const [showAreaBadge, setShowAreaBadge] = useState(true);
   const [gridCountMode, setGridCountMode] = useState(false); // 칸세기 모드(어떤 도형이든 모눈 칸 표시)
+  const [labelScale, setLabelScale] = useState(1); // 변·넓이 숫자 라벨 크기 배율 (수업용)
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
   const [snapStep, setSnapStep] = useState<0 | 0.2 | 0.5 | 1>(0.5);
@@ -1909,6 +1910,8 @@ export default function PolygonCanvas() {
       if (raw) setProgress(JSON.parse(raw));
       const m = localStorage.getItem("studytool.muted");
       if (m) setMuted(m === "1");
+      const ls = localStorage.getItem("studytool.labelScale");
+      if (ls) setLabelScale(Math.min(2.4, Math.max(1, parseFloat(ls) || 1)));
     } catch {}
   }, []);
   function persist(p: { quizBestPct: number; lessonsDone: string[] }) {
@@ -1922,6 +1925,19 @@ export default function PolygonCanvas() {
       const nv = !v;
       try {
         localStorage.setItem("studytool.muted", nv ? "1" : "0");
+      } catch {}
+      return nv;
+    });
+  }
+  // 라벨(변·넓이 숫자) 크기 단계 조절: 1 → 1.3 → 1.7 → 2.1 순환
+  const LABEL_STEPS = [1, 1.3, 1.7, 2.1];
+  function bumpLabelScale(dir: 1 | -1) {
+    setLabelScale((cur) => {
+      const i = LABEL_STEPS.reduce((best, v, idx) => (Math.abs(v - cur) < Math.abs(LABEL_STEPS[best] - cur) ? idx : best), 0);
+      const ni = Math.min(LABEL_STEPS.length - 1, Math.max(0, i + dir));
+      const nv = LABEL_STEPS[ni];
+      try {
+        localStorage.setItem("studytool.labelScale", String(nv));
       } catch {}
       return nv;
     });
@@ -2265,7 +2281,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, labelScale, lessonReference, quiz]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -2284,23 +2300,24 @@ export default function PolygonCanvas() {
     ctx.fill();
 
     // 칸세기 모드: 어떤 도형이든 '꽉 찬 칸/걸친 칸'을 덮어 세기 쉽게 (넓이 어림)
+    // 색칠은 도형 외곽선으로 클립해 '딱 도형만큼만' 칠해지도록 함
     const gcCells = gridCountMode && !isRef ? gridCountCells(s.points) : null;
     if (gcCells) {
-      for (const c of gcCells.partial) {
-        ctx.fillStyle = s.color + "26";
-        ctx.fillRect(c.x, c.y, GRID, GRID);
-      }
-      for (const c of gcCells.full) {
-        ctx.fillStyle = s.color + "66";
-        ctx.fillRect(c.x, c.y, GRID, GRID);
-      }
-      ctx.strokeStyle = s.color + "99";
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
+      ctx.closePath();
+      ctx.clip(); // 이후 칠·격자선은 도형 안쪽만 보임
+      // 걸친 칸: 연한 색(도형 안쪽 부분만 칠해짐), 꽉 찬 칸: 진한 색
+      ctx.fillStyle = s.color + "26";
+      for (const c of gcCells.partial) ctx.fillRect(c.x, c.y, GRID, GRID);
+      ctx.fillStyle = s.color + "66";
+      for (const c of gcCells.full) ctx.fillRect(c.x, c.y, GRID, GRID);
+      // 칸 격자선 (도형 안쪽만 보이도록 클립됨) — 세기 보조
+      ctx.strokeStyle = s.color + "88";
       ctx.lineWidth = 1 * k;
       for (const c of gcCells.full) ctx.strokeRect(c.x, c.y, GRID, GRID);
-      // 걸친 칸: 점선 테두리로 구분
-      ctx.save();
-      ctx.setLineDash([3 * k, 3 * k]);
-      ctx.strokeStyle = s.color + "66";
       for (const c of gcCells.partial) ctx.strokeRect(c.x, c.y, GRID, GRID);
       ctx.restore();
     }
@@ -2387,8 +2404,8 @@ export default function PolygonCanvas() {
       ctx.stroke();
     }
 
-    // 변 길이 라벨
-    const baseFont = boardMode ? 20 : 16;
+    // 변 길이 라벨 (labelScale = 수업용 글자 크기 배율)
+    const baseFont = (boardMode ? 20 : 16) * labelScale;
     ctx.font = `bold ${baseFont * k}px sans-serif`;
     const cx0 = polygonCentroid(s.points);
     for (let i = 0; i < s.points.length; i++) {
@@ -2400,7 +2417,7 @@ export default function PolygonCanvas() {
       const ey = b.y - a.y;
       const L = Math.hypot(ex, ey) || 1;
       // 화면에서 변이 너무 짧으면(줌아웃·작은 도형) 라벨을 생략해 겹침 방지 — 줌인하면 다시 표시
-      if (L / k < 40) continue;
+      if (L / k < 40 * labelScale) continue;
       const nA = { x: -ey / L, y: ex / L };
       const nB = { x: ey / L, y: -ex / L };
       const toCx = { x: cx0.x - mx, y: cx0.y - my };
@@ -2429,7 +2446,7 @@ export default function PolygonCanvas() {
       // 칸세기 모드에서는 cm 길이를 우선하고 의미 라벨은 숨겨 겹침을 줄임.
       const meaning = !gridCountMode ? s.edgeLabels?.[i] : undefined;
       if (meaning) {
-        const mf = (boardMode ? 14 : 12) * k;
+        const mf = (boardMode ? 14 : 12) * labelScale * k;
         ctx.font = `bold ${mf}px sans-serif`;
         const mw = ctx.measureText(meaning).width;
         const mpx = 6 * k;
@@ -2488,7 +2505,7 @@ export default function PolygonCanvas() {
       ? fmtArea(polygonArea(s.points) / (GRID * GRID))
       : null;
     if (centerLabel) {
-      const lf = (isCellLabel ? (boardMode ? 19 : 16) : boardMode ? 17 : 14) * k;
+      const lf = (isCellLabel ? (boardMode ? 19 : 16) : boardMode ? 17 : 14) * labelScale * k;
       ctx.font = `bold ${lf}px sans-serif`;
       const tw = ctx.measureText(centerLabel).width;
       const padH = 8 * k;
@@ -2636,6 +2653,25 @@ export default function PolygonCanvas() {
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
+              <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="변·넓이 숫자 크기 (수업용)">글자</span>
+              <div className="flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5" title="변·넓이 숫자 크기 조절 (수업용)">
+                <button
+                  onClick={() => bumpLabelScale(-1)}
+                  disabled={labelScale <= LABEL_STEPS[0]}
+                  title="변·넓이 숫자 작게"
+                  className="grid h-7 w-6 place-items-center rounded-md text-xs font-extrabold text-slate-500 hover:bg-white disabled:opacity-30"
+                >
+                  가<span className="text-[8px]">－</span>
+                </button>
+                <button
+                  onClick={() => bumpLabelScale(1)}
+                  disabled={labelScale >= LABEL_STEPS[LABEL_STEPS.length - 1]}
+                  title="변·넓이 숫자 크게"
+                  className="grid h-7 w-7 place-items-center rounded-md text-base font-extrabold text-slate-800 hover:bg-white disabled:opacity-30"
+                >
+                  가<span className="text-[10px]">＋</span>
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
@@ -2736,7 +2772,7 @@ export default function PolygonCanvas() {
           count={shapes.length}
           totalArea={totalArea}
           totalPeri={totalPeri}
-          topPx={boardMode ? 12 : headerH + 8}
+          topPx={boardMode ? 64 : headerH + 8}
         />
       )}
 

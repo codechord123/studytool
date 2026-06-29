@@ -224,6 +224,65 @@ export function buildSolid(spec: SolidSpec, color: string): SolidData {
   };
 }
 
+// 수평면(y=yc)으로 자른 단면 다각형 (입체의 면들과 모서리 교차 → 고리 정렬)
+export function sectionAtY(faces: Face[], yc: number): V3[] {
+  const segs: [V3, V3][] = [];
+  for (const f of faces) {
+    const pts = f.pts;
+    const xs: V3[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const da = a.y - yc;
+      const db = b.y - yc;
+      if ((da <= 0 && db > 0) || (da > 0 && db <= 0)) {
+        const t = da / (da - db);
+        xs.push(v(a.x + (b.x - a.x) * t, yc, a.z + (b.z - a.z) * t));
+      }
+    }
+    if (xs.length === 2) segs.push([xs[0], xs[1]]);
+  }
+  if (segs.length < 3) return [];
+  const near = (p: V3, q: V3) => Math.hypot(p.x - q.x, p.z - q.z) < 1e-4;
+  const poly: V3[] = [segs[0][0], segs[0][1]];
+  const used = new Array(segs.length).fill(false);
+  used[0] = true;
+  let guard = 0;
+  while (guard++ < segs.length * 2 + 2) {
+    const tail = poly[poly.length - 1];
+    let found = false;
+    for (let i = 0; i < segs.length; i++) {
+      if (used[i]) continue;
+      if (near(segs[i][0], tail)) {
+        poly.push(segs[i][1]);
+        used[i] = true;
+        found = true;
+        break;
+      }
+      if (near(segs[i][1], tail)) {
+        poly.push(segs[i][0]);
+        used[i] = true;
+        found = true;
+        break;
+      }
+    }
+    if (!found) break;
+  }
+  if (poly.length > 1 && near(poly[0], poly[poly.length - 1])) poly.pop();
+  return poly;
+}
+
+// XZ평면 다각형 넓이(신발끈) — 단면 넓이용
+export function areaXZ(poly: V3[]): number {
+  let s = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    s += a.x * b.z - b.x * a.z;
+  }
+  return Math.abs(s) / 2;
+}
+
 // 각기둥/각뿔의 평면 전개도(펼친 모양) — z=0 평면
 export function prismNetFaces(n: number, R: number, h: number, color: string): Face[] {
   const side = 2 * R * Math.sin(Math.PI / n);

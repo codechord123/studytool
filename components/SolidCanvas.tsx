@@ -14,12 +14,14 @@ import {
   prismNetFaces,
   pyramidNetFaces,
   buildSolid,
+  sectionAtY,
+  areaXZ,
   v,
   add,
 } from "@/lib/solid3d";
 import CubeNetQuiz from "@/components/CubeNetQuiz";
 
-type Mode = "view" | "stack" | "net";
+type Mode = "view" | "stack" | "net" | "section";
 
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#fb7185"];
 
@@ -65,6 +67,7 @@ export default function SolidCanvas() {
   // 쌓기나무 높이맵 (a×b 칸, 각 칸의 쌓은 높이 0..6)
   const [heights, setHeights] = useState<number[][]>(() => Array.from({ length: 4 }, () => Array(3).fill(1)));
   const [netQuiz, setNetQuiz] = useState(false);
+  const [cutY, setCutY] = useState(0); // 단면 자르기 높이(-1..1 비율)
 
   const color = COLORS[0];
   const solid = SOLIDS.find((s) => s.id === solidId)!;
@@ -75,6 +78,10 @@ export default function SolidCanvas() {
     ? { kind: "box", n: 4, a, b, c, R: 0, h: 0 }
     : { kind: solid.kind, n: solid.n, a: 0, b: 0, c: 0, R: a, h: c };
   const data = buildSolid(spec, color);
+  const yHalf = Math.max(0.5, ...data.corners.map((p) => Math.abs(p.y)));
+  const cutWorldY = cutY * (yHalf - 0.02);
+  const sectionPoly = mode === "section" ? sectionAtY(data.faces, cutWorldY) : [];
+  const sectionArea = sectionPoly.length >= 3 ? Math.round(areaXZ(sectionPoly) * 10) / 10 : 0;
 
   function setDim(which: "a" | "b" | "c", val: number) {
     if (cube && isBox) {
@@ -183,8 +190,9 @@ export default function SolidCanvas() {
     type Draw = { pts: V3[]; color: string; label?: string; twoSided: boolean };
     let faces: Draw[] = [];
     const isNet = mode === "net";
-    if (mode === "view" || (mode === "stack" && !isBox)) {
-      faces = data.faces.map((f) => ({ ...f, twoSided: false }));
+    const isSection = mode === "section";
+    if (mode === "view" || (mode === "stack" && !isBox) || isSection) {
+      faces = data.faces.map((f) => ({ ...f, twoSided: isSection }));
     } else if (isNet) {
       if (isBox) faces = cuboidNetFaces(a, b, c, foldT, color).map((f) => ({ ...f, twoSided: true }));
       else if (solid.kind === "prism") faces = prismNetFaces(solid.n, a, c, color).map((f) => ({ ...f, twoSided: true }));
@@ -225,13 +233,13 @@ export default function SolidCanvas() {
         for (let i = 1; i < d.proj.length; i++) ctx.lineTo(d.proj[i].x, d.proj[i].y);
         ctx.closePath();
         ctx.fillStyle = shade(d.f.color, Math.min(1.15, d.bright));
-        ctx.globalAlpha = isNet ? 0.92 : 1;
+        ctx.globalAlpha = isSection ? 0.22 : isNet ? 0.92 : 1;
         ctx.fill();
         ctx.globalAlpha = 1;
-        ctx.strokeStyle = "rgba(15,23,42,0.55)";
+        ctx.strokeStyle = isSection ? "rgba(15,23,42,0.25)" : "rgba(15,23,42,0.55)";
         ctx.lineWidth = 1;
         ctx.stroke();
-        if (showNames && d.f.label && (d.facing || isNet)) {
+        if (showNames && !isSection && d.f.label && (d.facing || isNet)) {
           const ccx = d.proj.reduce((s, p) => s + p.x, 0) / d.proj.length;
           const ccy = d.proj.reduce((s, p) => s + p.y, 0) / d.proj.length;
           ctx.font = "bold 12px sans-serif";
@@ -274,7 +282,41 @@ export default function SolidCanvas() {
         }
       }
     }
-  }, [size, mode, solidId, a, b, c, yaw, pitch, foldT, showFaces, showEdges, showVerts, showNames, color, isBox, solid.kind, solid.n, data, heights]);
+
+    if (isSection) {
+      // 자르는 평면(반투명 사각형) + 단면 다각형(굵은 외곽 + 채움)
+      const xs = data.corners.map((p) => p.x);
+      const zs = data.corners.map((p) => p.z);
+      const minX = Math.min(...xs) - 0.2;
+      const maxX = Math.max(...xs) + 0.2;
+      const minZ = Math.min(...zs) - 0.2;
+      const maxZ = Math.max(...zs) + 0.2;
+      const plane = [v(minX, cutWorldY, minZ), v(maxX, cutWorldY, minZ), v(maxX, cutWorldY, maxZ), v(minX, cutWorldY, maxZ)].map(project);
+      ctx.beginPath();
+      ctx.moveTo(plane[0].x, plane[0].y);
+      for (let i = 1; i < plane.length; i++) ctx.lineTo(plane[i].x, plane[i].y);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(148,163,184,0.18)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(100,116,139,0.5)";
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (sectionPoly.length >= 3) {
+        const sp = sectionPoly.map(project);
+        ctx.beginPath();
+        ctx.moveTo(sp[0].x, sp[0].y);
+        for (let i = 1; i < sp.length; i++) ctx.lineTo(sp[i].x, sp[i].y);
+        ctx.closePath();
+        ctx.fillStyle = "rgba(244,63,94,0.5)";
+        ctx.fill();
+        ctx.strokeStyle = "#e11d48";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+    }
+  }, [size, mode, solidId, a, b, c, yaw, pitch, foldT, showFaces, showEdges, showVerts, showNames, color, isBox, solid.kind, solid.n, data, heights, cutY, cutWorldY, sectionPoly]);
 
   const seg = (active: boolean) =>
     `rounded-lg px-3 py-1.5 text-sm font-bold transition ${active ? "bg-indigo-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"}`;
@@ -296,6 +338,7 @@ export default function SolidCanvas() {
           <button onClick={() => setMode("view")} className={seg(mode === "view")}>📦 입체보기</button>
           <button onClick={() => setMode("stack")} className={seg(mode === "stack")}>🧊 쌓기나무</button>
           <button onClick={() => setMode("net")} className={seg(mode === "net")}>📄 전개도</button>
+          <button onClick={() => setMode("section")} className={seg(mode === "section")}>✂️ 단면</button>
         </div>
       </div>
 
@@ -398,6 +441,24 @@ export default function SolidCanvas() {
               </div>
             )}
           </>
+        ) : mode === "section" ? (
+          <>
+            <div className="mb-2 text-sm font-extrabold text-slate-700">✂️ 단면 (수평으로 자르기)</div>
+            <input type="range" min={-95} max={95} value={Math.round(cutY * 100)} onChange={(e) => setCutY(parseInt(e.target.value) / 100)} className="w-full accent-rose-500" />
+            <div className="mt-1 flex justify-between text-[11px] font-bold text-slate-400"><span>아래</span><span>가운데</span><span>위</span></div>
+            <div className="mt-2 flex items-center gap-3">
+              <div className="rounded-xl border border-slate-200 bg-white p-1">
+                <SectionShape poly={sectionPoly} />
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400">단면 넓이</div>
+                <div className="text-xl font-extrabold text-rose-600">{sectionArea}cm²</div>
+              </div>
+            </div>
+            <div className="mt-2 text-[11px] leading-relaxed text-slate-400">
+              {solid.kind === "pyramid" ? "뿔은 위로 갈수록 단면이 작아져요." : isBox || solid.kind === "prism" ? "기둥은 어디를 잘라도 단면이 똑같아요!" : ""}
+            </div>
+          </>
         ) : mode === "stack" && isBox ? (
           <>
             <div className="mb-2 flex items-center justify-between">
@@ -457,6 +518,26 @@ function Stat({ label, value, big }: { label: string; value: string; big?: boole
       <div className="text-[10px] font-semibold text-slate-400">{label}</div>
       <div className={`font-extrabold text-slate-900 ${big ? "text-lg" : "text-base"}`}>{value}</div>
     </div>
+  );
+}
+
+function SectionShape({ poly }: { poly: { x: number; z: number }[] }) {
+  const S = 70;
+  if (poly.length < 3) return <div className="grid h-[70px] w-[70px] place-items-center text-[10px] text-slate-300">없음</div>;
+  const xs = poly.map((p) => p.x);
+  const zs = poly.map((p) => p.z);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minZ = Math.min(...zs);
+  const maxZ = Math.max(...zs);
+  const w = Math.max(0.5, maxX - minX);
+  const h = Math.max(0.5, maxZ - minZ);
+  const sc = (S - 12) / Math.max(w, h);
+  const pts = poly.map((p) => `${6 + (p.x - minX) * sc},${6 + (p.z - minZ) * sc}`).join(" ");
+  return (
+    <svg width={S} height={S}>
+      <polygon points={pts} fill="rgba(244,63,94,0.4)" stroke="#e11d48" strokeWidth="2" />
+    </svg>
   );
 }
 

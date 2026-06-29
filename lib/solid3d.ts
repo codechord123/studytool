@@ -49,6 +49,162 @@ export function rotateAboutAxis(p: V3, axisPoint: V3, axisDir: V3, angle: number
 
 export type Face = { pts: V3[]; color: string; label?: string };
 
+// ===== 일반 입체(각기둥·각뿔) =====
+export type SolidKind = "box" | "prism" | "pyramid";
+export type SolidSpec = { kind: SolidKind; n: number; a: number; b: number; c: number; R: number; h: number };
+
+export type SolidData = {
+  faces: Face[];
+  edges: [V3, V3][];
+  corners: V3[];
+  counts: { faces: number; edges: number; verts: number };
+  surface: number;
+  volume: number;
+  surfaceText: string;
+  volumeText: string;
+  name: string;
+};
+
+const round1 = (x: number) => Math.round(x * 10) / 10;
+
+// XZ평면 정n각형 (반지름 R, 높이 yy)
+function nGon(n: number, R: number, yy: number): V3[] {
+  const pts: V3[] = [];
+  const off = -Math.PI / 2 + (n % 2 === 0 ? Math.PI / n : 0);
+  for (let i = 0; i < n; i++) {
+    const a = off + (i * 2 * Math.PI) / n;
+    pts.push(v(R * Math.cos(a), yy, R * Math.sin(a)));
+  }
+  return pts;
+}
+
+export function buildSolid(spec: SolidSpec, color: string): SolidData {
+  if (spec.kind === "box") {
+    const { a, b, c } = spec;
+    const surface = 2 * (a * b + b * c + c * a);
+    const volume = a * b * c;
+    const isCube = a === b && b === c;
+    return {
+      faces: cuboidFaces(a, b, c, color),
+      edges: cuboidEdges(a, b, c),
+      corners: cuboidCorners(a, b, c),
+      counts: { faces: 6, edges: 12, verts: 8 },
+      surface,
+      volume,
+      surfaceText: `${surface}cm²`,
+      volumeText: `${volume}cm³`,
+      name: isCube ? "정육면체" : "직육면체",
+    };
+  }
+  const { n, R, h } = spec;
+  const baseArea = 0.5 * n * R * R * Math.sin((2 * Math.PI) / n);
+  const side = 2 * R * Math.sin(Math.PI / n);
+  const apothem = R * Math.cos(Math.PI / n);
+  const NAMES: Record<number, string> = { 3: "삼각", 4: "사각", 5: "오각", 6: "육각" };
+  if (spec.kind === "prism") {
+    const bot = nGon(n, R, -h / 2);
+    const top = nGon(n, R, h / 2);
+    const faces: Face[] = [];
+    faces.push({ pts: [...bot].reverse(), color, label: "아래" });
+    faces.push({ pts: top, color, label: "위" });
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      faces.push({ pts: [bot[i], bot[j], top[j], top[i]], color, label: i === 0 ? "옆면" : undefined });
+    }
+    const edges: [V3, V3][] = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      edges.push([bot[i], bot[j]], [top[i], top[j]], [bot[i], top[i]]);
+    }
+    const surface = 2 * baseArea + n * side * h;
+    const volume = baseArea * h;
+    return {
+      faces,
+      edges,
+      corners: [...bot, ...top],
+      counts: { faces: n + 2, edges: 3 * n, verts: 2 * n },
+      surface: round1(surface),
+      volume: round1(volume),
+      surfaceText: `${round1(surface)}cm²`,
+      volumeText: `${round1(volume)}cm³`,
+      name: `${NAMES[n] ?? n}기둥`,
+    };
+  }
+  // pyramid
+  const base = nGon(n, R, -h / 2);
+  const apex = v(0, h / 2, 0);
+  const faces: Face[] = [];
+  faces.push({ pts: [...base].reverse(), color, label: "밑면" });
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    faces.push({ pts: [base[i], base[j], apex], color, label: i === 0 ? "옆면" : undefined });
+  }
+  const edges: [V3, V3][] = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    edges.push([base[i], base[j]], [base[i], apex]);
+  }
+  const slant = Math.sqrt(apothem * apothem + h * h);
+  const surface = baseArea + 0.5 * n * side * slant;
+  const volume = (baseArea * h) / 3;
+  return {
+    faces,
+    edges,
+    corners: [...base, apex],
+    counts: { faces: n + 1, edges: 2 * n, verts: n + 1 },
+    surface: round1(surface),
+    volume: round1(volume),
+    surfaceText: `${round1(surface)}cm²`,
+    volumeText: `${round1(volume)}cm³`,
+    name: `${NAMES[n] ?? n}뿔`,
+  };
+}
+
+// 각기둥/각뿔의 평면 전개도(펼친 모양) — z=0 평면
+export function prismNetFaces(n: number, R: number, h: number, color: string): Face[] {
+  const side = 2 * R * Math.sin(Math.PI / n);
+  const faces: Face[] = [];
+  // 옆면: 가로로 이어진 n개의 직사각형 (각 side × h), 중앙 정렬
+  const totalW = n * side;
+  const x0 = -totalW / 2;
+  for (let i = 0; i < n; i++) {
+    const xl = x0 + i * side;
+    const xr = xl + side;
+    faces.push({
+      pts: [v(xl, -h / 2, 0), v(xr, -h / 2, 0), v(xr, h / 2, 0), v(xl, h / 2, 0)],
+      color,
+      label: i === 0 ? "옆면" : undefined,
+    });
+  }
+  // 위·아래 밑면: 가운데 직사각형 위/아래에 정n각형 부착
+  const midL = x0 + Math.floor(n / 2) * side + side / 2;
+  const topPoly = nGon(n, R, 0).map((p) => v(p.x + midL, p.z + (h / 2 + R), 0));
+  const botPoly = nGon(n, R, 0).map((p) => v(p.x + midL, -(p.z + (h / 2 + R)), 0));
+  faces.push({ pts: topPoly, color, label: "위" });
+  faces.push({ pts: botPoly, color, label: "아래" });
+  return faces;
+}
+
+export function pyramidNetFaces(n: number, R: number, h: number, color: string): Face[] {
+  const apothem = R * Math.cos(Math.PI / n);
+  const slant = Math.sqrt(apothem * apothem + h * h);
+  const base = nGon(n, R, 0).map((p) => v(p.x, p.z, 0)); // XY평면으로
+  const faces: Face[] = [];
+  faces.push({ pts: base, color, label: "밑면" });
+  // 각 밑변 바깥으로 이등변삼각형(밑변 side, 높이 slant)
+  for (let i = 0; i < n; i++) {
+    const A = base[i];
+    const B = base[(i + 1) % n];
+    const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+    // 바깥 방향 = 중심(0,0)에서 mid로
+    const dl = Math.hypot(mid.x, mid.y) || 1;
+    const out = { x: mid.x / dl, y: mid.y / dl };
+    const apexP = v(mid.x + out.x * slant, mid.y + out.y * slant, 0);
+    faces.push({ pts: [A, B, apexP], color, label: i === 0 ? "옆면" : undefined });
+  }
+  return faces;
+}
+
 // 직육면체 (가로 a, 세로 b, 높이 c · 칸 단위), 원점 중심
 export function cuboidFaces(a: number, b: number, c: number, color: string): Face[] {
   const hx = a / 2;

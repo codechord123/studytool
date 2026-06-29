@@ -3,15 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import {
   V3,
+  SolidSpec,
   rotate,
   cross,
   sub,
   norm,
   dot,
   cuboidFaces,
-  cuboidEdges,
-  cuboidCorners,
   cuboidNetFaces,
+  prismNetFaces,
+  pyramidNetFaces,
+  buildSolid,
   v,
   add,
 } from "@/lib/solid3d";
@@ -19,6 +21,16 @@ import {
 type Mode = "view" | "stack" | "net";
 
 const COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#fb7185"];
+
+const SOLIDS = [
+  { id: "box", label: "직육면체", kind: "box" as const, n: 4 },
+  { id: "prism3", label: "삼각기둥", kind: "prism" as const, n: 3 },
+  { id: "prism5", label: "오각기둥", kind: "prism" as const, n: 5 },
+  { id: "prism6", label: "육각기둥", kind: "prism" as const, n: 6 },
+  { id: "pyr3", label: "삼각뿔", kind: "pyramid" as const, n: 3 },
+  { id: "pyr4", label: "사각뿔", kind: "pyramid" as const, n: 4 },
+  { id: "pyr5", label: "오각뿔", kind: "pyramid" as const, n: 5 },
+];
 
 function hexToRgb(hex: string) {
   const h = hex.replace("#", "");
@@ -36,24 +48,32 @@ export default function SolidCanvas() {
   const [size, setSize] = useState({ w: 0, h: 0 });
 
   const [mode, setMode] = useState<Mode>("view");
+  const [solidId, setSolidId] = useState("box");
   const [a, setA] = useState(4);
   const [b, setB] = useState(3);
   const [c, setC] = useState(2);
-  const [cube, setCube] = useState(false); // 정육면체(정n) 잠금
+  const [cube, setCube] = useState(false);
   const [yaw, setYaw] = useState(-0.6);
   const [pitch, setPitch] = useState(0.5);
   const [auto, setAuto] = useState(true);
-  const [foldT, setFoldT] = useState(0); // 전개도 접힘 0..1
+  const [foldT, setFoldT] = useState(0);
   const [showFaces, setShowFaces] = useState(true);
   const [showEdges, setShowEdges] = useState(true);
   const [showVerts, setShowVerts] = useState(true);
   const [showNames, setShowNames] = useState(true);
 
   const color = COLORS[0];
+  const solid = SOLIDS.find((s) => s.id === solidId)!;
+  const isBox = solid.kind === "box";
 
-  // 정육면체 잠금 시 한 변으로 동기화
+  // 현재 입체 사양 (각기둥·각뿔은 a=밑면 크기, c=높이)
+  const spec: SolidSpec = isBox
+    ? { kind: "box", n: 4, a, b, c, R: 0, h: 0 }
+    : { kind: solid.kind, n: solid.n, a: 0, b: 0, c: 0, R: a, h: c };
+  const data = buildSolid(spec, color);
+
   function setDim(which: "a" | "b" | "c", val: number) {
-    if (cube) {
+    if (cube && isBox) {
       setA(val);
       setB(val);
       setC(val);
@@ -75,7 +95,6 @@ export default function SolidCanvas() {
     });
   }
 
-  // ----- 크기 추적 -----
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -85,7 +104,6 @@ export default function SolidCanvas() {
     return () => ro.disconnect();
   }, []);
 
-  // ----- 자동 회전 -----
   useEffect(() => {
     if (!auto) return;
     let raf = 0;
@@ -100,7 +118,6 @@ export default function SolidCanvas() {
     return () => cancelAnimationFrame(raf);
   }, [auto]);
 
-  // ----- 드래그로 회전 -----
   const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null);
   function onDown(e: React.PointerEvent) {
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -117,7 +134,6 @@ export default function SolidCanvas() {
     dragRef.current = null;
   }
 
-  // ----- 렌더 -----
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !size.w || !size.h) return;
@@ -130,30 +146,32 @@ export default function SolidCanvas() {
 
     const cx = size.w / 2;
     const cy = size.h / 2;
-    const maxDim = Math.max(a, b, c, 3);
+    const stackBox = mode === "stack" && isBox;
+    const maxDim = Math.max(a, b, c, isBox ? 3 : a + 2, 3);
     const baseScale = Math.min(size.w, size.h) / (maxDim * 2.9);
-    const L = norm(v(-0.4, 0.7, 0.6)); // 광원
+    const L = norm(v(-0.4, 0.7, 0.6));
 
     const project = (p: V3) => {
       const r = rotate(p, yaw, pitch);
       const f = 9;
-      const persp = f / (f - r.z / maxDim); // 약한 원근
+      const persp = f / (f - r.z / maxDim);
       return { x: cx + r.x * baseScale * persp, y: cy - r.y * baseScale * persp, depth: r.z };
     };
     const faceNormalRot = (pts: V3[]) => {
-      const n = norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0])));
-      return rotate(n, yaw, pitch);
+      if (pts.length < 3) return v(0, 0, 1);
+      return rotate(norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0]))), yaw, pitch);
     };
 
-    // 그릴 면 모으기
     type Draw = { pts: V3[]; color: string; label?: string; twoSided: boolean };
     let faces: Draw[] = [];
-    if (mode === "view") {
-      faces = cuboidFaces(a, b, c, color).map((f) => ({ ...f, twoSided: false }));
-    } else if (mode === "net") {
-      faces = cuboidNetFaces(a, b, c, foldT, color).map((f) => ({ ...f, twoSided: true }));
-    } else {
-      // 쌓기나무: 단위 정육면체 a×b×c개
+    const isNet = mode === "net";
+    if (mode === "view" || (mode === "stack" && !isBox)) {
+      faces = data.faces.map((f) => ({ ...f, twoSided: false }));
+    } else if (isNet) {
+      if (isBox) faces = cuboidNetFaces(a, b, c, foldT, color).map((f) => ({ ...f, twoSided: true }));
+      else if (solid.kind === "prism") faces = prismNetFaces(solid.n, a, c, color).map((f) => ({ ...f, twoSided: true }));
+      else faces = pyramidNetFaces(solid.n, a, c, color).map((f) => ({ ...f, twoSided: true }));
+    } else if (stackBox) {
       const hx = a / 2;
       const hy = b / 2;
       const hz = c / 2;
@@ -161,52 +179,45 @@ export default function SolidCanvas() {
         for (let j = 0; j < b; j++)
           for (let kk = 0; kk < c; kk++) {
             const o = v(i - hx, j - hy, kk - hz);
-            const unit = cuboidFaces(1, 1, 1, color).map((f) => ({
-              pts: f.pts.map((p) => add(p, add(o, v(0.5, 0.5, 0.5)))),
-              color,
-              twoSided: false,
-            }));
-            faces.push(...unit);
+            cuboidFaces(1, 1, 1, color).forEach((f) =>
+              faces.push({ pts: f.pts.map((p) => add(p, add(o, v(0.5, 0.5, 0.5)))), color, twoSided: false })
+            );
           }
     }
 
-    // 면 그리기 (painter's: 먼 것부터)
-    if (showFaces || mode !== "view") {
-      const drawList = faces
-        .map((f) => {
-          const nr = faceNormalRot(f.pts);
-          const proj = f.pts.map(project);
-          const depth = proj.reduce((s, p) => s + p.depth, 0) / proj.length;
-          const facing = nr.z > 0;
-          const bright = 0.55 + 0.5 * Math.abs(dot(nr, L));
-          return { f, proj, depth, facing, bright };
-        })
-        .filter((d) => d.f.twoSided || d.facing)
-        .sort((x, y) => x.depth - y.depth);
+    const drawList = faces
+      .map((f) => {
+        const nr = faceNormalRot(f.pts);
+        const proj = f.pts.map(project);
+        const depth = proj.reduce((s, p) => s + p.depth, 0) / proj.length;
+        const facing = nr.z > 0;
+        const bright = 0.55 + 0.5 * Math.abs(dot(nr, L));
+        return { f, proj, depth, facing, bright };
+      })
+      .filter((d) => d.f.twoSided || d.facing)
+      .sort((x, y) => x.depth - y.depth);
 
+    if (showFaces || mode !== "view") {
       for (const d of drawList) {
-        if (!showFaces && mode === "view") break;
         ctx.beginPath();
         ctx.moveTo(d.proj[0].x, d.proj[0].y);
         for (let i = 1; i < d.proj.length; i++) ctx.lineTo(d.proj[i].x, d.proj[i].y);
         ctx.closePath();
         ctx.fillStyle = shade(d.f.color, Math.min(1.15, d.bright));
-        ctx.globalAlpha = mode === "net" ? 0.92 : 1;
+        ctx.globalAlpha = isNet ? 0.92 : 1;
         ctx.fill();
         ctx.globalAlpha = 1;
         ctx.strokeStyle = "rgba(15,23,42,0.55)";
         ctx.lineWidth = 1;
         ctx.stroke();
-        // 면 이름
-        if (showNames && d.f.label && (d.facing || mode === "net")) {
+        if (showNames && d.f.label && (d.facing || isNet)) {
           const ccx = d.proj.reduce((s, p) => s + p.x, 0) / d.proj.length;
           const ccy = d.proj.reduce((s, p) => s + p.y, 0) / d.proj.length;
-          ctx.fillStyle = "rgba(255,255,255,0.95)";
-          ctx.font = "bold 13px sans-serif";
+          ctx.font = "bold 12px sans-serif";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           const tw = ctx.measureText(d.f.label).width;
-          ctx.fillStyle = "rgba(15,23,42,0.65)";
+          ctx.fillStyle = "rgba(15,23,42,0.6)";
           ctx.fillRect(ccx - tw / 2 - 5, ccy - 9, tw + 10, 18);
           ctx.fillStyle = "#fff";
           ctx.fillText(d.f.label, ccx, ccy);
@@ -216,12 +227,11 @@ export default function SolidCanvas() {
       }
     }
 
-    // 모서리·꼭짓점 (입체보기에서 강조)
     if (mode === "view") {
       if (showEdges) {
         ctx.strokeStyle = "#0f172a";
         ctx.lineWidth = 2.5;
-        for (const [p1, p2] of cuboidEdges(a, b, c)) {
+        for (const [p1, p2] of data.edges) {
           const s1 = project(p1);
           const s2 = project(p2);
           ctx.beginPath();
@@ -231,7 +241,7 @@ export default function SolidCanvas() {
         }
       }
       if (showVerts) {
-        for (const corner of cuboidCorners(a, b, c)) {
+        for (const corner of data.corners) {
           const s = project(corner);
           ctx.beginPath();
           ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
@@ -243,31 +253,21 @@ export default function SolidCanvas() {
         }
       }
     }
-  }, [size, mode, a, b, c, yaw, pitch, foldT, showFaces, showEdges, showVerts, showNames, color]);
-
-  const surface = 2 * (a * b + b * c + c * a);
-  const volume = a * b * c;
-  const isCube = a === b && b === c;
+  }, [size, mode, solidId, a, b, c, yaw, pitch, foldT, showFaces, showEdges, showVerts, showNames, color, isBox, solid.kind, solid.n, data]);
 
   const seg = (active: boolean) =>
     `rounded-lg px-3 py-1.5 text-sm font-bold transition ${active ? "bg-indigo-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-200"}`;
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-gradient-to-b from-slate-50 to-slate-100">
-      <div
-        ref={wrapRef}
-        className="absolute inset-0"
-        style={{ touchAction: "none", cursor: dragRef.current ? "grabbing" : "grab" }}
-      >
+      <div ref={wrapRef} className="absolute inset-0" style={{ touchAction: "none", cursor: dragRef.current ? "grabbing" : "grab" }}>
         <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} className="h-full w-full" />
       </div>
 
       {/* 상단 바 */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-wrap items-start justify-between gap-2 p-3">
         <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-lg backdrop-blur">
-          <a href="/" className="whitespace-nowrap text-sm font-bold text-slate-400 hover:text-slate-700" title="2D 다각형 체험실로">
-            ← 평면
-          </a>
+          <a href="/" className="whitespace-nowrap text-sm font-bold text-slate-400 hover:text-slate-700" title="2D 다각형 체험실로">← 평면</a>
           <span className="mx-1 h-5 w-px bg-slate-200" />
           <span className="whitespace-nowrap text-base font-extrabold text-slate-800">🧊 입체도형 체험실</span>
         </div>
@@ -278,40 +278,44 @@ export default function SolidCanvas() {
         </div>
       </div>
 
+      {/* 입체 종류 선택 (상단 중앙) */}
+      <div className="pointer-events-auto absolute left-1/2 top-16 z-10 flex max-w-[94vw] -translate-x-1/2 flex-wrap justify-center gap-1 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur">
+        {SOLIDS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => {
+              setSolidId(s.id);
+              if (s.id !== "box") setCube(false);
+            }}
+            className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${solidId === s.id ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
       {/* 좌하단: 크기 조절 */}
       <div className="pointer-events-auto absolute bottom-3 left-3 w-[min(86vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-extrabold text-slate-700">📏 크기 (cm)</span>
-          <button
-            onClick={toggleCube}
-            className={`rounded-lg px-2 py-1 text-xs font-bold ${cube ? "bg-indigo-600 text-white" : "border border-slate-200 bg-white text-slate-600"}`}
-          >
-            정육면체 {cube ? "ON" : "OFF"}
-          </button>
+          {isBox && (
+            <button onClick={toggleCube} className={`rounded-lg px-2 py-1 text-xs font-bold ${cube ? "bg-indigo-600 text-white" : "border border-slate-200 bg-white text-slate-600"}`}>
+              정육면체 {cube ? "ON" : "OFF"}
+            </button>
+          )}
         </div>
-        {([
-          ["가로", a, "a"],
-          ["세로", b, "b"],
-          ["높이", c, "c"],
-        ] as const).map(([lbl, val, key]) => (
+        {(isBox
+          ? ([["가로", a, "a"], ["세로", b, "b"], ["높이", c, "c"]] as const)
+          : ([["밑면 크기", a, "a"], ["높이", c, "c"]] as const)
+        ).map(([lbl, val, key]) => (
           <div key={key} className="mb-1.5 flex items-center gap-2">
-            <span className="w-9 text-xs font-bold text-slate-500">{lbl}</span>
-            <input
-              type="range"
-              min={1}
-              max={6}
-              value={val}
-              onChange={(e) => setDim(key, parseInt(e.target.value))}
-              className="flex-1 accent-indigo-600"
-            />
+            <span className="w-16 text-xs font-bold text-slate-500">{lbl}</span>
+            <input type="range" min={1} max={6} value={val} onChange={(e) => setDim(key, parseInt(e.target.value))} className="flex-1 accent-indigo-600" />
             <span className="w-8 text-right text-sm font-extrabold text-slate-800">{val}</span>
           </div>
         ))}
         <div className="mt-2 flex items-center gap-2">
-          <button
-            onClick={() => setAuto((v) => !v)}
-            className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-bold ${auto ? "bg-indigo-600 text-white" : "border border-slate-200 bg-white text-slate-600"}`}
-          >
+          <button onClick={() => setAuto((v) => !v)} className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-bold ${auto ? "bg-indigo-600 text-white" : "border border-slate-200 bg-white text-slate-600"}`}>
             {auto ? "⏸ 자동회전 끄기" : "▶ 자동회전"}
           </button>
           <span className="text-[11px] text-slate-400">드래그=돌리기</span>
@@ -322,38 +326,38 @@ export default function SolidCanvas() {
       <div className="pointer-events-auto absolute bottom-3 right-3 w-[min(86vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
         {mode === "net" ? (
           <>
-            <div className="mb-2 text-sm font-extrabold text-slate-700">📄 전개도 접기</div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={Math.round(foldT * 100)}
-              onChange={(e) => setFoldT(parseInt(e.target.value) / 100)}
-              className="w-full accent-indigo-600"
-            />
-            <div className="mt-1 flex justify-between text-xs font-bold text-slate-500">
-              <button onClick={() => setFoldT(0)} className="hover:text-indigo-600">펼치기</button>
-              <span>{Math.round(foldT * 100)}%</span>
-              <button onClick={() => setFoldT(1)} className="hover:text-indigo-600">접기 ▶</button>
-            </div>
-            <div className="mt-2 text-xs leading-relaxed text-slate-500">
-              슬라이더로 전개도가 상자로 접히는 걸 관찰해요. 면 6개가 어떻게 모이는지 보세요!
-            </div>
+            <div className="mb-2 text-sm font-extrabold text-slate-700">📄 {data.name} 전개도</div>
+            {isBox ? (
+              <>
+                <input type="range" min={0} max={100} value={Math.round(foldT * 100)} onChange={(e) => setFoldT(parseInt(e.target.value) / 100)} className="w-full accent-indigo-600" />
+                <div className="mt-1 flex justify-between text-xs font-bold text-slate-500">
+                  <button onClick={() => setFoldT(0)} className="hover:text-indigo-600">펼치기</button>
+                  <span>{Math.round(foldT * 100)}%</span>
+                  <button onClick={() => setFoldT(1)} className="hover:text-indigo-600">접기 ▶</button>
+                </div>
+                <div className="mt-2 text-xs leading-relaxed text-slate-500">슬라이더로 전개도가 상자로 접히는 걸 관찰해요. 면 {data.counts.faces}개가 어떻게 모이는지 보세요!</div>
+              </>
+            ) : (
+              <div className="text-xs leading-relaxed text-slate-500">
+                펼친 전개도예요. 옆면 <b className="text-slate-800">{solid.n}개</b> + 밑면이 모여 {data.name}을 만들어요. <span className="text-slate-400">(접기 애니메이션은 직육면체에서)</span>
+              </div>
+            )}
           </>
         ) : (
           <>
             <div className="mb-2 flex items-center gap-2">
-              <span className="text-sm font-extrabold text-slate-700">{isCube ? "정육면체" : "직육면체"}</span>
-              {mode === "stack" && <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">부피 = 쌓은 칸 수</span>}
+              <span className="text-sm font-extrabold text-slate-700">{data.name}</span>
+              {mode === "stack" && isBox && <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">부피 = 쌓은 칸 수</span>}
+              {mode === "stack" && !isBox && <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">쌓기나무는 직육면체</span>}
             </div>
             <div className="grid grid-cols-3 gap-1.5 text-center">
-              <Stat label="면" value="6" />
-              <Stat label="모서리" value="12" />
-              <Stat label="꼭짓점" value="8" />
+              <Stat label="면" value={`${data.counts.faces}`} />
+              <Stat label="모서리" value={`${data.counts.edges}`} />
+              <Stat label="꼭짓점" value={`${data.counts.verts}`} />
             </div>
             <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-              <Stat label="겉넓이" value={`${surface}cm²`} big />
-              <Stat label="부피" value={`${volume}cm³`} big />
+              <Stat label="겉넓이" value={data.surfaceText} big />
+              <Stat label="부피" value={data.volumeText} big />
             </div>
             {mode === "view" && (
               <div className="mt-2 flex flex-wrap gap-1">
@@ -363,10 +367,8 @@ export default function SolidCanvas() {
                 <Toggle on={showNames} set={setShowNames} label="이름" />
               </div>
             )}
-            {mode === "stack" && (
-              <div className="mt-2 text-xs leading-relaxed text-slate-500">
-                단위 쌓기나무 {a}×{b}×{c} = <b className="text-slate-800">{volume}개</b>. 한 층({a}×{b}={a * b}개)이 {c}층!
-              </div>
+            {mode === "stack" && isBox && (
+              <div className="mt-2 text-xs leading-relaxed text-slate-500">단위 쌓기나무 {a}×{b}×{c} = <b className="text-slate-800">{a * b * c}개</b>. 한 층({a}×{b}={a * b}개)이 {c}층!</div>
             )}
           </>
         )}
@@ -386,10 +388,7 @@ function Stat({ label, value, big }: { label: string; value: string; big?: boole
 
 function Toggle({ on, set, label }: { on: boolean; set: (v: boolean) => void; label: string }) {
   return (
-    <button
-      onClick={() => set(!on)}
-      className={`rounded-lg border px-2 py-1 text-xs font-bold ${on ? "border-indigo-400 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white text-slate-400"}`}
-    >
+    <button onClick={() => set(!on)} className={`rounded-lg border px-2 py-1 text-xs font-bold ${on ? "border-indigo-400 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white text-slate-400"}`}>
       {label}
     </button>
   );

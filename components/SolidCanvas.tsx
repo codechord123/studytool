@@ -20,6 +20,7 @@ import {
   add,
 } from "@/lib/solid3d";
 import CubeNetQuiz from "@/components/CubeNetQuiz";
+import SolidQuiz from "@/components/SolidQuiz";
 
 type Mode = "view" | "stack" | "net" | "section";
 
@@ -68,6 +69,7 @@ export default function SolidCanvas() {
   const [heights, setHeights] = useState<number[][]>(() => Array.from({ length: 4 }, () => Array(3).fill(1)));
   const [netQuiz, setNetQuiz] = useState(false);
   const [cutY, setCutY] = useState(0); // 단면 자르기 높이(-1..1 비율)
+  const [solidQuiz, setSolidQuiz] = useState(false);
 
   const color = COLORS[0];
   const solid = SOLIDS.find((s) => s.id === solidId)!;
@@ -339,6 +341,7 @@ export default function SolidCanvas() {
           <button onClick={() => setMode("stack")} className={seg(mode === "stack")}>🧊 쌓기나무</button>
           <button onClick={() => setMode("net")} className={seg(mode === "net")}>📄 전개도</button>
           <button onClick={() => setMode("section")} className={seg(mode === "section")}>✂️ 단면</button>
+          <button onClick={() => setSolidQuiz(true)} className="rounded-lg bg-rose-500 px-3 py-1.5 text-sm font-bold text-white hover:bg-rose-600">❓ 퀴즈</button>
         </div>
       </div>
 
@@ -508,6 +511,7 @@ export default function SolidCanvas() {
       </div>
 
       {netQuiz && <CubeNetQuiz onClose={() => setNetQuiz(false)} />}
+      {solidQuiz && <SolidQuiz onClose={() => setSolidQuiz(false)} />}
     </div>
   );
 }

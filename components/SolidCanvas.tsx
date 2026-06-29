@@ -17,6 +17,7 @@ import {
   v,
   add,
 } from "@/lib/solid3d";
+import CubeNetQuiz from "@/components/CubeNetQuiz";
 
 type Mode = "view" | "stack" | "net";
 
@@ -63,6 +64,7 @@ export default function SolidCanvas() {
   const [showNames, setShowNames] = useState(true);
   // 쌓기나무 높이맵 (a×b 칸, 각 칸의 쌓은 높이 0..6)
   const [heights, setHeights] = useState<number[][]>(() => Array.from({ length: 4 }, () => Array(3).fill(1)));
+  const [netQuiz, setNetQuiz] = useState(false);
 
   const color = COLORS[0];
   const solid = SOLIDS.find((s) => s.id === solidId)!;
@@ -383,6 +385,12 @@ export default function SolidCanvas() {
                   <button onClick={() => setFoldT(1)} className="hover:text-indigo-600">접기 ▶</button>
                 </div>
                 <div className="mt-2 text-xs leading-relaxed text-slate-500">슬라이더로 전개도가 상자로 접히는 걸 관찰해요. 면 {data.counts.faces}개가 어떻게 모이는지 보세요!</div>
+                <button
+                  onClick={() => setNetQuiz(true)}
+                  className="mt-2 w-full rounded-lg bg-indigo-600 px-3 py-2 text-sm font-bold text-white hover:bg-indigo-700"
+                >
+                  🧩 전개도 맞추기 퀴즈 (11가지)
+                </button>
               </>
             ) : (
               <div className="text-xs leading-relaxed text-slate-500">
@@ -437,6 +445,8 @@ export default function SolidCanvas() {
           </>
         )}
       </div>
+
+      {netQuiz && <CubeNetQuiz onClose={() => setNetQuiz(false)} />}
     </div>
   );
 }

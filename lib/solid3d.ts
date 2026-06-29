@@ -67,6 +67,70 @@ export type SolidData = {
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
 
+// ===== 정육면체 전개도 판별 (주사위 굴리기 BFS) =====
+// 6칸 폴리오미노가 정육면체로 접히는지: 종이 위 칸을 따라 큐브를 굴려 각 칸이 닿는
+// 면이 6개 모두 다르면 정육면체 전개도.
+type Cube = { U: number; D: number; N: number; S: number; E: number; W: number };
+function rollE(c: Cube): Cube {
+  return { U: c.E, D: c.W, E: c.D, W: c.U, N: c.N, S: c.S };
+}
+function rollW(c: Cube): Cube {
+  return { U: c.W, D: c.E, W: c.D, E: c.U, N: c.N, S: c.S };
+}
+function rollS(c: Cube): Cube {
+  return { D: c.N, U: c.S, N: c.U, S: c.D, E: c.E, W: c.W };
+}
+function rollN(c: Cube): Cube {
+  return { D: c.S, U: c.N, S: c.U, N: c.D, E: c.E, W: c.W };
+}
+
+export function foldsToCube(cells: [number, number][]): boolean {
+  if (cells.length !== 6) return false;
+  const key = (x: number, y: number) => `${x},${y}`;
+  const set = new Map(cells.map(([x, y]) => [key(x, y), true]));
+  // 연결성 확인
+  const seen = new Set<string>();
+  const start = cells[0];
+  const stack = [start];
+  seen.add(key(start[0], start[1]));
+  while (stack.length) {
+    const [x, y] = stack.pop()!;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const k = key(x + dx, y + dy);
+      if (set.has(k) && !seen.has(k)) {
+        seen.add(k);
+        stack.push([x + dx, y + dy]);
+      }
+    }
+  }
+  if (seen.size !== 6) return false;
+  // 굴리기 BFS: 각 칸의 큐브 방향 상태를 기록, 닿는 면(D) 수집
+  const faceOf = new Map<string, number>();
+  const init: Cube = { U: 0, D: 1, N: 2, S: 3, E: 4, W: 5 };
+  const q: { x: number; y: number; cube: Cube }[] = [{ x: start[0], y: start[1], cube: init }];
+  const visited = new Set<string>([key(start[0], start[1])]);
+  faceOf.set(key(start[0], start[1]), init.D);
+  while (q.length) {
+    const { x, y, cube } = q.shift()!;
+    const moves: [number, number, (c: Cube) => Cube][] = [
+      [1, 0, rollE],
+      [-1, 0, rollW],
+      [0, 1, rollS],
+      [0, -1, rollN],
+    ];
+    for (const [dx, dy, roll] of moves) {
+      const k = key(x + dx, y + dy);
+      if (!set.has(k) || visited.has(k)) continue;
+      visited.add(k);
+      const nc = roll(cube);
+      faceOf.set(k, nc.D);
+      q.push({ x: x + dx, y: y + dy, cube: nc });
+    }
+  }
+  const faces = new Set(faceOf.values());
+  return faces.size === 6;
+}
+
 // XZ평면 정n각형 (반지름 R, 높이 yy)
 function nGon(n: number, R: number, yy: number): V3[] {
   const pts: V3[] = [];

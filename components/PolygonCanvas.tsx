@@ -2640,6 +2640,13 @@ export default function PolygonCanvas() {
             <span className="mx-1 hidden h-5 w-px bg-slate-200 sm:block" />
             <DrawerToggle active={drawer === "shapes"} onClick={() => setDrawer(drawer === "shapes" ? null : "shapes")} icon="📐" label="도형 추가" />
             <DrawerToggle active={drawer === "scenarios"} onClick={() => setDrawer(drawer === "scenarios" ? null : "scenarios")} icon="📚" label="학습 예시" />
+            <a
+              href="/3d"
+              title="입체도형(3D) 체험실로"
+              className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100 sm:px-2.5"
+            >
+              🧊 <span className="hidden sm:inline">입체도형</span>
+            </a>
           </div>
 
           <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">

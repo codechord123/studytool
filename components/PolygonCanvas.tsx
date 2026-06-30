@@ -177,6 +177,34 @@ function gridCells(pts: Point[]): { x: number; y: number }[] | null {
   return cells.length ? cells : null;
 }
 
+// 각 꼭짓점의 내각(도) — 오목(reflex) 꼭짓점은 180°보다 큼. 합은 (n-2)×180°.
+function interiorAnglesDeg(pts: Point[]): number[] {
+  const n = pts.length;
+  if (n < 3) return [];
+  let area2 = 0;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    area2 += a.x * b.y - b.x * a.y;
+  }
+  const ccw = area2 > 0;
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n];
+    const cur = pts[i];
+    const next = pts[(i + 1) % n];
+    const v1x = prev.x - cur.x, v1y = prev.y - cur.y;
+    const v2x = next.x - cur.x, v2y = next.y - cur.y;
+    const th = Math.atan2(Math.abs(v1x * v2y - v1y * v2x), v1x * v2x + v1y * v2y); // 0..π
+    let deg = (th * 180) / Math.PI;
+    const crossEdge = (cur.x - prev.x) * (next.y - cur.y) - (cur.y - prev.y) * (next.x - cur.x);
+    const reflex = ccw ? crossEdge < 0 : crossEdge > 0;
+    if (reflex) deg = 360 - deg;
+    out.push(deg);
+  }
+  return out;
+}
+
 // 칸세기 모드: 어떤 다각형이든 모눈 칸을 '꽉 찬 칸'과 '걸친 칸'으로 분류 (넓이 어림용)
 function gridCountCells(pts: Point[]): { full: Point[]; partial: Point[] } | null {
   const xs = pts.map((p) => p.x);
@@ -941,6 +969,7 @@ export default function PolygonCanvas() {
   const [activeAux, setActiveAux] = useState<ActiveAux>(null);
   const [showAreaBadge, setShowAreaBadge] = useState(true);
   const [gridCountMode, setGridCountMode] = useState(false); // 칸세기 모드(어떤 도형이든 모눈 칸 표시)
+  const [showAngles, setShowAngles] = useState(false); // 각도 표시(내각 + 내각의 합 유도)
   const [labelScale, setLabelScale] = useState(1); // 변·넓이 숫자 라벨 크기 배율 (수업용)
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
@@ -2302,7 +2331,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, labelScale, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, labelScale, lessonReference, quiz]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -2500,6 +2529,90 @@ export default function PolygonCanvas() {
       ctx.fillText("1️⃣", s.points[0].x - 10 * k, s.points[0].y - 14 * k);
     }
 
+    // 각도 표시: 내각 + (선택 시) 삼각형 분할로 내각의 합 유도
+    if (showAngles && !isRef && s.points.length >= 3) {
+      const pts = s.points;
+      const n = pts.length;
+      // 한 꼭짓점에서 대각선을 그어 (n-2)개 삼각형으로 분할 (선택된 도형만)
+      if (isSelected && n >= 4) {
+        ctx.save();
+        ctx.setLineDash([5 * k, 4 * k]);
+        ctx.strokeStyle = "#7c3aed88";
+        ctx.lineWidth = 1.5 * k;
+        for (let i = 2; i < n - 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      const angs = interiorAnglesDeg(pts);
+      const cen = polygonCentroid(pts);
+      for (let i = 0; i < n; i++) {
+        const cur = pts[i];
+        const prev = pts[(i - 1 + n) % n];
+        const next = pts[(i + 1) % n];
+        const d1 = { x: prev.x - cur.x, y: prev.y - cur.y };
+        const d2 = { x: next.x - cur.x, y: next.y - cur.y };
+        const l1 = Math.hypot(d1.x, d1.y) || 1;
+        const l2 = Math.hypot(d2.x, d2.y) || 1;
+        // 화면에서 두 변이 너무 짧으면 생략
+        if (Math.min(l1, l2) / k < 34) continue;
+        let bx = d1.x / l1 + d2.x / l2;
+        let by = d1.y / l1 + d2.y / l2;
+        let bl = Math.hypot(bx, by);
+        if (bl < 1e-3) {
+          bx = -d1.y / l1;
+          by = d1.x / l1;
+          bl = 1;
+        }
+        // 내부(중심) 방향으로
+        const toC = { x: cen.x - cur.x, y: cen.y - cur.y };
+        if (bx * toC.x + by * toC.y < 0) {
+          bx = -bx;
+          by = -by;
+        }
+        bx /= bl;
+        by /= bl;
+        // 작은 호
+        const r = 16 * k;
+        const a1 = Math.atan2(d1.y, d1.x);
+        const a2 = Math.atan2(d2.y, d2.x);
+        const bisA = Math.atan2(by, bx);
+        const normA = (x: number) => {
+          let v = x;
+          while (v <= -Math.PI) v += 2 * Math.PI;
+          while (v > Math.PI) v -= 2 * Math.PI;
+          return v;
+        };
+        let dArc = normA(a2 - a1);
+        const midCCW = a1 + dArc / 2;
+        if (Math.abs(normA(midCCW - bisA)) > Math.PI / 2) dArc = dArc > 0 ? dArc - 2 * Math.PI : dArc + 2 * Math.PI;
+        ctx.beginPath();
+        ctx.arc(cur.x, cur.y, r, a1, a1 + dArc, dArc < 0);
+        ctx.strokeStyle = "#7c3aed";
+        ctx.lineWidth = 2 * k;
+        ctx.stroke();
+        // 각도 라벨
+        const tx = cur.x + bx * 30 * k;
+        const ty = cur.y + by * 30 * k;
+        const txt = `${Math.round(angs[i])}°`;
+        ctx.font = `bold ${12 * labelScale * k}px sans-serif`;
+        const tw = ctx.measureText(txt).width;
+        const ph = 4 * k;
+        const bh = 12 * labelScale * k + ph * 2;
+        ctx.fillStyle = "rgba(124,58,237,0.95)";
+        ctx.fillRect(tx - tw / 2 - 4 * k, ty - bh / 2, tw + 8 * k, bh);
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(txt, tx, ty);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+      }
+    }
+
     // 중앙 라벨: 칸 수(격자 시각화) 또는 넓이 배지 — 회전 점선 위에 그려 가독성 확보
     // ⚠️ 문제 모드(quizHiding)에서는 칸 수·넓이를 숨겨 직접 세도록 함(칸 채우기는 보조로 유지)
     const quizHiding = !!quiz && quiz.index < quiz.problems.length && quiz.result !== "correct" && quiz.result !== "shown";
@@ -2681,6 +2794,7 @@ export default function PolygonCanvas() {
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
+              <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />
               <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="변·넓이 숫자 크기 (수업용)">글자</span>
               <div className="flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5" title="변·넓이 숫자 크기 조절 (수업용)">
                 <button
@@ -2804,6 +2918,7 @@ export default function PolygonCanvas() {
           pos={infoPos}
           onMove={setInfoPos}
           onResetPos={() => setInfoPos(null)}
+          showAngles={showAngles}
         />
       )}
 
@@ -3072,6 +3187,7 @@ function InfoCard({
   pos,
   onMove,
   onResetPos,
+  showAngles,
 }: {
   selected: Shape | null;
   boardMode: boolean;
@@ -3083,6 +3199,7 @@ function InfoCard({
   pos: { x: number; y: number } | null;
   onMove: (p: { x: number; y: number }) => void;
   onResetPos: () => void;
+  showAngles?: boolean;
 }) {
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -3161,6 +3278,15 @@ function InfoCard({
           <div className={`font-extrabold leading-tight text-slate-900 ${big}`}>{fmtLen(peri)}</div>
         </div>
       </div>
+      {showAngles && selected && selected.points.length >= 3 && (
+        <div className="mt-2.5 rounded-xl bg-violet-50 px-3.5 py-2.5">
+          <div className="text-xs font-semibold text-violet-500">내각의 합</div>
+          <div className="text-2xl font-extrabold text-violet-700">{(selected.points.length - 2) * 180}°</div>
+          <div className="mt-0.5 text-xs font-medium text-violet-600">
+            {selected.points.length}각형 → 삼각형 {selected.points.length - 2}개 × 180°
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );

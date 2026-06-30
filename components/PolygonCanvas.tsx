@@ -947,7 +947,7 @@ const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
 const ACTION_KEYS = { rotL: "z", rotR: "x", flipH: "c", flipV: "v", gridCount: "g" } as const;
 
 const TOOL_HINT: Record<Tool, string> = {
-  select: "도형을 눌러 선택 · 안쪽 드래그=이동 · 꼭짓점=변형 · 초록손잡이=회전 · 빈 곳 드래그=화면 이동",
+  select: "도형 눌러 선택 · 드래그=이동 · 꼭짓점=변형 · 변 가운데 ➕=점 추가 · 꼭짓점 우클릭=점 삭제 · 초록손잡이=회전",
   draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
   cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요.",
@@ -957,6 +957,48 @@ const TOOL_HINT: Record<Tool, string> = {
 };
 
 // =============================================================
+
+type XY = { x: number; y: number };
+// 오버레이(도구 패널)를 손잡이로 끌어 자유롭게 옮기는 훅
+function useDraggable(onMove: (p: XY) => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  const grab = useRef<{ ox: number; oy: number } | null>(null);
+  const onPointerDown = (e: React.PointerEvent) => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    grab.current = { ox: e.clientX - r.left, oy: e.clientY - r.top };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const g = grab.current;
+    if (!g) return;
+    const el = ref.current;
+    const w = el?.offsetWidth ?? 100;
+    const h = el?.offsetHeight ?? 100;
+    const x = Math.max(2, Math.min(window.innerWidth - w - 2, e.clientX - g.ox));
+    const y = Math.max(2, Math.min(window.innerHeight - h - 2, e.clientY - g.oy));
+    onMove({ x, y });
+  };
+  const onPointerUp = () => {
+    grab.current = null;
+  };
+  return { ref, handle: { onPointerDown, onPointerMove, onPointerUp } };
+}
+
+// 작은 드래그 손잡이 (점 6개) — 더블클릭 시 기본 위치로
+function Grip({ handle, onReset, className }: { handle: object; onReset?: () => void; className?: string }) {
+  return (
+    <div
+      {...handle}
+      onDoubleClick={onReset}
+      title="드래그해서 옮기기 · 더블클릭=기본 위치"
+      className={`flex cursor-move touch-none items-center justify-center text-slate-300 hover:text-slate-500 ${className ?? ""}`}
+    >
+      <span className="text-xs tracking-tight">⠿⠿</span>
+    </div>
+  );
+}
 
 export default function PolygonCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -970,6 +1012,7 @@ export default function PolygonCanvas() {
   const [showAreaBadge, setShowAreaBadge] = useState(true);
   const [gridCountMode, setGridCountMode] = useState(false); // 칸세기 모드(어떤 도형이든 모눈 칸 표시)
   const [showAngles, setShowAngles] = useState(false); // 각도 표시(내각 + 내각의 합 유도)
+  const [showEdgeLen, setShowEdgeLen] = useState(true); // 변 길이(cm) 라벨 표시
   const [labelScale, setLabelScale] = useState(1); // 변·넓이 숫자 라벨 크기 배율 (수업용)
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
@@ -1006,6 +1049,13 @@ export default function PolygonCanvas() {
   const [headerH, setHeaderH] = useState(56);
   // 넓이/둘레 정보카드를 자유롭게 옮긴 위치(없으면 기본=헤더 아래 우측)
   const [infoPos, setInfoPos] = useState<{ x: number; y: number } | null>(null);
+  // 도구 패널들 자유 이동 위치
+  const [railPos, setRailPos] = useState<XY | null>(null);
+  const [ctxPos, setCtxPos] = useState<XY | null>(null);
+  const [zoomPos, setZoomPos] = useState<XY | null>(null);
+  const railDrag = useDraggable(setRailPos);
+  const zoomDrag = useDraggable(setZoomPos);
+  const ctxDrag = useDraggable(setCtxPos);
 
   const dragRef = useRef<DragMode>({ type: "none" });
   const clipboardRef = useRef<{ points: Point[]; color: string; ghosts?: Point[][]; edgeLabels?: string[] } | null>(null);
@@ -1418,6 +1468,22 @@ export default function PolygonCanvas() {
         dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi };
         return;
       }
+      // 변 가운데 '+' 핸들 → 점 추가 후 바로 끌기
+      if (tool === "select" && selected.points.length < 16) {
+        for (let i = 0; i < selected.points.length; i++) {
+          const a = selected.points[i];
+          const b = selected.points[(i + 1) % selected.points.length];
+          const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+          if (Math.hypot(p.x - m.x, p.y - m.y) < 12 * k) {
+            commitHistory();
+            const np = [...selected.points];
+            np.splice(i + 1, 0, { ...m });
+            setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
+            dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: i + 1 };
+            return;
+          }
+        }
+      }
     }
     const hit = topShapeAt(raw);
     if (hit) {
@@ -1768,6 +1834,27 @@ export default function PolygonCanvas() {
     commitHistory();
     setShapes((all) => all.filter((s) => s.id !== selected.id));
     setSelectedId(null);
+  }
+
+  // 꼭짓점 우클릭 → 점 삭제 (3개보다 많을 때)
+  function handleContextMenu(e: React.MouseEvent) {
+    const sel = selectedLiveRef.current;
+    if (!sel || tool !== "select") return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const w = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+    const k = 1 / camRef.current.scale;
+    const vi = sel.points.findIndex((v) => Math.hypot(v.x - w.x, v.y - w.y) < 14 * k);
+    if (vi !== -1) {
+      e.preventDefault();
+      if (sel.points.length <= 3) {
+        setFlash("삼각형은 더 줄일 수 없어요 (점 3개 최소)");
+        return;
+      }
+      commitHistory();
+      const np = sel.points.filter((_, i) => i !== vi);
+      setShapes((all) => all.map((s) => (s.id === sel.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
+    }
   }
 
   // ----- 복사/붙여넣기 (Ctrl+C / Ctrl+V) -----
@@ -2382,7 +2469,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, labelScale, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, labelScale, lessonReference, quiz]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -2532,16 +2619,19 @@ export default function PolygonCanvas() {
       const padH = 5 * k;
       const padV = 4 * k;
       const boxH = baseFont * k + padV * 2;
-      // 변 길이(cm) 박스 — 항상 표시 (화면에서 너무 작으면 위에서 이미 생략됨)
-      ctx.fillStyle = "rgba(255,255,255,0.96)";
-      ctx.strokeStyle = s.color;
-      ctx.lineWidth = 1.5 * k;
-      ctx.fillRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
-      ctx.strokeRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
-      ctx.fillStyle = "#0f172a";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(text, tx0, ty0);
+      // 변 길이(cm) 박스 — '변길이' 토글이 켜져 있을 때만 (화면에서 너무 작으면 위에서 이미 생략됨)
+      const drawLenBox = showEdgeLen && !gridCountMode;
+      if (drawLenBox) {
+        ctx.fillStyle = "rgba(255,255,255,0.96)";
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = 1.5 * k;
+        ctx.fillRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
+        ctx.strokeRect(tx0 - tw / 2 - padH, ty0 - boxH / 2, tw + padH * 2, boxH);
+        ctx.fillStyle = "#0f172a";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, tx0, ty0);
+      }
 
       // 의미 라벨 (학습 모드) — "윗변", "대각선 절반" 등.
       // 칸세기 모드에서는 cm 길이를 우선하고 의미 라벨은 숨겨 겹침을 줄임.
@@ -2553,7 +2643,7 @@ export default function PolygonCanvas() {
         const mpx = 6 * k;
         const mpy = 3 * k;
         const mbh = mf + mpy * 2;
-        const mty = ty0 + boxH / 2 + mbh / 2 + 3 * k;
+        const mty = drawLenBox ? ty0 + boxH / 2 + mbh / 2 + 3 * k : ty0;
         ctx.fillStyle = "#fef3c7";
         ctx.strokeStyle = "#f59e0b";
         ctx.lineWidth = 1.2 * k;
@@ -2572,6 +2662,32 @@ export default function PolygonCanvas() {
       ctx.beginPath();
       ctx.arc(v.x, v.y, (isSelected || isMergeFirst ? 6 : 4) * k, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // 점 추가 핸들: 선택+선택도구일 때 각 변 가운데 '+' (눌러서 꼭짓점 추가)
+    if (isSelected && !isRef && tool === "select" && s.points.length < 16) {
+      for (let i = 0; i < s.points.length; i++) {
+        const a = s.points[i];
+        const b = s.points[(i + 1) % s.points.length];
+        if (Math.hypot(b.x - a.x, b.y - a.y) / k < 38) continue; // 너무 짧은 변은 생략
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        ctx.beginPath();
+        ctx.arc(mx, my, 7 * k, 0, Math.PI * 2);
+        ctx.fillStyle = "#10b981";
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5 * k;
+        ctx.stroke();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.6 * k;
+        ctx.beginPath();
+        ctx.moveTo(mx - 3.5 * k, my);
+        ctx.lineTo(mx + 3.5 * k, my);
+        ctx.moveTo(mx, my - 3.5 * k);
+        ctx.lineTo(mx, my + 3.5 * k);
+        ctx.stroke();
+      }
     }
 
     if (isMergeFirst) {
@@ -2778,6 +2894,7 @@ export default function PolygonCanvas() {
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onContextMenu={handleContextMenu}
       />
 
       {/* 빈 화면 안내 */}
@@ -2846,6 +2963,7 @@ export default function PolygonCanvas() {
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />
+              <Chip active={showEdgeLen} onClick={() => setShowEdgeLen(!showEdgeLen)} icon="📏" label="변길이" title="변 길이(cm) 라벨을 켜고 끄기" />
               <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="변·넓이 숫자 크기 (수업용)">글자</span>
               <div className="flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5" title="변·넓이 숫자 크기 조절 (수업용)">
                 <button
@@ -2903,9 +3021,14 @@ export default function PolygonCanvas() {
         </button>
       )}
 
-      {/* 왼쪽 도구 레일 */}
-      <div className="absolute left-3 top-1/2 z-10 -translate-y-1/2">
+      {/* 왼쪽 도구 레일 (드래그 이동 가능) */}
+      <div
+        ref={railDrag.ref}
+        style={railPos ? { left: railPos.x, top: railPos.y } : undefined}
+        className={`absolute z-10 ${railPos ? "" : "left-3 top-1/2 -translate-y-1/2"}`}
+      >
         <div className="flex flex-col gap-1.5 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-xl backdrop-blur">
+          <Grip handle={railDrag.handle} onReset={() => setRailPos(null)} className="h-3" />
           {TOOL_META.map((t) => {
             const active = tool === t.id;
             return (
@@ -2932,8 +3055,13 @@ export default function PolygonCanvas() {
         </div>
       </div>
 
-      {/* 줌 컨트롤 (좌하단) */}
-      <div className="absolute bottom-3 left-3 z-10 flex items-center gap-1 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur">
+      {/* 줌 컨트롤 (좌하단, 드래그 이동 가능) */}
+      <div
+        ref={zoomDrag.ref}
+        style={zoomPos ? { left: zoomPos.x, top: zoomPos.y } : undefined}
+        className={`absolute z-10 flex items-center gap-1 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur ${zoomPos ? "" : "bottom-3 left-3"}`}
+      >
+        <Grip handle={zoomDrag.handle} onReset={() => setZoomPos(null)} className="w-3" />
         <IconBtn onClick={() => zoomCenter(1 / 1.2)} title="축소 ( − )">
           −
         </IconBtn>
@@ -3009,6 +3137,10 @@ export default function PolygonCanvas() {
           inspecting={inspectId === selected.id}
           onToggleInspect={toggleInspect}
           onSplit={splitSelected}
+          dragRef={ctxDrag.ref}
+          dragHandle={ctxDrag.handle}
+          pos={ctxPos}
+          onResetPos={() => setCtxPos(null)}
         />
       )}
 
@@ -3355,6 +3487,10 @@ function ContextBar({
   inspecting,
   onToggleInspect,
   onSplit,
+  dragRef,
+  dragHandle,
+  pos,
+  onResetPos,
 }: {
   shape: Shape;
   onRotate: (deg: number) => void;
@@ -3367,12 +3503,21 @@ function ContextBar({
   inspecting: boolean;
   onToggleInspect: () => void;
   onSplit: () => void;
+  dragRef: React.RefObject<HTMLDivElement>;
+  dragHandle: object;
+  pos: XY | null;
+  onResetPos: () => void;
 }) {
   const mini =
     "grid h-9 min-w-[38px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
   return (
-    <div className="absolute bottom-[84px] left-1/2 z-10 max-w-[96vw] -translate-x-1/2 overflow-x-auto sm:bottom-20">
-      <div className="flex w-max items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur">
+    <div
+      ref={dragRef}
+      style={pos ? { left: pos.x, top: pos.y } : undefined}
+      className={`absolute z-10 max-w-[96vw] overflow-x-auto ${pos ? "" : "bottom-[84px] left-1/2 -translate-x-1/2 sm:bottom-20"}`}
+    >
+      <div className="flex w-max items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-2 py-2 shadow-xl backdrop-blur">
+        <Grip handle={dragHandle} onReset={onResetPos} className="h-9 w-3 self-center" />
         {merged && (
           <MiniGroup label="조각">
             <button

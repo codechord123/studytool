@@ -1008,6 +1008,7 @@ export default function PolygonCanvas() {
   const [infoPos, setInfoPos] = useState<{ x: number; y: number } | null>(null);
 
   const dragRef = useRef<DragMode>({ type: "none" });
+  const clipboardRef = useRef<{ points: Point[]; color: string; ghosts?: Point[][]; edgeLabels?: string[] } | null>(null);
   const alignGuidesRef = useRef<{ vx: number[]; hy: number[] }>({ vx: [], hy: [] });
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{ startDist: number; startCam: Camera; startMid: { x: number; y: number } } | null>(null);
@@ -1016,6 +1017,8 @@ export default function PolygonCanvas() {
   const didInitRef = useRef(false);
 
   const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
+  const selectedLiveRef = useRef<Shape | null>(null);
+  selectedLiveRef.current = selected;
 
   const setTool = useCallback((t: Tool) => {
     setToolState(t);
@@ -1665,6 +1668,25 @@ export default function PolygonCanvas() {
         redo();
         return;
       }
+      if (meta && e.key.toLowerCase() === "c") {
+        if (selectedId) {
+          e.preventDefault();
+          copySelected();
+        }
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "v") {
+        if (clipboardRef.current) {
+          e.preventDefault();
+          pasteClipboard();
+        }
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        duplicateSelected();
+        return;
+      }
       if (e.key === "+" || e.key === "=") zoomCenter(1.2);
       else if (e.key === "-" || e.key === "_") zoomCenter(1 / 1.2);
       else if (e.key === "Escape") {
@@ -1728,13 +1750,14 @@ export default function PolygonCanvas() {
   }
 
   function duplicateSelected() {
-    if (!selected) return;
+    const sel = selectedLiveRef.current;
+    if (!sel) return;
     commitHistory();
     const copy: Shape = {
       id: uid(),
       color: nextColor(),
-      points: translatePoints(selected.points, GRID, GRID),
-      ghosts: selected.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
+      points: translatePoints(sel.points, GRID, GRID),
+      ghosts: sel.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
     };
     setShapes((all) => [...all, copy]);
     setSelectedId(copy.id);
@@ -1745,6 +1768,34 @@ export default function PolygonCanvas() {
     commitHistory();
     setShapes((all) => all.filter((s) => s.id !== selected.id));
     setSelectedId(null);
+  }
+
+  // ----- 복사/붙여넣기 (Ctrl+C / Ctrl+V) -----
+  function copySelected() {
+    const sel = selectedLiveRef.current;
+    if (!sel) return;
+    clipboardRef.current = {
+      points: sel.points.map((p) => ({ ...p })),
+      color: sel.color,
+      ghosts: sel.ghosts?.map((g) => g.map((p) => ({ ...p }))),
+      edgeLabels: sel.edgeLabels ? [...sel.edgeLabels] : undefined,
+    };
+    setFlash("도형을 복사했어요 (Ctrl+V로 붙여넣기) 📋");
+  }
+  function pasteClipboard() {
+    const c = clipboardRef.current;
+    if (!c) return;
+    commitHistory();
+    const paste: Shape = {
+      id: uid(),
+      color: c.color,
+      points: translatePoints(c.points, GRID, GRID),
+      ghosts: c.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
+      edgeLabels: c.edgeLabels ? [...c.edgeLabels] : undefined,
+    };
+    setShapes((all) => [...all, paste]);
+    setSelectedId(paste.id);
+    setTool("select");
   }
 
   // 합쳐진 도형: 조각 보기 토글 (각 원본 조각을 색으로 구분해 넓이와 함께 표시)

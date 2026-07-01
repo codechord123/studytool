@@ -1851,11 +1851,23 @@ export default function PolygonCanvas() {
       const afterMag = moved.map((q) => ({ x: q.x + mag.dx, y: q.y + mag.dy }));
       const al = magnetic ? alignSnap(afterMag, shapes, dm.shapeId, 8 * k) : { dx: 0, dy: 0, vx: [], hy: [] };
       alignGuidesRef.current = { vx: al.vx, hy: al.hy };
-      const step = snapStep > 0 ? snapStep * GRID : 0;
+      const step = e.shiftKey ? 0 : (snapStep > 0 ? snapStep * GRID : 0);
       const engagedX = mag.dx !== 0 || al.dx !== 0;
       const engagedY = mag.dy !== 0 || al.dy !== 0;
-      const tdx = engagedX ? mag.dx + al.dx : step ? Math.round(dx0 / step) * step - dx0 : 0;
-      const tdy = engagedY ? mag.dy + al.dy : step ? Math.round(dy0 / step) * step - dy0 : 0;
+      // 도형의 실제 위치(왼쪽·위 모서리)를 격자에 맞춰 딱 붙임
+      // (이전에는 이동량만 반올림해서, 시작 위치가 격자 밖이면 도착도 격자 밖이었음)
+      const startMinX = Math.min(...dm.startPoints.map((q) => q.x));
+      const startMinY = Math.min(...dm.startPoints.map((q) => q.y));
+      const tdx = engagedX
+        ? mag.dx + al.dx
+        : step
+        ? Math.round((startMinX + dx0) / step) * step - (startMinX + dx0)
+        : 0;
+      const tdy = engagedY
+        ? mag.dy + al.dy
+        : step
+        ? Math.round((startMinY + dy0) / step) * step - (startMinY + dy0)
+        : 0;
       const Dx = dx0 + tdx;
       const Dy = dy0 + tdy;
       // 선택 그룹 전체를 같은 양만큼 이동
@@ -3781,7 +3793,19 @@ export default function PolygonCanvas() {
           shape={selected}
           onRotate={(deg) => transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))}
           onFlip={(axis) => transformSelected((pts, c) => flipPoints(pts, c, axis))}
-          onScale={(f) => transformSelected((pts, c) => scalePoints(pts, c, f, f))}
+          onScale={(f) =>
+            transformSelected((pts, c) => {
+              const scaled = scalePoints(pts, c, f, f);
+              if (snapStep <= 0) return scaled;
+              // 격자 정렬: 왼쪽·위 모서리를 격자 배수에 맞춤(모양은 유지)
+              const step = snapStep * GRID;
+              const minX = Math.min(...scaled.map((q) => q.x));
+              const minY = Math.min(...scaled.map((q) => q.y));
+              const dx = Math.round(minX / step) * step - minX;
+              const dy = Math.round(minY / step) * step - minY;
+              return scaled.map((q) => ({ x: q.x + dx, y: q.y + dy }));
+            })
+          }
           onColor={setSelectedColor}
           onDuplicate={duplicateSelected}
           onDelete={deleteSelected}

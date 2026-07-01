@@ -1092,15 +1092,24 @@ export default function PolygonCanvas() {
   const holdVertexRef = useRef<{ timer: number; shapeId: string; vertexIndex: number; sx: number; sy: number } | null>(null);
   // 도구모음(왼쪽 세로 막대) 접기 상태 — 저장은 세션 localStorage
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [infoCollapsed, setInfoCollapsed] = useState(false);
+  const [ctxCollapsed, setCtxCollapsed] = useState(false);
   useEffect(() => {
     try {
-      const v = localStorage.getItem("railCollapsed");
-      if (v === "1") setRailCollapsed(true);
+      if (localStorage.getItem("railCollapsed") === "1") setRailCollapsed(true);
+      if (localStorage.getItem("infoCollapsed") === "1") setInfoCollapsed(true);
+      if (localStorage.getItem("ctxCollapsed") === "1") setCtxCollapsed(true);
     } catch {}
   }, []);
   useEffect(() => {
     try { localStorage.setItem("railCollapsed", railCollapsed ? "1" : "0"); } catch {}
   }, [railCollapsed]);
+  useEffect(() => {
+    try { localStorage.setItem("infoCollapsed", infoCollapsed ? "1" : "0"); } catch {}
+  }, [infoCollapsed]);
+  useEffect(() => {
+    try { localStorage.setItem("ctxCollapsed", ctxCollapsed ? "1" : "0"); } catch {}
+  }, [ctxCollapsed]);
   // 회전 중 각도 배지(돌린 양·스냅 여부·화면 위치)
   const [rotInfo, setRotInfo] = useState<{ deg: number; snapped: boolean; sx: number; sy: number } | null>(null);
   // 제출용 저장 대화상자
@@ -3725,6 +3734,8 @@ export default function PolygonCanvas() {
                 }
               : null
           }
+          collapsed={infoCollapsed}
+          onToggleCollapsed={() => setInfoCollapsed((v) => !v)}
         />
       )}
 
@@ -3770,6 +3781,8 @@ export default function PolygonCanvas() {
           dragHandle={ctxDrag.handle}
           pos={ctxPos}
           onResetPos={() => setCtxPos(null)}
+          collapsed={ctxCollapsed}
+          onToggleCollapsed={() => setCtxCollapsed((v) => !v)}
         />
       )}
 
@@ -4001,6 +4014,8 @@ function InfoCard({
   onResetPos,
   showAngles,
   multi,
+  collapsed,
+  onToggleCollapsed,
 }: {
   selected: Shape | null;
   boardMode: boolean;
@@ -4014,6 +4029,8 @@ function InfoCard({
   onResetPos: () => void;
   showAngles?: boolean;
   multi?: { count: number; area: number; peri: number } | null;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }) {
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -4042,6 +4059,33 @@ function InfoCard({
   const area = multi ? multi.area : selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
   const peri = multi ? multi.peri : selected ? displayPerimeterCm(selected.points) : totalPeri;
   const big = boardMode ? "text-4xl" : "text-2xl sm:text-3xl";
+  if (collapsed) {
+    return (
+      <div
+        ref={cardRef}
+        style={pos ? { left: pos.x, top: pos.y } : { top: topPx }}
+        className={`absolute z-10 rounded-full border border-slate-200 bg-white/95 shadow-xl backdrop-blur ${pos ? "" : "right-3"}`}
+      >
+        <div
+          onPointerDown={onDownDrag}
+          onPointerMove={onMoveDrag}
+          onPointerUp={onUpDrag}
+          className="flex cursor-move touch-none items-center gap-1 rounded-full px-2 py-1 text-slate-400"
+          title="드래그해서 옮기기"
+        >
+          <span className="text-[10px] tracking-widest">⠿</span>
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onToggleCollapsed}
+            className="rounded-full px-2 py-0.5 text-[11px] font-bold text-slate-600 hover:bg-slate-100"
+            title="넓이·둘레 카드 펴기"
+          >
+            📊 넓이·둘레 ▸
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       ref={cardRef}
@@ -4057,16 +4101,28 @@ function InfoCard({
         title="드래그해서 옮기기"
       >
         <span className="text-xs tracking-widest">⠿⠿</span>
-        {pos && (
-          <button
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={onResetPos}
-            className="rounded px-1 text-[10px] font-bold text-slate-400 hover:text-slate-600"
-            title="기본 위치로"
-          >
-            ↺ 위치
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          {pos && (
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={onResetPos}
+              className="rounded px-1 text-[10px] font-bold text-slate-400 hover:text-slate-600"
+              title="기본 위치로"
+            >
+              ↺ 위치
+            </button>
+          )}
+          {onToggleCollapsed && (
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={onToggleCollapsed}
+              className="rounded px-1 text-[11px] font-bold text-slate-400 hover:text-slate-600"
+              title="넓이·둘레 카드 접기"
+            >
+              ▾
+            </button>
+          )}
+        </div>
       </div>
       <div className="p-3 pt-1 sm:p-4 sm:pt-1">
       {multi ? (
@@ -4126,6 +4182,8 @@ function ContextBar({
   dragHandle,
   pos,
   onResetPos,
+  collapsed,
+  onToggleCollapsed,
 }: {
   shape: Shape;
   onRotate: (deg: number) => void;
@@ -4143,10 +4201,32 @@ function ContextBar({
   dragRef: React.RefObject<HTMLDivElement>;
   dragHandle: object;
   pos: XY | null;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
   onResetPos: () => void;
 }) {
   const mini =
     "grid h-9 min-w-[38px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
+  if (collapsed) {
+    return (
+      <div
+        ref={dragRef}
+        style={pos ? { left: pos.x, top: pos.y } : undefined}
+        className={`absolute z-10 ${pos ? "" : "bottom-[84px] left-1/2 -translate-x-1/2 sm:bottom-20"}`}
+      >
+        <div className="flex items-center gap-1 rounded-full border border-amber-200 bg-white/95 px-1 py-0.5 shadow-lg backdrop-blur">
+          <Grip handle={dragHandle} onReset={onResetPos} className="h-6 w-3 self-center" />
+          <button
+            onClick={onToggleCollapsed}
+            className="rounded-full px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100"
+            title="색상·회전 도구 펴기"
+          >
+            🎨 도형 도구 ▸
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       ref={dragRef}
@@ -4155,6 +4235,15 @@ function ContextBar({
     >
       <div className="flex w-max items-end gap-3 rounded-2xl border border-amber-200 bg-white/95 px-2 py-2 shadow-xl backdrop-blur">
         <Grip handle={dragHandle} onReset={onResetPos} className="h-9 w-3 self-center" />
+        {onToggleCollapsed && (
+          <button
+            onClick={onToggleCollapsed}
+            className="grid h-9 w-6 place-items-center self-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            title="색상·회전 도구 접기"
+          >
+            ▾
+          </button>
+        )}
         {merged && (
           <MiniGroup label="조각">
             <button

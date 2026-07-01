@@ -512,13 +512,18 @@ export function reconstructDefShape(
     const perp = { x: -u1.y, y: u1.x };
     const sign = (u2.x * perp.x + u2.y * perp.y) >= 0 ? 1 : -1;
     const u2p = { x: perp.x * sign, y: perp.y * sign };
-    // 재구성된 꼭짓점 (원래 순서 유지)
-    return [
+    // 재구성된 꼭짓점 (원래 순서 유지). NaN/무한대/과도한 값 방어.
+    const out: Point[] = [
       { x: cx - u1.x * D1 / 2, y: cy - u1.y * D1 / 2 },
       { x: cx - u2p.x * D2 / 2, y: cy - u2p.y * D2 / 2 },
       { x: cx + u1.x * D1 / 2, y: cy + u1.y * D1 / 2 },
       { x: cx + u2p.x * D2 / 2, y: cy + u2p.y * D2 / 2 },
     ];
+    const MAX = 1e5 * gridPx; // 100,000 cm 이상은 폭주로 간주
+    for (const p of out) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > MAX || Math.abs(p.y) > MAX) return null;
+    }
+    return out;
   }
   if (typeof kind === "object" && "regular" in kind && kind.regular === n) {
     // 정n각형: 앵커(잡은 꼭짓점)가 있으면 그 꼭짓점 위치로 R·방향 결정,
@@ -542,6 +547,10 @@ export function reconstructDefShape(
     for (let i = 0; i < n; i++) {
       const a = a0 + (i * 2 * Math.PI) / n;
       out.push({ x: cx + newR * Math.cos(a), y: cy + newR * Math.sin(a) });
+    }
+    const MAX = 1e5 * gridPx;
+    for (const p of out) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > MAX || Math.abs(p.y) > MAX) return null;
     }
     return out;
   }

@@ -103,7 +103,7 @@ type DragMode =
       startGhosts?: Point[][];
       group?: { id: string; startPoints: Point[]; startGhosts?: Point[][] }[];
     }
-  | { type: "vertex"; shapeId: string; vertexIndex: number; startCenter?: Point }
+  | { type: "vertex"; shapeId: string; vertexIndex: number; startCenter?: Point; startPoints?: Point[] }
   | {
       type: "rotate";
       shapeId: string;
@@ -1241,6 +1241,11 @@ export default function PolygonCanvas() {
   const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
   const selectedLiveRef = useRef<Shape | null>(null);
   selectedLiveRef.current = selected;
+  // 최신 shapes와 함수들을 timer/rAF에서 stale-closure 없이 참조하기 위한 ref
+  const shapesLiveRef = useRef<Shape[]>([]);
+  shapesLiveRef.current = shapes;
+  const equilateralizeShapeRef = useRef<(sid: string) => void>(() => {});
+  const equiangularizeShapeRef = useRef<(sid: string) => void>(() => {});
 
   const setTool = useCallback((t: Tool) => {
     setToolState(t);
@@ -1733,9 +1738,11 @@ export default function PolygonCanvas() {
       const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 14 * k);
       if (vi !== -1) {
         commitHistory();
-        // 정의 도형(마름모·정n각형)은 드래그 시작 시점의 중심을 저장 → 재구성 때 중심이 안 밀림
+        // 정의 도형(마름모·정n각형)은 드래그 시작 시점의 중심 + 원본 포인트를 저장
+        // → 매 프레임 원본에서 재구성해 누적 오차/폭주 방지
         const startCenter = selected.defKind ? polygonCentroid(selected.points) : undefined;
-        dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi, startCenter };
+        const startPoints = selected.defKind ? selected.points.map((q) => ({ ...q })) : undefined;
+        dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi, startCenter, startPoints };
         // 꾹 누르기(0.6초, 거의 안 움직였을 때) → 꼭짓점 삭제
         if (holdVertexRef.current) window.clearTimeout(holdVertexRef.current.timer);
         const shapeId = selected.id;
@@ -1766,7 +1773,7 @@ export default function PolygonCanvas() {
             const np = [...selected.points];
             np.splice(i + 1, 0, { ...m });
             setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
-            dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: i + 1, startCenter: undefined };
+            dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: i + 1, startCenter: undefined, startPoints: undefined };
             // 0.6초간 안 움직이면 → 방금 추가한 점 취소 후 등변화 (변을 꾹 눌러 모든 변 같게)
             if (holdEdgeRef.current) window.clearTimeout(holdEdgeRef.current.timer);
             const shapeId = selected.id;
@@ -1776,7 +1783,7 @@ export default function PolygonCanvas() {
               // 등변화 실행 (다음 프레임에서)
               requestAnimationFrame(() => {
                 dragRef.current = { type: "none" };
-                equilateralizeShape(shapeId);
+                equilateralizeShapeRef.current(shapeId);
               });
               holdEdgeRef.current = null;
             }, 600);
@@ -1793,7 +1800,7 @@ export default function PolygonCanvas() {
           const shapeId = selected.id;
           const timer = window.setTimeout(() => {
             dragRef.current = { type: "none" };
-            equiangularizeShape(shapeId);
+            equiangularizeShapeRef.current(shapeId);
             holdAngleRef.current = null;
           }, 600);
           holdAngleRef.current = { timer, shapeId, sx, sy };
@@ -2046,9 +2053,10 @@ export default function PolygonCanvas() {
             const nice = snapVertexNice(raw, P, N, 12 * k);
             snapped = nice ?? gridSnap(raw);
           }
-          let newPoints = s.points.map((q, i) => (i === dm.vertexIndex ? snapped : q));
-          // 정의 기반 도형(마름모·정n각형)은 정의 유지 → 한 변을 자연수로 스냅해
-          //   나머지 변도 자동으로 자연수 cm가 되도록 재구성
+          // 정의 도형(defKind)은 스냅샷된 startPoints에서 앵커만 옮겨 매 프레임 재구성
+          //   → s.points(이전 프레임 결과)에서 누적되는 오차를 원천 차단
+          const basePoints = integerMode && s.defKind && dm.startPoints ? dm.startPoints : s.points;
+          let newPoints = basePoints.map((q, i) => (i === dm.vertexIndex ? snapped : q));
           if (integerMode && s.defKind && !e.shiftKey) {
             const rebuilt = reconstructDefShape(s.defKind, newPoints, GRID, dm.vertexIndex, dm.startCenter);
             if (rebuilt) newPoints = rebuilt;
@@ -2326,7 +2334,7 @@ export default function PolygonCanvas() {
   // 선택한 도형을 '정다각형'으로 반듯하게 맞추기 — 변 길이·내각을 딱 떨어지게
   // 특정 도형을 등변(모든 변 같음)으로 변환
   function equilateralizeShape(sid: string) {
-    const s = shapes.find((sh) => sh.id === sid);
+    const s = shapesLiveRef.current.find((sh) => sh.id === sid);
     if (!s) return;
     const n = s.points.length;
     if (n < 3) return;
@@ -2357,12 +2365,13 @@ export default function PolygonCanvas() {
     setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
     setFlash(`🔷 등변으로 만들었어요! 모든 변이 ${sideUnits}cm`);
   }
+  equilateralizeShapeRef.current = equilateralizeShape;
   function equilateralizeSelected() {
     if (selectedIds.length === 1) equilateralizeShape(selectedIds[0]);
   }
   // 특정 도형을 등각(모든 각 같음)으로 변환
   function equiangularizeShape(sid: string) {
-    const s = shapes.find((sh) => sh.id === sid);
+    const s = shapesLiveRef.current.find((sh) => sh.id === sid);
     if (!s) return;
     const n = s.points.length;
     if (n < 3) return;
@@ -2402,6 +2411,7 @@ export default function PolygonCanvas() {
     const interior = Math.round(((n - 2) * 180) / n);
     setFlash(`📐 등각으로 만들었어요! 모든 각이 ${interior}° (정${n}각형)`);
   }
+  equiangularizeShapeRef.current = equiangularizeShape;
   function equiangularizeSelected() {
     if (selectedIds.length === 1) equiangularizeShape(selectedIds[0]);
   }

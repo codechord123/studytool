@@ -97,6 +97,7 @@ type DragMode =
       startPointer: Point;
       startPoints: Point[];
       startGhosts?: Point[][];
+      group?: { id: string; startPoints: Point[]; startGhosts?: Point[][] }[];
     }
   | { type: "vertex"; shapeId: string; vertexIndex: number }
   | {
@@ -947,7 +948,7 @@ const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
 const ACTION_KEYS = { rotL: "z", rotR: "x", flipH: "c", flipV: "v", gridCount: "g" } as const;
 
 const TOOL_HINT: Record<Tool, string> = {
-  select: "도형 눌러 선택 · 드래그=이동 · 꼭짓점=변형 · 변 가운데 ➕=점 추가 · 꼭짓점 우클릭=점 삭제 · 초록손잡이=회전",
+  select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동(선택 전체) · 변 가운데 ➕=점 추가 · 꼭짓점 우클릭=점 삭제",
   draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
   cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요.",
@@ -1006,7 +1007,12 @@ export default function PolygonCanvas() {
   const [shapes, setShapes] = useState<Shape[]>([]);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 다중 선택: 선택된 도형 id 집합(마지막이 '주 선택' = 꼭짓점 편집·회전 등 단일 대상)
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectedId = selectedIds.length ? selectedIds[selectedIds.length - 1] : null;
+  const setSelectedId = (id: string | null) => setSelectedIds(id ? [id] : []);
+  const toggleSelect = (id: string) => setSelectedIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  const isSelected = (id: string) => selectedIds.includes(id);
   const [inspectId, setInspectId] = useState<string | null>(null); // 합쳐진 도형의 '조각 보기' 대상 id
   const [activeAux, setActiveAux] = useState<ActiveAux>(null);
   const [showAreaBadge, setShowAreaBadge] = useState(true);
@@ -1058,7 +1064,7 @@ export default function PolygonCanvas() {
   const ctxDrag = useDraggable(setCtxPos);
 
   const dragRef = useRef<DragMode>({ type: "none" });
-  const clipboardRef = useRef<{ points: Point[]; color: string; ghosts?: Point[][]; edgeLabels?: string[] } | null>(null);
+  const clipboardRef = useRef<{ points: Point[]; color: string; ghosts?: Point[][]; edgeLabels?: string[] }[] | null>(null);
   const alignGuidesRef = useRef<{ vx: number[]; hy: number[] }>({ vx: [], hy: [] });
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{ startDist: number; startCam: Camera; startMid: { x: number; y: number } } | null>(null);
@@ -1226,7 +1232,7 @@ export default function PolygonCanvas() {
     setShapes(prev.shapes);
     setMeasurements(prev.measurements);
     setGuides(prev.guides);
-    setSelectedId((id) => (prev.shapes.find((s) => s.id === id) ? id : null));
+    setSelectedIds((ids) => ids.filter((id) => prev.shapes.find((s) => s.id === id)));
     setActiveAux(null);
     setMergeFirstId(null);
     setDraft([]);
@@ -1241,7 +1247,7 @@ export default function PolygonCanvas() {
     setShapes(next.shapes);
     setMeasurements(next.measurements);
     setGuides(next.guides);
-    setSelectedId((id) => (next.shapes.find((s) => s.id === id) ? id : null));
+    setSelectedIds((ids) => ids.filter((id) => next.shapes.find((s) => s.id === id)));
     setActiveAux(null);
   }, [future, snapshot]);
 
@@ -1376,7 +1382,7 @@ export default function PolygonCanvas() {
       if (target) {
         commitHistory();
         setShapes((all) => all.filter((s) => s.id !== target.id));
-        if (selectedId === target.id) setSelectedId(null);
+        setSelectedIds((ids) => ids.filter((id) => id !== target.id));
       }
       return;
     }
@@ -1446,8 +1452,8 @@ export default function PolygonCanvas() {
       return;
     }
 
-    // select
-    if (selected) {
+    // select — 단일 선택일 때만 회전/꼭짓점/점추가 편집 허용
+    if (selected && selectedIds.length === 1) {
       const handle = rotationHandle(selected, k);
       if (Math.hypot(p.x - handle.x, p.y - handle.y) < 16 * k) {
         commitHistory();
@@ -1487,15 +1493,31 @@ export default function PolygonCanvas() {
     }
     const hit = topShapeAt(raw);
     if (hit) {
-      setSelectedId(hit.id);
+      const multi = e.ctrlKey || e.metaKey || e.shiftKey;
+      if (multi) {
+        // Ctrl/Shift+클릭 → 선택 토글(추가/제외), 이동 없음
+        toggleSelect(hit.id);
+        setActiveAux(null);
+        dragRef.current = { type: "none" };
+        return;
+      }
+      // 이미 선택된 그룹의 일부를 잡으면 그룹 전체를 함께 이동
+      const inGroup = selectedIds.includes(hit.id) && selectedIds.length > 1;
+      if (!inGroup) setSelectedId(hit.id);
       setActiveAux(null);
       commitHistory();
+      const groupIds = inGroup ? selectedIds : [hit.id];
+      const group = groupIds
+        .map((id) => shapes.find((s) => s.id === id))
+        .filter((s): s is Shape => !!s)
+        .map((s) => ({ id: s.id, startPoints: s.points.map((q) => ({ ...q })), startGhosts: s.ghosts?.map((g) => g.map((q) => ({ ...q }))) }));
       dragRef.current = {
         type: "translate",
         shapeId: hit.id,
         startPointer: raw, // 격자 스냅 전 raw 좌표로 저장 → 이동은 연속, 자석 우선
         startPoints: hit.points.map((q) => ({ ...q })),
         startGhosts: hit.ghosts?.map((g) => g.map((q) => ({ ...q }))),
+        group,
       };
     } else {
       // 빈 곳 → 화면 이동(팬). 움직이지 않으면 선택 해제.
@@ -1555,33 +1577,42 @@ export default function PolygonCanvas() {
       else setGuides((g) => g.map(patch));
       return;
     }
+    if (dm.type === "translate") {
+      // 이동은 연속(raw) 좌표 기준 — 격자 스냅으로 양자화하지 않음
+      const dx0 = raw.x - dm.startPointer.x;
+      const dy0 = raw.y - dm.startPointer.y;
+      const moved = dm.startPoints.map((q) => ({ x: q.x + dx0, y: q.y + dy0 }));
+      // 자석 우선(주 선택 도형 기준): 꼭짓점 자석 → 모서리/중심 정렬
+      const mag = magnetTranslate(moved, dm.shapeId, 20 * k);
+      const afterMag = moved.map((q) => ({ x: q.x + mag.dx, y: q.y + mag.dy }));
+      const al = magnetic ? alignSnap(afterMag, shapes, dm.shapeId, 8 * k) : { dx: 0, dy: 0, vx: [], hy: [] };
+      alignGuidesRef.current = { vx: al.vx, hy: al.hy };
+      const step = snapStep > 0 ? snapStep * GRID : 0;
+      const engagedX = mag.dx !== 0 || al.dx !== 0;
+      const engagedY = mag.dy !== 0 || al.dy !== 0;
+      const tdx = engagedX ? mag.dx + al.dx : step ? Math.round(dx0 / step) * step - dx0 : 0;
+      const tdy = engagedY ? mag.dy + al.dy : step ? Math.round(dy0 / step) * step - dy0 : 0;
+      const Dx = dx0 + tdx;
+      const Dy = dy0 + tdy;
+      // 선택 그룹 전체를 같은 양만큼 이동
+      const grp = dm.group ?? [{ id: dm.shapeId, startPoints: dm.startPoints, startGhosts: dm.startGhosts }];
+      const startMap = new Map(grp.map((g) => [g.id, g]));
+      setShapes((all) =>
+        all.map((s) => {
+          const st = startMap.get(s.id);
+          if (!st) return s;
+          return {
+            ...s,
+            points: st.startPoints.map((q) => ({ x: q.x + Dx, y: q.y + Dy })),
+            ghosts: st.startGhosts?.map((g) => g.map((q) => ({ x: q.x + Dx, y: q.y + Dy }))),
+          };
+        })
+      );
+      return;
+    }
     setShapes((all) =>
       all.map((s) => {
         if (s.id !== dm.shapeId) return s;
-        if (dm.type === "translate") {
-          // 이동은 연속(raw) 좌표 기준 — 격자 스냅으로 양자화하지 않음
-          const dx0 = raw.x - dm.startPointer.x;
-          const dy0 = raw.y - dm.startPointer.y;
-          const moved = dm.startPoints.map((q) => ({ x: q.x + dx0, y: q.y + dy0 }));
-          // 자석 우선: 1) 꼭짓점 자석(코너끼리 착) → 2) 모서리/중심 정렬(스마트 가이드)
-          const mag = magnetTranslate(moved, dm.shapeId, 20 * k);
-          const afterMag = moved.map((q) => ({ x: q.x + mag.dx, y: q.y + mag.dy }));
-          const al = magnetic ? alignSnap(afterMag, all, dm.shapeId, 8 * k) : { dx: 0, dy: 0, vx: [], hy: [] };
-          alignGuidesRef.current = { vx: al.vx, hy: al.hy };
-          // 축별로 자석이 붙으면 자석을 우선, 아니면 그 축만 격자 단위로 스냅
-          const step = snapStep > 0 ? snapStep * GRID : 0;
-          const magX = mag.dx + al.dx;
-          const magY = mag.dy + al.dy;
-          const engagedX = mag.dx !== 0 || al.dx !== 0;
-          const engagedY = mag.dy !== 0 || al.dy !== 0;
-          const tdx = engagedX ? magX : step ? Math.round(dx0 / step) * step - dx0 : 0;
-          const tdy = engagedY ? magY : step ? Math.round(dy0 / step) * step - dy0 : 0;
-          const finalPts = moved.map((q) => ({ x: q.x + tdx, y: q.y + tdy }));
-          const finalGhosts = dm.startGhosts?.map((g) =>
-            g.map((q) => ({ x: q.x + dx0 + tdx, y: q.y + dy0 + tdy }))
-          );
-          return { ...s, points: finalPts, ghosts: finalGhosts };
-        }
         if (dm.type === "vertex") {
           // 자석 우선: 다른 도형 꼭짓점에 먼저 붙이고, 없으면 격자 스냅
           const v = vertexSnap(raw, dm.shapeId, 16 * k);
@@ -1762,7 +1793,7 @@ export default function PolygonCanvas() {
         dragRef.current = { type: "none" };
       } else if (e.key === "Enter" && tool === "draw" && draft.length >= 3) {
         finishDraft();
-      } else if (e.key.startsWith("Arrow") && selectedId) {
+      } else if (e.key.startsWith("Arrow") && selectedIds.length) {
         e.preventDefault();
         const base = (snapStep > 0 ? snapStep : 0.5) * GRID;
         const step = e.shiftKey ? GRID : base;
@@ -1770,19 +1801,21 @@ export default function PolygonCanvas() {
         const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
         if (dx || dy) {
           commitHistory();
+          const ids = new Set(selectedIds);
           setShapes((all) =>
             all.map((s) =>
-              s.id === selectedId
+              ids.has(s.id)
                 ? { ...s, points: translatePoints(s.points, dx, dy), ghosts: s.ghosts?.map((g) => translatePoints(g, dx, dy)) }
                 : s
             )
           );
         }
       } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (selectedId) {
+        if (selectedIds.length) {
           commitHistory();
-          setShapes((all) => all.filter((s) => s.id !== selectedId));
-          setSelectedId(null);
+          const ids = new Set(selectedIds);
+          setShapes((all) => all.filter((s) => !ids.has(s.id)));
+          setSelectedIds([]);
         } else if (activeAux) {
           commitHistory();
           if (activeAux.kind === "measure") setMeasurements((m) => m.filter((s) => s.id !== activeAux.id));
@@ -1801,39 +1834,49 @@ export default function PolygonCanvas() {
       window.removeEventListener("keyup", onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, draft.length, selectedId, activeAux, snapStep, undo, redo, commitHistory, zoomCenter, setTool, transformSelected]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, draft.length, selectedIds, activeAux, snapStep, undo, redo, commitHistory, zoomCenter, setTool, transformSelected]);
 
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
-    if (!selected) return;
+    if (!selectedIds.length) return;
     commitHistory();
+    const sel = shapes.filter((s) => selectedIds.includes(s.id));
+    // 여러 개면 전체를 감싼 상자의 중심을 공통 회전/뒤집기 축으로
+    let center: Point;
+    if (sel.length <= 1) {
+      center = sel[0] ? polygonCentroid(sel[0].points) : { x: 0, y: 0 };
+    } else {
+      const pts = sel.flatMap((s) => s.points);
+      const xs = pts.map((p) => p.x);
+      const ys = pts.map((p) => p.y);
+      center = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+    }
     setShapes((all) =>
-      all.map((s) => {
-        if (s.id !== selected.id) return s;
-        const c = polygonCentroid(s.points);
-        return { ...s, points: fn(s.points, c), ghosts: s.ghosts?.map((g) => fn(g, c)) };
-      })
+      all.map((s) => (selectedIds.includes(s.id) ? { ...s, points: fn(s.points, center), ghosts: s.ghosts?.map((g) => fn(g, center)) } : s))
     );
   }
 
   function duplicateSelected() {
-    const sel = selectedLiveRef.current;
-    if (!sel) return;
+    const sel = shapes.filter((s) => selectedIds.includes(s.id));
+    if (!sel.length) return;
     commitHistory();
-    const copy: Shape = {
+    const copies: Shape[] = sel.map((s) => ({
       id: uid(),
-      color: nextColor(),
-      points: translatePoints(sel.points, GRID, GRID),
-      ghosts: sel.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
-    };
-    setShapes((all) => [...all, copy]);
-    setSelectedId(copy.id);
+      color: sel.length === 1 ? nextColor() : s.color,
+      points: translatePoints(s.points, GRID, GRID),
+      ghosts: s.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
+      edgeLabels: s.edgeLabels ? [...s.edgeLabels] : undefined,
+    }));
+    setShapes((all) => [...all, ...copies]);
+    setSelectedIds(copies.map((c) => c.id));
   }
 
   function deleteSelected() {
-    if (!selected) return;
+    if (!selectedIds.length) return;
     commitHistory();
-    setShapes((all) => all.filter((s) => s.id !== selected.id));
-    setSelectedId(null);
+    const ids = new Set(selectedIds);
+    setShapes((all) => all.filter((s) => !ids.has(s.id)));
+    setSelectedIds([]);
   }
 
   // 꼭짓점 우클릭 → 점 삭제 (3개보다 많을 때)
@@ -1857,31 +1900,31 @@ export default function PolygonCanvas() {
     }
   }
 
-  // ----- 복사/붙여넣기 (Ctrl+C / Ctrl+V) -----
+  // ----- 복사/붙여넣기 (Ctrl+C / Ctrl+V) — 여러 개 지원 -----
   function copySelected() {
-    const sel = selectedLiveRef.current;
-    if (!sel) return;
-    clipboardRef.current = {
-      points: sel.points.map((p) => ({ ...p })),
-      color: sel.color,
-      ghosts: sel.ghosts?.map((g) => g.map((p) => ({ ...p }))),
-      edgeLabels: sel.edgeLabels ? [...sel.edgeLabels] : undefined,
-    };
-    setFlash("도형을 복사했어요 (Ctrl+V로 붙여넣기) 📋");
+    const sel = shapes.filter((s) => selectedIds.includes(s.id));
+    if (!sel.length) return;
+    clipboardRef.current = sel.map((s) => ({
+      points: s.points.map((p) => ({ ...p })),
+      color: s.color,
+      ghosts: s.ghosts?.map((g) => g.map((p) => ({ ...p }))),
+      edgeLabels: s.edgeLabels ? [...s.edgeLabels] : undefined,
+    }));
+    setFlash(`도형 ${sel.length}개를 복사했어요 (Ctrl+V로 붙여넣기) 📋`);
   }
   function pasteClipboard() {
     const c = clipboardRef.current;
-    if (!c) return;
+    if (!c || !c.length) return;
     commitHistory();
-    const paste: Shape = {
+    const pastes: Shape[] = c.map((it) => ({
       id: uid(),
-      color: c.color,
-      points: translatePoints(c.points, GRID, GRID),
-      ghosts: c.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
-      edgeLabels: c.edgeLabels ? [...c.edgeLabels] : undefined,
-    };
-    setShapes((all) => [...all, paste]);
-    setSelectedId(paste.id);
+      color: it.color,
+      points: translatePoints(it.points, GRID, GRID),
+      ghosts: it.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
+      edgeLabels: it.edgeLabels ? [...it.edgeLabels] : undefined,
+    }));
+    setShapes((all) => [...all, ...pastes]);
+    setSelectedIds(pastes.map((p) => p.id));
     setTool("select");
   }
 
@@ -1912,9 +1955,10 @@ export default function PolygonCanvas() {
   }, [selectedId, inspectId]);
 
   function setSelectedColor(color: string) {
-    if (!selected || selected.color === color) return;
+    if (!selectedIds.length) return;
     commitHistory();
-    setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, color } : s)));
+    const ids = new Set(selectedIds);
+    setShapes((all) => all.map((s) => (ids.has(s.id) ? { ...s, color } : s)));
   }
 
   function addPreset(pr: Preset) {
@@ -2270,7 +2314,7 @@ export default function PolygonCanvas() {
 
     // reference (원본 박제) 먼저 — 작업 도형 아래 레이어
     for (const s of lessonReference) drawShape(ctx, s, false, false, k);
-    for (const s of shapes) drawShape(ctx, s, s.id === selectedId, s.id === mergeFirstId, k);
+    for (const s of shapes) drawShape(ctx, s, isSelected(s.id), s.id === mergeFirstId, k);
 
     // 스마트 정렬 가이드 (도형 이동 중 모서리/중심 정렬)
     if (dragRef.current.type === "translate") {
@@ -2469,7 +2513,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedId, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, labelScale, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, labelScale, lessonReference, quiz]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -2570,8 +2614,8 @@ export default function PolygonCanvas() {
       ctx.textAlign = "start";
     }
 
-    // 회전 손잡이(점선+초록 원) — 변 길이 라벨보다 먼저 그려, 점선이 라벨 글자를 가로지르지 않게 함
-    if (isSelected) {
+    // 회전 손잡이(점선+초록 원) — 단일 선택일 때만
+    if (isSelected && selectedIds.length === 1) {
       const c = polygonCentroid(s.points);
       const h = rotationHandle(s, k);
       ctx.save();
@@ -2664,8 +2708,8 @@ export default function PolygonCanvas() {
       ctx.fill();
     }
 
-    // 점 추가 핸들: 선택+선택도구일 때 각 변 가운데 '+' (눌러서 꼭짓점 추가)
-    if (isSelected && !isRef && tool === "select" && s.points.length < 16) {
+    // 점 추가 핸들: 단일 선택+선택도구일 때 각 변 가운데 '+' (눌러서 꼭짓점 추가)
+    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && s.points.length < 16) {
       for (let i = 0; i < s.points.length; i++) {
         const a = s.points[i];
         const b = s.points[(i + 1) % s.points.length];
@@ -3088,7 +3132,7 @@ export default function PolygonCanvas() {
       {/* 정보 카드 (헤더 아래 우측 상단) — 퀴즈·레슨 중에는 전용 패널이 있어 숨김 */}
       {!quiz && !lesson && (
         <InfoCard
-          selected={selected}
+          selected={selectedIds.length > 1 ? null : selected}
           boardMode={boardMode}
           count={shapes.length}
           totalArea={totalArea}
@@ -3098,6 +3142,15 @@ export default function PolygonCanvas() {
           onMove={setInfoPos}
           onResetPos={() => setInfoPos(null)}
           showAngles={showAngles}
+          multi={
+            selectedIds.length > 1
+              ? {
+                  count: selectedIds.length,
+                  area: shapes.filter((s) => selectedIds.includes(s.id)).reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0),
+                  peri: shapes.filter((s) => selectedIds.includes(s.id)).reduce((a, s) => a + displayPerimeterCm(s.points), 0),
+                }
+              : null
+          }
         />
       )}
 
@@ -3371,6 +3424,7 @@ function InfoCard({
   onMove,
   onResetPos,
   showAngles,
+  multi,
 }: {
   selected: Shape | null;
   boardMode: boolean;
@@ -3383,6 +3437,7 @@ function InfoCard({
   onMove: (p: { x: number; y: number }) => void;
   onResetPos: () => void;
   showAngles?: boolean;
+  multi?: { count: number; area: number; peri: number } | null;
 }) {
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -3408,8 +3463,8 @@ function InfoCard({
     grabRef.current = null;
   }
   if (count === 0) return null;
-  const area = selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
-  const peri = selected ? displayPerimeterCm(selected.points) : totalPeri;
+  const area = multi ? multi.area : selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
+  const peri = multi ? multi.peri : selected ? displayPerimeterCm(selected.points) : totalPeri;
   const big = boardMode ? "text-4xl" : "text-3xl";
   return (
     <div
@@ -3438,7 +3493,9 @@ function InfoCard({
         )}
       </div>
       <div className="p-3 pt-1 sm:p-4 sm:pt-1">
-      {selected && kind ? (
+      {multi ? (
+        <div className="mb-3 text-base font-bold text-indigo-600">🧩 {multi.count}개 선택됨 · 합계</div>
+      ) : selected && kind ? (
         <div className="mb-3 flex items-center gap-2.5">
           <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
           <div className="leading-tight">

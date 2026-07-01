@@ -1029,7 +1029,7 @@ const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
 const ACTION_KEYS = { rotL: "z", rotR: "x", flipH: "c", flipV: "v", gridCount: "g" } as const;
 
 const TOOL_HINT: Record<Tool, string> = {
-  select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동(선택 전체) · 변 가운데 ➕=점 추가 · 꼭짓점 우클릭 또는 꾹 누르기=점 삭제",
+  select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동 · 손잡이(초록)=회전 · 변 가운데 ➕=점 추가 · 꼭짓점 옆 ➖=점 삭제",
   draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
   cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요. (여러 개를 선택한 뒤 '합치기'를 누르면 한꺼번에!)",
@@ -1768,21 +1768,43 @@ export default function PolygonCanvas() {
         }
         // 원은 회전 손잡이·꼭짓점 편집 없음 → 아래 일반 로직(이동/선택)으로 진행
       } else {
+      // 손잡이·꼭짓점 히트테스트는 격자 스냅된 p가 아니라 실제 포인터 raw로 —
+      //   손잡이가 격자 사이에 있으면 스냅된 좌표가 멀어져 "잘 안 잡히는" 문제 방지
       const handle = rotationHandle(selected, k);
-      if (Math.hypot(p.x - handle.x, p.y - handle.y) < 16 * k) {
+      if (Math.hypot(raw.x - handle.x, raw.y - handle.y) < 18 * k) {
         commitHistory();
         const center = polygonCentroid(selected.points);
         dragRef.current = {
           type: "rotate",
           shapeId: selected.id,
           center,
-          startAngle: Math.atan2(p.y - center.y, p.x - center.x),
+          startAngle: Math.atan2(raw.y - center.y, raw.x - center.x),
           startPoints: selected.points.map((q) => ({ ...q })),
           startGhosts: selected.ghosts?.map((g) => g.map((q) => ({ ...q }))),
         };
         return;
       }
-      const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 14 * k);
+      // 꼭짓점 삭제 배지(➖) — 각 꼭짓점 바깥쪽의 빨간 버튼을 '탭'하면 바로 삭제(꾹 누르기 없이)
+      if (selected.points.length > 3) {
+        const cen = polygonCentroid(selected.points);
+        for (let i = 0; i < selected.points.length; i++) {
+          const v = selected.points[i];
+          const ox = v.x - cen.x, oy = v.y - cen.y;
+          const ol = Math.hypot(ox, oy) || 1;
+          const bx = v.x + (ox / ol) * 22 * k;
+          const by = v.y + (oy / ol) * 22 * k;
+          if (Math.hypot(raw.x - bx, raw.y - by) < 13 * k) {
+            commitHistory();
+            const np = selected.points.filter((_, j) => j !== i);
+            // 꼭짓점 개수가 바뀌면 정의 도형 특성(마름모/정n각형) 소실
+            setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined, defKind: undefined } : s)));
+            setFlash("꼭짓점을 지웠어요 ➖");
+            dragRef.current = { type: "none" };
+            return;
+          }
+        }
+      }
+      const vi = selected.points.findIndex((v) => Math.hypot(v.x - raw.x, v.y - raw.y) < 15 * k);
       if (vi !== -1) {
         commitHistory();
         // 정의 도형(마름모·정n각형)은 드래그 시작 시점의 중심 + 원본 포인트를 저장
@@ -1816,7 +1838,7 @@ export default function PolygonCanvas() {
           const a = selected.points[i];
           const b = selected.points[(i + 1) % selected.points.length];
           const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-          if (Math.hypot(p.x - m.x, p.y - m.y) < 12 * k) {
+          if (Math.hypot(raw.x - m.x, raw.y - m.y) < 13 * k) {
             commitHistory();
             const np = [...selected.points];
             np.splice(i + 1, 0, { ...m });
@@ -1846,7 +1868,7 @@ export default function PolygonCanvas() {
       }
       // 각도(내각 라벨) 부근에서 시작: 각도 켜져 있을 때만 꼭짓점 근처를 꾹 눌러 등각화
       if (showAngles && tool === "select") {
-        const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 22 * k && Math.hypot(v.x - p.x, v.y - p.y) >= 14 * k);
+        const vi = selected.points.findIndex((v) => Math.hypot(v.x - raw.x, v.y - raw.y) < 22 * k && Math.hypot(v.x - raw.x, v.y - raw.y) >= 14 * k);
         if (vi !== -1) {
           if (holdAngleRef.current) window.clearTimeout(holdAngleRef.current.timer);
           const shapeId = selected.id;
@@ -2017,12 +2039,15 @@ export default function PolygonCanvas() {
       return;
     }
     if (dm.type === "rotate") {
-      const curAbs = Math.atan2(p.y - dm.center.y, p.x - dm.center.x);
+      // 회전 각도는 격자 스냅된 p가 아니라 실제 포인터(raw)로 계산 — 부드럽게 돌아가도록
+      const curAbs = Math.atan2(raw.y - dm.center.y, raw.x - dm.center.x);
       const rawAng = curAbs - dm.startAngle;
       // 절대 방향 기준 스냅 → 시작 각도와 상관없이 30·45·60·90°처럼 반듯하게 딱 맞춰짐
-      // 자연수 모드: 90° 단위로만 회전(정수 꼭짓점 보존). 그 외 15° 간격 자석.
-      const SNAP = integerMode ? Math.PI / 2 : Math.PI / 12;
-      const TOL = e.shiftKey && !integerMode ? 0 : integerMode ? Math.PI : (Math.PI / 180) * 7;
+      // 회전은 자연수·자석 모드와 무관하게 항상 부드럽게 — 15° 간격에 살짝 자석(±6°).
+      //   (예전엔 자연수 모드에서 90°로만 튕겨 "회전이 잘 안 되는" 느낌이었음)
+      //   Shift를 누르면 자석 없이 완전 자유 회전.
+      const SNAP = Math.PI / 12; // 15°
+      const TOL = e.shiftKey ? 0 : (Math.PI / 180) * 6;
       const snappedAbs = Math.round(curAbs / SNAP) * SNAP;
       const isSnap = TOL > 0 && Math.abs(curAbs - snappedAbs) < TOL;
       const ang = isSnap ? snappedAbs - dm.startAngle : rawAng;
@@ -2087,10 +2112,16 @@ export default function PolygonCanvas() {
         all.map((s) => {
           const st = startMap.get(s.id);
           if (!st) return s;
-          // 정의 기반 도형(defKind) + 곡선형(원 조각 등, 꼭짓점이 아주 많음)은
-          //   개별 꼭짓점 반올림을 하지 않고 강체(rigid)로 이동 — 잡은 꼭짓점만 격자에 맞춤.
-          //   (원을 자른 반원·부채꼴을 옮길 때 매끄러운 호가 톱니로 깨지던 문제 방지)
-          const preserveDef = !!s.defKind || s.points.length >= 20;
+          // 개별 꼭짓점 반올림을 하지 않고 강체(rigid)로 이동해야 하는 경우 — 잡은 꼭짓점만 격자에 맞춤:
+          //   1) 정의 기반 도형(defKind: 마름모·정n각형·원)
+          //   2) 곡선형(원 조각 등, 꼭짓점이 아주 많음) — 호가 톱니로 깨지는 것 방지
+          //   3) 이미 격자에서 벗어난 도형(회전 등) — 개별 반올림하면 모양이 찌그러짐
+          const onGrid = st.startPoints.every(
+            (q) =>
+              Math.abs(q.x / GRID - Math.round(q.x / GRID)) < 1e-3 &&
+              Math.abs(q.y / GRID - Math.round(q.y / GRID)) < 1e-3
+          );
+          const preserveDef = !!s.defKind || s.points.length >= 20 || !onGrid;
           return {
             ...s,
             points: st.startPoints.map((q) => roundIfInt(q, preserveDef)),
@@ -3860,6 +3891,31 @@ export default function PolygonCanvas() {
         ctx.lineTo(mx + 3.5 * k, my);
         ctx.moveTo(mx, my - 3.5 * k);
         ctx.lineTo(mx, my + 3.5 * k);
+        ctx.stroke();
+      }
+    }
+
+    // 꼭짓점 삭제 배지: 단일 선택+선택도구, 점 4개 이상일 때 각 꼭짓점 바깥에 '➖'(탭하면 삭제)
+    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && !circleDef && s.points.length > 3) {
+      const cen = polygonCentroid(s.points);
+      for (let i = 0; i < s.points.length; i++) {
+        const v = s.points[i];
+        const ox = v.x - cen.x, oy = v.y - cen.y;
+        const ol = Math.hypot(ox, oy) || 1;
+        const bx = v.x + (ox / ol) * 22 * k;
+        const by = v.y + (oy / ol) * 22 * k;
+        ctx.beginPath();
+        ctx.arc(bx, by, 7 * k, 0, Math.PI * 2);
+        ctx.fillStyle = "#ef4444";
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5 * k;
+        ctx.stroke();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.8 * k;
+        ctx.beginPath();
+        ctx.moveTo(bx - 3.5 * k, by);
+        ctx.lineTo(bx + 3.5 * k, by);
         ctx.stroke();
       }
     }

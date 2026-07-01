@@ -87,7 +87,7 @@ type Segment = Measurement; // {id,a,b} 공통 구조
 type ActiveAux = { kind: "guide" | "measure"; id: string } | null;
 
 // 되돌리기 단위 — 도형뿐 아니라 측정선·가이드까지 함께 스냅샷
-type Snapshot = { shapes: Shape[]; measurements: Measurement[]; guides: Guide[] };
+type Snapshot = { shapes: Shape[]; measurements: Measurement[]; guides: Guide[]; texts: TextNote[] };
 function cloneSegs<T extends Segment>(arr: T[]): T[] {
   return arr.map((m) => ({ ...m, a: { ...m.a }, b: { ...m.b } }));
 }
@@ -1230,7 +1230,7 @@ export default function PolygonCanvas() {
   const ctxDrag = useDraggable(setCtxPos);
 
   const dragRef = useRef<DragMode>({ type: "none" });
-  const clipboardRef = useRef<{ points: Point[]; color: string; ghosts?: Point[][]; edgeLabels?: string[] }[] | null>(null);
+  const clipboardRef = useRef<{ points: Point[]; color: string; ghosts?: Point[][]; edgeLabels?: string[]; defKind?: Shape["defKind"] }[] | null>(null);
   const alignGuidesRef = useRef<{ vx: number[]; hy: number[] }>({ vx: [], hy: [] });
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{ startDist: number; startCam: Camera; startMid: { x: number; y: number } } | null>(null);
@@ -1383,8 +1383,13 @@ export default function PolygonCanvas() {
 
   // ----- 히스토리 (도형 + 측정선 + 가이드) -----
   const snapshot = useCallback(
-    (): Snapshot => ({ shapes: cloneShapes(shapes), measurements: cloneSegs(measurements), guides: cloneSegs(guides) }),
-    [shapes, measurements, guides]
+    (): Snapshot => ({
+      shapes: cloneShapes(shapes),
+      measurements: cloneSegs(measurements),
+      guides: cloneSegs(guides),
+      texts: texts.map((t) => ({ ...t })),
+    }),
+    [shapes, measurements, guides, texts]
   );
 
   const commitHistory = useCallback(() => {
@@ -1403,6 +1408,9 @@ export default function PolygonCanvas() {
     setShapes(prev.shapes);
     setMeasurements(prev.measurements);
     setGuides(prev.guides);
+    setTexts(prev.texts ?? []);
+    setActiveTextId(null);
+    setEditingTextId(null);
     setSelectedIds((ids) => ids.filter((id) => prev.shapes.find((s) => s.id === id)));
     setActiveAux(null);
     setMergeFirstId(null);
@@ -1418,8 +1426,12 @@ export default function PolygonCanvas() {
     setShapes(next.shapes);
     setMeasurements(next.measurements);
     setGuides(next.guides);
+    setTexts(next.texts ?? []);
+    setActiveTextId(null);
+    setEditingTextId(null);
     setSelectedIds((ids) => ids.filter((id) => next.shapes.find((s) => s.id === id)));
     setActiveAux(null);
+    setMergeFirstId(null);
   }, [future, snapshot]);
 
   // ----- 자석 스냅 -----
@@ -1490,6 +1502,7 @@ export default function PolygonCanvas() {
     return null;
   }
   function createTextAt(p: Point) {
+    commitHistory();
     const id = uid();
     setTexts((t) => [...t, { id, x: p.x, y: p.y, text: "", color: "#78350f" }]);
     setActiveTextId(id);
@@ -1517,6 +1530,7 @@ export default function PolygonCanvas() {
     setEditingTextId(null);
   }
   function deleteText(id: string) {
+    commitHistory();
     setTexts((t) => t.filter((n) => n.id !== id));
     textBoxRef.current.delete(id);
     if (activeTextId === id) setActiveTextId(null);
@@ -1754,7 +1768,8 @@ export default function PolygonCanvas() {
             return;
           }
           const np = cur.points.filter((_, i) => i !== vi);
-          setShapes((all) => all.map((s) => (s.id === shapeId ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
+          // C3: 꼭짓점 개수가 바뀌면 정의 도형 특성 소실
+          setShapes((all) => all.map((s) => (s.id === shapeId ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined, defKind: undefined } : s)));
           setFlash("꼭짓점을 지웠어요! (꾹 누르기)");
           dragRef.current = { type: "none" };
           holdVertexRef.current = null;
@@ -1772,15 +1787,19 @@ export default function PolygonCanvas() {
             commitHistory();
             const np = [...selected.points];
             np.splice(i + 1, 0, { ...m });
-            setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
+            // C3: 정의 도형(마름모/정n각형)은 점 추가하면 정의가 깨지므로 defKind 클리어
+            setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined, defKind: undefined } : s)));
             dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: i + 1, startCenter: undefined, startPoints: undefined };
             // 0.6초간 안 움직이면 → 방금 추가한 점 취소 후 등변화 (변을 꾹 눌러 모든 변 같게)
             if (holdEdgeRef.current) window.clearTimeout(holdEdgeRef.current.timer);
             const shapeId = selected.id;
             const timer = window.setTimeout(() => {
-              // 점 추가를 되돌리고 원래 점으로 복원
+              // C5: 롱프레스 등변화의 히스토리 스택 정정
+              //   1) ➕ 클릭 시 이미 commitHistory가 pre-add 상태를 저장했음
+              //   2) 여기서 그 pre-add 스냅샷을 팝(해 실제로 "원래 상태 → 등변화" 한 단계로)
+              //   3) 그 다음 점 추가를 취소하고 등변화 실행 → equilateralize 안에서 다시 commit
+              setPast((p) => (p.length > 0 ? p.slice(0, -1) : p));
               setShapes((all) => all.map((s) => (s.id === shapeId ? { ...s, points: s.points.filter((_, j) => j !== i + 1) } : s)));
-              // 등변화 실행 (다음 프레임에서)
               requestAnimationFrame(() => {
                 dragRef.current = { type: "none" };
                 equilateralizeShapeRef.current(shapeId);
@@ -2318,6 +2337,10 @@ export default function PolygonCanvas() {
       points: translatePoints(s.points, GRID, GRID),
       ghosts: s.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
       edgeLabels: s.edgeLabels ? [...s.edgeLabels] : undefined,
+      defKind:
+        typeof s.defKind === "object" && s.defKind !== null && "regular" in s.defKind
+          ? { regular: s.defKind.regular }
+          : s.defKind, // C2: 정의 도형 특성 유지
     }));
     setShapes((all) => [...all, ...copies]);
     setSelectedIds(copies.map((c) => c.id));
@@ -2377,18 +2400,29 @@ export default function PolygonCanvas() {
     if (n < 3) return;
     const c = polygonCentroid(s.points);
     if (n === 4) {
-      // 직사각형(모든 각 90°): 현재 bbox를 정수 cm로 반올림
-      const xs = s.points.map((p) => p.x);
-      const ys = s.points.map((p) => p.y);
-      const w = (Math.max(...xs) - Math.min(...xs)) / GRID;
-      const h = (Math.max(...ys) - Math.min(...ys)) / GRID;
+      // C1: 직사각형(모든 각 90°). bbox가 아니라 실제 인접 두 변 길이를 사용해
+      //   회전된 사각형에서도 원래 가로/세로가 정확히 나옴.
+      const p0 = s.points[0], p1 = s.points[1], p2 = s.points[2], p3 = s.points[3];
+      // 대각선 방향이 아닌 두 이웃 쌍(0-1, 1-2)의 평균 → (0-1 & 2-3), (1-2 & 3-0)
+      const side01 = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+      const side23 = Math.hypot(p3.x - p2.x, p3.y - p2.y);
+      const side12 = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const side30 = Math.hypot(p0.x - p3.x, p0.y - p3.y);
+      const w = ((side01 + side23) / 2) / GRID;
+      const h = ((side12 + side30) / 2) / GRID;
       const wi = Math.max(1, Math.round(w)) * GRID;
       const hi = Math.max(1, Math.round(h)) * GRID;
+      // 방향: 변 0-1의 각도를 그대로 사용해 원본 회전을 유지
+      const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+      const cosA = Math.cos(ang), sinA = Math.sin(ang);
+      // 로컬 축(u = 변 0-1 방향, v = 그에 수직)
+      const ux = cosA, uy = sinA;
+      const vx = -sinA, vy = cosA;
       const pts = [
-        { x: c.x - wi / 2, y: c.y - hi / 2 },
-        { x: c.x + wi / 2, y: c.y - hi / 2 },
-        { x: c.x + wi / 2, y: c.y + hi / 2 },
-        { x: c.x - wi / 2, y: c.y + hi / 2 },
+        { x: c.x - (wi / 2) * ux - (hi / 2) * vx, y: c.y - (wi / 2) * uy - (hi / 2) * vy },
+        { x: c.x + (wi / 2) * ux - (hi / 2) * vx, y: c.y + (wi / 2) * uy - (hi / 2) * vy },
+        { x: c.x + (wi / 2) * ux + (hi / 2) * vx, y: c.y + (wi / 2) * uy + (hi / 2) * vy },
+        { x: c.x - (wi / 2) * ux + (hi / 2) * vx, y: c.y - (wi / 2) * uy + (hi / 2) * vy },
       ];
       commitHistory();
       setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
@@ -2534,7 +2568,8 @@ export default function PolygonCanvas() {
       }
       commitHistory();
       const np = sel.points.filter((_, i) => i !== vi);
-      setShapes((all) => all.map((s) => (s.id === sel.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
+      // C3: 꼭짓점 개수가 바뀌면 정의 도형 특성 소실
+      setShapes((all) => all.map((s) => (s.id === sel.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined, defKind: undefined } : s)));
     }
   }
 
@@ -2547,6 +2582,10 @@ export default function PolygonCanvas() {
       color: s.color,
       ghosts: s.ghosts?.map((g) => g.map((p) => ({ ...p }))),
       edgeLabels: s.edgeLabels ? [...s.edgeLabels] : undefined,
+      defKind:
+        typeof s.defKind === "object" && s.defKind !== null && "regular" in s.defKind
+          ? { regular: s.defKind.regular }
+          : s.defKind,
     }));
     setFlash(`도형 ${sel.length}개를 복사했어요 (Ctrl+V로 붙여넣기) 📋`);
   }
@@ -2560,6 +2599,7 @@ export default function PolygonCanvas() {
       points: translatePoints(it.points, GRID, GRID),
       ghosts: it.ghosts?.map((g) => translatePoints(g, GRID, GRID)),
       edgeLabels: it.edgeLabels ? [...it.edgeLabels] : undefined,
+      defKind: it.defKind, // C2: 정의 도형 특성 유지(마름모/정n각형)
     }));
     setShapes((all) => [...all, ...pastes]);
     setSelectedIds(pastes.map((p) => p.id));
@@ -2862,10 +2902,19 @@ export default function PolygonCanvas() {
 
   // 저장 버튼 → 제출용 대화상자 열기(입력창 포커스가 편집 중 글상자를 자동 확정)
   function openSaveDialog() {
-    try {
-      const n = localStorage.getItem("studentName");
-      if (n && !saveName) setSaveName(n);
-    } catch {}
+    // 편집 중 글상자가 있다면 먼저 확정(내용을 손실하지 않도록)
+    if (editingTextId) {
+      const editing = texts.find((t) => t.id === editingTextId);
+      // 편집 중인 노트가 비어 있으면 빈 채로라도 유지(자동 삭제 방지)
+      if (editing && editing.text.length === 0) {
+        setTexts((all) =>
+          all.map((n) => (n.id === editingTextId ? { ...n, text: n.text || " " } : n))
+        );
+      }
+      setEditingTextId(null);
+    }
+    // U2: 공용 iPad에서 이전 학생 이름 자동 채움을 없앰(사생활 보호)
+    // 이름 필드는 매번 비운 상태로 열림. 원한다면 힌트만 title로.
     setSaveOpen(true);
   }
 

@@ -181,7 +181,17 @@ export function flipPoints(
 }
 
 export function cloneShapes(shapes: Shape[]): Shape[] {
-  return shapes.map((s) => ({ ...s, points: s.points.map((p) => ({ ...p })) }));
+  return shapes.map((s) => ({
+    ...s,
+    points: s.points.map((p) => ({ ...p })),
+    ghosts: s.ghosts?.map((g) => g.map((p) => ({ ...p }))),
+    edgeLabels: s.edgeLabels ? [...s.edgeLabels] : undefined,
+    // defKind는 원시값('rhombus') 또는 { regular: n } — 얕은 복사로 충분
+    defKind:
+      typeof s.defKind === "object" && s.defKind !== null && "regular" in s.defKind
+        ? { regular: s.defKind.regular }
+        : s.defKind,
+  }));
 }
 
 // ----- 프리셋 도형 (좌표는 픽셀 단위, 호출 측에서 GRID 곱해서 전달) -----

@@ -1043,6 +1043,10 @@ export default function PolygonCanvas() {
   const justCreatedTextRef = useRef(false);
   // 회전 중 각도 배지(돌린 양·스냅 여부·화면 위치)
   const [rotInfo, setRotInfo] = useState<{ deg: number; snapped: boolean; sx: number; sy: number } | null>(null);
+  // 제출용 저장 대화상자
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [saveTitle, setSaveTitle] = useState("");
   const [boardMode, setBoardMode] = useState(false);
   const [drawer, setDrawer] = useState<null | "shapes" | "scenarios">(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
@@ -2400,23 +2404,79 @@ export default function PolygonCanvas() {
     exitQuiz();
   }
 
-  function exportPNG() {
+  // 저장 버튼 → 제출용 대화상자 열기(입력창 포커스가 편집 중 글상자를 자동 확정)
+  function openSaveDialog() {
+    try {
+      const n = localStorage.getItem("studentName");
+      if (n && !saveName) setSaveName(n);
+    } catch {}
+    setSaveOpen(true);
+  }
+
+  // 이름·날짜 머리글을 붙인 '제출용' 이미지로 저장
+  function exportSubmission(name: string, title: string) {
     const c = canvasRef.current;
     if (!c) return;
     try {
-      const url = c.toDataURL("image/png");
-      const a = document.createElement("a");
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const H = Math.round(92 * dpr); // 머리글 높이
+      const off = document.createElement("canvas");
+      off.width = c.width;
+      off.height = c.height + H;
+      const g = off.getContext("2d");
+      if (!g) return;
+      // 배경 + 머리글 띠
+      g.fillStyle = "#ffffff";
+      g.fillRect(0, 0, off.width, off.height);
+      g.fillStyle = "#eff6ff";
+      g.fillRect(0, 0, off.width, H);
+      g.fillStyle = "#bfdbfe";
+      g.fillRect(0, H - Math.round(3 * dpr), off.width, Math.round(3 * dpr));
       const d = new Date();
-      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(
-        d.getHours()
-      ).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
-      a.href = url;
-      a.download = `도형학습-${stamp}.png`;
-      a.click();
-      setFlash("그림과 설명 글상자를 PNG 이미지로 저장했어요. 제출용으로 사용하세요! 📷");
+      const dateStr = `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}.`;
+      const pad = Math.round(26 * dpr);
+      g.textBaseline = "middle";
+      g.textAlign = "left";
+      g.fillStyle = "#1e3a8a";
+      g.font = `800 ${Math.round(30 * dpr)}px sans-serif`;
+      g.fillText(name.trim() ? `이름: ${name.trim()}` : "이름:", pad, Math.round(H * 0.36));
+      g.fillStyle = "#475569";
+      g.font = `600 ${Math.round(20 * dpr)}px sans-serif`;
+      g.fillText(title.trim() ? `${title.trim()}   ·   ${dateStr}` : dateStr, pad, Math.round(H * 0.72));
+      g.textAlign = "right";
+      g.fillStyle = "#60a5fa";
+      g.font = `800 ${Math.round(19 * dpr)}px sans-serif`;
+      g.fillText("임선생의 도형학습", off.width - pad, Math.round(H * 0.5));
+      g.textAlign = "left";
+      // 캔버스 스냅샷을 머리글 아래에 합성
+      const img = new Image();
+      img.onload = () => {
+        g.drawImage(img, 0, H);
+        const url = off.toDataURL("image/png");
+        const a = document.createElement("a");
+        const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(
+          d.getHours()
+        ).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+        const safe = (name.trim() || "도형학습").replace(/[\\/:*?"<>|\s]+/g, "_");
+        a.href = url;
+        a.download = `${safe}-${stamp}.png`;
+        a.click();
+        setFlash("제출용 이미지로 저장했어요! 이름·날짜와 설명 글상자가 함께 담겼어요. 📷");
+      };
+      img.onerror = () => setFlash("이미지 저장에 실패했어요. 다시 시도해 주세요.");
+      img.src = c.toDataURL("image/png");
     } catch {
       setFlash("이미지 저장에 실패했어요. 다시 시도해 주세요.");
     }
+  }
+
+  function confirmSave() {
+    try {
+      localStorage.setItem("studentName", saveName.trim());
+    } catch {}
+    setSaveOpen(false);
+    // 편집 중이던 글상자가 캔버스에 반영된 뒤 캡처(두 번의 rAF)
+    requestAnimationFrame(() => requestAnimationFrame(() => exportSubmission(saveName, saveTitle)));
   }
 
   // ----- 캔버스 렌더링 -----
@@ -3203,6 +3263,43 @@ export default function PolygonCanvas() {
         </div>
       )}
 
+      {/* 제출용 저장 대화상자 */}
+      {saveOpen && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-900/30 p-4 backdrop-blur-sm" onClick={() => setSaveOpen(false)}>
+          <div className="w-[min(92vw,380px)] rounded-2xl border-2 border-sky-200 bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-1 text-base font-extrabold text-sky-700">📤 제출하기 (이미지로 저장)</div>
+            <div className="mb-3 text-xs leading-relaxed text-slate-500">도형과 <b>글상자 설명</b>이 이미지 한 장에 담겨요. 이름을 적으면 위쪽에 함께 저장돼요.</div>
+            <label className="mb-1 block text-xs font-bold text-slate-600">이름</label>
+            <input
+              autoFocus
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") confirmSave();
+              }}
+              placeholder="예: 5학년 3반 임하준"
+              className="mb-3 w-full rounded-lg border-2 border-slate-300 px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:border-sky-500"
+            />
+            <label className="mb-1 block text-xs font-bold text-slate-600">제목·메모 <span className="font-normal text-slate-400">(선택)</span></label>
+            <input
+              value={saveTitle}
+              onChange={(e) => setSaveTitle(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") confirmSave();
+              }}
+              placeholder="예: 사다리꼴을 평행사변형으로 바꾸기"
+              className="mb-4 w-full rounded-lg border-2 border-slate-300 px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:border-sky-500"
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setSaveOpen(false)} className="rounded-lg px-3 py-2 text-sm font-bold text-slate-500 hover:bg-slate-100">취소</button>
+              <button onClick={confirmSave} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white shadow hover:bg-sky-700">💾 저장하기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 빈 화면 안내 */}
       {shapes.length === 0 && draft.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -3300,11 +3397,11 @@ export default function PolygonCanvas() {
               </IconBtn>
               <Chip active={boardMode} onClick={() => setBoardMode(true)} icon="📺" label="전자칠판" tone="sky" />
               <button
-                onClick={exportPNG}
+                onClick={openSaveDialog}
                 className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 sm:px-2.5"
-                title="현재 화면을 PNG 이미지로 저장"
+                title="이름을 넣어 제출용 이미지로 저장"
               >
-                📷 <span className="hidden lg:inline">저장</span>
+                📷 <span className="hidden lg:inline">저장·제출</span>
               </button>
               <button
                 onClick={clearAll}

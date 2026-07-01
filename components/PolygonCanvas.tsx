@@ -1100,6 +1100,17 @@ export default function PolygonCanvas() {
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
   const [snapStep, setSnapStep] = useState<0 | 0.1 | 0.5 | 1>(0.5);
+  // 자연수 모드: 모든 꼭짓점을 정수 cm(모눈 교차점)에 강제 스냅
+  const [integerMode, setIntegerMode] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("integerMode") === "1") setIntegerMode(true);
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("integerMode", integerMode ? "1" : "0"); } catch {}
+    if (integerMode && snapStep !== 1) setSnapStep(1);
+  }, [integerMode, snapStep]);
   const [magnetic, setMagnetic] = useState(true);
   const [draft, setDraft] = useState<Point[]>([]);
   const [hoverPt, setHoverPt] = useState<Point | null>(null);
@@ -1847,8 +1858,9 @@ export default function PolygonCanvas() {
       const curAbs = Math.atan2(p.y - dm.center.y, p.x - dm.center.x);
       const rawAng = curAbs - dm.startAngle;
       // 절대 방향 기준 스냅 → 시작 각도와 상관없이 30·45·60·90°처럼 반듯하게 딱 맞춰짐
-      const SNAP = Math.PI / 12; // 15° 간격(15·30·45·60·75·90…)
-      const TOL = e.shiftKey ? 0 : (Math.PI / 180) * 7; // Shift 누르면 자석 끔(자유 회전)
+      // 자연수 모드: 90° 단위로만 회전(정수 꼭짓점 보존). 그 외 15° 간격 자석.
+      const SNAP = integerMode ? Math.PI / 2 : Math.PI / 12;
+      const TOL = e.shiftKey && !integerMode ? 0 : integerMode ? Math.PI : (Math.PI / 180) * 7;
       const snappedAbs = Math.round(curAbs / SNAP) * SNAP;
       const isSnap = TOL > 0 && Math.abs(curAbs - snappedAbs) < TOL;
       const ang = isSnap ? snappedAbs - dm.startAngle : rawAng;
@@ -1900,6 +1912,11 @@ export default function PolygonCanvas() {
         : 0;
       const Dx = dx0 + tdx;
       const Dy = dy0 + tdy;
+      // 자연수 모드: 모든 꼭짓점을 정수 cm(모눈 교차점)에 개별 반올림
+      const roundIfInt = (q: Point): Point =>
+        integerMode && !e.shiftKey
+          ? { x: Math.round((q.x + Dx) / GRID) * GRID, y: Math.round((q.y + Dy) / GRID) * GRID }
+          : { x: q.x + Dx, y: q.y + Dy };
       // 선택 그룹 전체를 같은 양만큼 이동
       const grp = dm.group ?? [{ id: dm.shapeId, startPoints: dm.startPoints, startGhosts: dm.startGhosts }];
       const startMap = new Map(grp.map((g) => [g.id, g]));
@@ -1909,8 +1926,8 @@ export default function PolygonCanvas() {
           if (!st) return s;
           return {
             ...s,
-            points: st.startPoints.map((q) => ({ x: q.x + Dx, y: q.y + Dy })),
-            ghosts: st.startGhosts?.map((g) => g.map((q) => ({ x: q.x + Dx, y: q.y + Dy }))),
+            points: st.startPoints.map(roundIfInt),
+            ghosts: st.startGhosts?.map((g) => g.map(roundIfInt)),
           };
         })
       );
@@ -1929,6 +1946,9 @@ export default function PolygonCanvas() {
             snapped = v;
           } else if (e.shiftKey) {
             snapped = raw;
+          } else if (integerMode) {
+            // 자연수 모드: 무조건 정수 cm(모눈 교차점)에만
+            snapped = { x: Math.round(raw.x / GRID) * GRID, y: Math.round(raw.y / GRID) * GRID };
           } else {
             const n = s.points.length;
             const P = s.points[(dm.vertexIndex - 1 + n) % n];
@@ -3610,16 +3630,24 @@ export default function PolygonCanvas() {
                   <button
                     key={s}
                     onClick={() => setSnapStep(s)}
-                    title={s === 0 ? "격자 맞춤 끄기 (자유롭게 이동)" : `${s}칸 단위로 딱 맞게 이동`}
+                    disabled={integerMode && s !== 1}
+                    title={
+                      integerMode && s !== 1
+                        ? "자연수 모드에서는 1칸으로 고정돼요"
+                        : s === 0
+                        ? "격자 맞춤 끄기 (자유롭게 이동)"
+                        : `${s}칸 단위로 딱 맞게 이동`
+                    }
                     className={`rounded-md px-1.5 py-1 text-xs font-semibold transition ${
                       snapStep === s ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-800"
-                    }`}
+                    } ${integerMode && s !== 1 ? "opacity-40" : ""}`}
                   >
                     {s === 0 ? "끄기" : s}
                   </button>
                 ))}
               </div>
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
+              <Chip active={integerMode} onClick={() => setIntegerMode(!integerMode)} icon="🔒" label="자연수" title="자연수 모드: 모든 꼭짓점이 모눈 교차점(정수 cm)에만 놓이도록 강제. 회전은 90° 단위, 격자 1cm 고정." />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />

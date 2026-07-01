@@ -474,14 +474,22 @@ export function reconstructDefShape(
   kind: NonNullable<Shape["defKind"]>,
   pts: Point[],
   gridPx: number,
-  anchor?: number // 잡은 꼭짓점 인덱스: 그 꼭짓점의 위치를 기준으로 크기·방향 결정
+  anchor?: number, // 잡은 꼭짓점 인덱스: 그 꼭짓점의 위치를 기준으로 크기·방향 결정
+  fixedCenter?: Point // 지정 시 이 중심을 고정으로 사용(드래그 중 중심이 밀리는 버그 방지)
 ): Point[] | null {
   const n = pts.length;
   if (n < 3) return null;
-  // 앵커가 있으면 나머지 꼭짓점들의 중심을 사용(앵커 이동이 즉시 반영됨)
-  const centerPts = typeof anchor === "number" ? pts.filter((_, i) => i !== anchor) : pts;
-  const cx = centerPts.reduce((s, p) => s + p.x, 0) / centerPts.length;
-  const cy = centerPts.reduce((s, p) => s + p.y, 0) / centerPts.length;
+  // 우선순위: 명시 중심 → 앵커 있으면 비앵커 평균 → 없으면 전체 평균
+  let cx: number;
+  let cy: number;
+  if (fixedCenter) {
+    cx = fixedCenter.x;
+    cy = fixedCenter.y;
+  } else {
+    const centerPts = typeof anchor === "number" ? pts.filter((_, i) => i !== anchor) : pts;
+    cx = centerPts.reduce((s, p) => s + p.x, 0) / centerPts.length;
+    cy = centerPts.reduce((s, p) => s + p.y, 0) / centerPts.length;
+  }
   if (kind === "rhombus" && n === 4) {
     // 두 대각선(짝수 인덱스 vs 홀수 인덱스가 마주보는 쌍)의 방향·길이를 뽑아 정수 변 재구성.
     // 마름모 꼭짓점 순서: 대각선 두 개가 pts[0]↔pts[2], pts[1]↔pts[3]

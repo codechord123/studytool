@@ -103,7 +103,7 @@ type DragMode =
       startGhosts?: Point[][];
       group?: { id: string; startPoints: Point[]; startGhosts?: Point[][] }[];
     }
-  | { type: "vertex"; shapeId: string; vertexIndex: number }
+  | { type: "vertex"; shapeId: string; vertexIndex: number; startCenter?: Point }
   | {
       type: "rotate";
       shapeId: string;
@@ -1733,7 +1733,9 @@ export default function PolygonCanvas() {
       const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 14 * k);
       if (vi !== -1) {
         commitHistory();
-        dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi };
+        // 정의 도형(마름모·정n각형)은 드래그 시작 시점의 중심을 저장 → 재구성 때 중심이 안 밀림
+        const startCenter = selected.defKind ? polygonCentroid(selected.points) : undefined;
+        dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi, startCenter };
         // 꾹 누르기(0.6초, 거의 안 움직였을 때) → 꼭짓점 삭제
         if (holdVertexRef.current) window.clearTimeout(holdVertexRef.current.timer);
         const shapeId = selected.id;
@@ -1764,7 +1766,7 @@ export default function PolygonCanvas() {
             const np = [...selected.points];
             np.splice(i + 1, 0, { ...m });
             setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
-            dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: i + 1 };
+            dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: i + 1, startCenter: undefined };
             // 0.6초간 안 움직이면 → 방금 추가한 점 취소 후 등변화 (변을 꾹 눌러 모든 변 같게)
             if (holdEdgeRef.current) window.clearTimeout(holdEdgeRef.current.timer);
             const shapeId = selected.id;
@@ -2048,7 +2050,7 @@ export default function PolygonCanvas() {
           // 정의 기반 도형(마름모·정n각형)은 정의 유지 → 한 변을 자연수로 스냅해
           //   나머지 변도 자동으로 자연수 cm가 되도록 재구성
           if (integerMode && s.defKind && !e.shiftKey) {
-            const rebuilt = reconstructDefShape(s.defKind, newPoints, GRID, dm.vertexIndex);
+            const rebuilt = reconstructDefShape(s.defKind, newPoints, GRID, dm.vertexIndex, dm.startCenter);
             if (rebuilt) newPoints = rebuilt;
           }
           return {

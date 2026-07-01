@@ -356,7 +356,33 @@ function snapVertexNice(raw: Point, P: Point, N: Point, tolWorld: number): Point
   const cN = single(N, sN, okN);
   const dist = (p: Point | null) => (p ? Math.hypot(p.x - raw.x, p.y - raw.y) : Infinity);
   if (cP && dist(cP) <= dist(cN)) return cP;
-  return cN;
+  if (cN) return cN;
+  // 3) 두 이웃 모두에게 정수 cm 거리(그리고 격자 위)인 자리를 탐색 → 마름모·정삼각형 등 만들 때 유용
+  //    포인터 주변 반칸 격자에서 두 거리가 모두 반정수(0.5cm 단위)에 아주 가까운 자리를 고름.
+  const HALF = GRID / 2;
+  const cxg = Math.round(raw.x / HALF) * HALF;
+  const cyg = Math.round(raw.y / HALF) * HALF;
+  const R = 3; // ±3 * 반칸 = ±1.5cm 반경 검색
+  let best: { p: Point; score: number } | null = null;
+  const isNice = (len: number) => {
+    const halfN = Math.round(len / HALF);
+    return { ok: Math.abs(len - halfN * HALF) < 0.05 * GRID, err: Math.abs(len - halfN * HALF) };
+  };
+  for (let dx = -R; dx <= R; dx++) {
+    for (let dy = -R; dy <= R; dy++) {
+      const q = { x: cxg + dx * HALF, y: cyg + dy * HALF };
+      const lP = Math.hypot(q.x - P.x, q.y - P.y);
+      const lN = Math.hypot(q.x - N.x, q.y - N.y);
+      const aP = isNice(lP);
+      const aN = isNice(lN);
+      if (!aP.ok || !aN.ok) continue;
+      const pull = Math.hypot(q.x - raw.x, q.y - raw.y);
+      if (pull > tolWorld * 2) continue;
+      const score = pull + (aP.err + aN.err) * 20;
+      if (!best || score < best.score) best = { p: q, score };
+    }
+  }
+  return best ? best.p : null;
 }
 
 const PRESETS: Preset[] = [
@@ -366,7 +392,7 @@ const PRESETS: Preset[] = [
   { id: "tri", label: "삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeTriangle(0, 0, 6 * GRID, 4 * GRID) },
   { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
   { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID) },
-  { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 6 * GRID, 4 * GRID) },
+  { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 8 * GRID, 6 * GRID) },
   { id: "reg3", label: "정삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRegularSide(3, 6) },
   { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegularSide(5, 4) },
   { id: "hex", label: "정육각형", formula: "삼각형 6개로 나누기", build: () => makeHexagon(0, 0, 3 * GRID) },

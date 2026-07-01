@@ -311,6 +311,52 @@ function makeRegular(n: number, R: number): Point[] {
   }
   return pts;
 }
+// 한 변 길이를 '정수 cm(sideUnits칸)'로 딱 떨어지게 만드는 정n각형 → 변 라벨이 '약' 없이 정확
+function makeRegularSide(n: number, sideUnits: number): Point[] {
+  const R = (sideUnits * GRID) / (2 * Math.sin(Math.PI / n));
+  return makeRegular(n, R);
+}
+
+// 꼭짓점을 옮길 때 '정각(15°배수)·정수 변길이'에 자동으로 딱 맞춰주는 스냅.
+// P·N = 옮기는 꼭짓점의 두 이웃(고정). 맞을 게 없으면 null.
+function snapVertexNice(raw: Point, P: Point, N: Point, tolWorld: number): Point | null {
+  const STEP = Math.PI / 12; // 15°
+  const TOLA = (Math.PI / 180) * 8; // 변 방향 허용오차
+  const angDiff = (a: number, b: number) => {
+    let d = Math.abs(a - b) % (2 * Math.PI);
+    if (d > Math.PI) d = 2 * Math.PI - d;
+    return d;
+  };
+  const dP = Math.atan2(raw.y - P.y, raw.x - P.x);
+  const dN = Math.atan2(raw.y - N.y, raw.x - N.x);
+  const sP = Math.round(dP / STEP) * STEP;
+  const sN = Math.round(dN / STEP) * STEP;
+  const okP = angDiff(dP, sP) < TOLA;
+  const okN = angDiff(dN, sN) < TOLA;
+  // 1) 두 변 방향이 모두 예쁜 각 → 두 반직선의 교점(꼭짓점 내각·양쪽 각이 모두 깔끔)
+  if (okP && okN) {
+    const c1 = Math.cos(sP), s1 = Math.sin(sP), c2 = Math.cos(sN), s2 = Math.sin(sN);
+    const den = c1 * s2 - s1 * c2;
+    if (Math.abs(den) > 1e-6) {
+      const t = ((N.x - P.x) * s2 - (N.y - P.y) * c2) / den;
+      const I = { x: P.x + t * c1, y: P.y + t * s1 };
+      if (Math.hypot(I.x - raw.x, I.y - raw.y) < tolWorld * 2.2) return I;
+    }
+  }
+  // 2) 한 변만 예쁜 방향 → 그 방향 위에 두고, 길이는 정수 칸에 가까우면 스냅
+  const single = (pivot: Point, dir: number, ok: boolean): Point | null => {
+    if (!ok) return null;
+    let len = Math.hypot(raw.x - pivot.x, raw.y - pivot.y);
+    const gi = Math.round(len / GRID) * GRID;
+    if (Math.abs(len - gi) < tolWorld) len = gi;
+    return { x: pivot.x + len * Math.cos(dir), y: pivot.y + len * Math.sin(dir) };
+  };
+  const cP = single(P, sP, okP);
+  const cN = single(N, sN, okN);
+  const dist = (p: Point | null) => (p ? Math.hypot(p.x - raw.x, p.y - raw.y) : Infinity);
+  if (cP && dist(cP) <= dist(cN)) return cP;
+  return cN;
+}
 
 const PRESETS: Preset[] = [
   { id: "square", label: "정사각형", formula: "한 변 × 한 변", build: () => makeRectangle(0, 0, 4 * GRID, 4 * GRID) },
@@ -320,12 +366,12 @@ const PRESETS: Preset[] = [
   { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
   { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID) },
   { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 6 * GRID, 4 * GRID) },
-  { id: "reg3", label: "정삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRegular(3, 3 * GRID) },
-  { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegular(5, 3 * GRID) },
+  { id: "reg3", label: "정삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRegularSide(3, 6) },
+  { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegularSide(5, 4) },
   { id: "hex", label: "정육각형", formula: "삼각형 6개로 나누기", build: () => makeHexagon(0, 0, 3 * GRID) },
-  { id: "reg8", label: "정팔각형", formula: "삼각형 8개로 나누기", build: () => makeRegular(8, 3 * GRID) },
-  { id: "reg10", label: "정십각형", formula: "삼각형 10개로 나누기", build: () => makeRegular(10, 3 * GRID) },
-  { id: "reg12", label: "정십이각형", formula: "삼각형 12개로 나누기", build: () => makeRegular(12, 3 * GRID) },
+  { id: "reg8", label: "정팔각형", formula: "삼각형 8개로 나누기", build: () => makeRegularSide(8, 3) },
+  { id: "reg10", label: "정십각형", formula: "삼각형 10개로 나누기", build: () => makeRegularSide(10, 2) },
+  { id: "reg12", label: "정십이각형", formula: "삼각형 12개로 나누기", build: () => makeRegularSide(12, 2) },
   { id: "lshape", label: "ㄴ자 모양", formula: "두 직사각형 합", build: () => makeLShape(0, 0, 6 * GRID, 4 * GRID, 2 * GRID, 2 * GRID) },
   { id: "cross", label: "십자 모양", formula: "정사각형 5개", build: () => makeCross(0, 0, 2 * GRID, 2 * GRID) },
 ];
@@ -1026,7 +1072,7 @@ export default function PolygonCanvas() {
   const [labelScale, setLabelScale] = useState(1); // 변·넓이 숫자 라벨 크기 배율 (수업용)
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
-  const [snapStep, setSnapStep] = useState<0 | 0.2 | 0.5 | 1>(0.5);
+  const [snapStep, setSnapStep] = useState<0 | 0.1 | 0.5 | 1>(0.5);
   const [magnetic, setMagnetic] = useState(true);
   const [draft, setDraft] = useState<Point[]>([]);
   const [hoverPt, setHoverPt] = useState<Point | null>(null);
@@ -1736,9 +1782,22 @@ export default function PolygonCanvas() {
       all.map((s) => {
         if (s.id !== dm.shapeId) return s;
         if (dm.type === "vertex") {
-          // 자석 우선: 다른 도형 꼭짓점에 먼저 붙이고, 없으면 격자 스냅
+          // 자석 우선: 다른 도형 꼭짓점에 먼저 붙이고,
+          // 없으면 정각(15°배수)·정수 변길이 스냅 → 그래도 없으면 격자 스냅.
+          // Shift를 누르면 모든 스냅을 끄고 자유롭게 이동.
           const v = vertexSnap(raw, dm.shapeId, 16 * k);
-          const snapped = v.x === raw.x && v.y === raw.y ? gridSnap(raw) : v;
+          let snapped: Point;
+          if (v.x !== raw.x || v.y !== raw.y) {
+            snapped = v;
+          } else if (e.shiftKey) {
+            snapped = raw;
+          } else {
+            const n = s.points.length;
+            const P = s.points[(dm.vertexIndex - 1 + n) % n];
+            const N = s.points[(dm.vertexIndex + 1) % n];
+            const nice = snapVertexNice(raw, P, N, 12 * k);
+            snapped = nice ?? gridSnap(raw);
+          }
           return {
             ...s,
             points: s.points.map((q, i) => (i === dm.vertexIndex ? snapped : q)),
@@ -1995,6 +2054,44 @@ export default function PolygonCanvas() {
     setShapes((all) => all.filter((s) => !ids.has(s.id)));
     setSelectedIds([]);
   }
+
+  // 선택한 도형을 '정다각형'으로 반듯하게 맞추기 — 변 길이·내각을 딱 떨어지게
+  function regularizeSelected() {
+    const sel = shapes.filter((s) => selectedIds.includes(s.id));
+    if (sel.length !== 1) return;
+    const s = sel[0];
+    const n = s.points.length;
+    if (n < 3) return;
+    const c = polygonCentroid(s.points);
+    const avgR = s.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / n;
+    const curSide = 2 * avgR * Math.sin(Math.PI / n);
+    const sideUnits = Math.max(1, Math.round(curSide / GRID));
+    const R = (sideUnits * GRID) / (2 * Math.sin(Math.PI / n));
+    const a0 = Math.atan2(s.points[0].y - c.y, s.points[0].x - c.x); // 회전 유지
+    const pts: Point[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i * 2 * Math.PI) / n;
+      pts.push({ x: c.x + R * Math.cos(a), y: c.y + R * Math.sin(a) });
+    }
+    commitHistory();
+    setShapes((all) => all.map((sh) => (sh.id === s.id ? { ...sh, points: pts, ghosts: undefined, edgeLabels: undefined } : sh)));
+    const interior = Math.round(((n - 2) * 180) / n);
+    setFlash(`정다각형으로 반듯하게 맞췄어요! 한 변 ${sideUnits}cm · 내각 ${interior}°`);
+  }
+
+  // 단일 선택 도형이 '정다각형에 가까운지'(변 길이가 거의 같은지) — 맞추기 버튼 노출 조건
+  const regularizable = (() => {
+    if (selectedIds.length !== 1) return false;
+    const s = shapes.find((x) => x.id === selectedIds[0]);
+    if (!s || s.points.length < 3) return false;
+    const lens = s.points.map((p, i) => {
+      const q = s.points[(i + 1) % s.points.length];
+      return Math.hypot(p.x - q.x, p.y - q.y);
+    });
+    const mn = Math.min(...lens);
+    const mx = Math.max(...lens);
+    return mn > 0 && mx / mn < 1.7;
+  })();
 
   // 선택한 여러 도형을 한 번에 합치기 (맞붙은 변을 찾아 반복 병합)
   function mergeSelected(): boolean {
@@ -3349,7 +3446,7 @@ export default function PolygonCanvas() {
             <div className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
               <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="모눈 칸 간격: 도형을 움직일 때 이 간격에 맞춰 딱 맞게 붙어요">격자</span>
               <div className="flex gap-0.5 rounded-lg bg-slate-100 p-0.5">
-                {([1, 0.5, 0.2, 0] as const).map((s) => (
+                {([1, 0.5, 0.1, 0] as const).map((s) => (
                   <button
                     key={s}
                     onClick={() => setSnapStep(s)}
@@ -3549,6 +3646,8 @@ export default function PolygonCanvas() {
           inspecting={inspectId === selected.id}
           onToggleInspect={toggleInspect}
           onSplit={splitSelected}
+          canRegularize={regularizable}
+          onRegularize={regularizeSelected}
           dragRef={ctxDrag.ref}
           dragHandle={ctxDrag.handle}
           pos={ctxPos}
@@ -3903,6 +4002,8 @@ function ContextBar({
   inspecting,
   onToggleInspect,
   onSplit,
+  canRegularize,
+  onRegularize,
   dragRef,
   dragHandle,
   pos,
@@ -3919,6 +4020,8 @@ function ContextBar({
   inspecting: boolean;
   onToggleInspect: () => void;
   onSplit: () => void;
+  canRegularize: boolean;
+  onRegularize: () => void;
   dragRef: React.RefObject<HTMLDivElement>;
   dragHandle: object;
   pos: XY | null;
@@ -3951,6 +4054,17 @@ function ContextBar({
               title="원본 조각들로 다시 분리하기"
             >
               ✂️ 분리
+            </button>
+          </MiniGroup>
+        )}
+        {canRegularize && (
+          <MiniGroup label="맞추기">
+            <button
+              className="grid h-9 place-items-center rounded-lg border border-sky-200 bg-sky-50 px-2 text-sm font-semibold text-sky-700 hover:bg-sky-100"
+              onClick={onRegularize}
+              title="변 길이와 내각이 딱 떨어지는 정다각형으로 반듯하게 맞춰요"
+            >
+              🔷 반듯하게
             </button>
           </MiniGroup>
         )}

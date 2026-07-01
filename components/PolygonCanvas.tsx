@@ -2087,7 +2087,10 @@ export default function PolygonCanvas() {
         all.map((s) => {
           const st = startMap.get(s.id);
           if (!st) return s;
-          const preserveDef = !!s.defKind; // 정의 기반 도형은 정의 유지(개별 반올림 X)
+          // 정의 기반 도형(defKind) + 곡선형(원 조각 등, 꼭짓점이 아주 많음)은
+          //   개별 꼭짓점 반올림을 하지 않고 강체(rigid)로 이동 — 잡은 꼭짓점만 격자에 맞춤.
+          //   (원을 자른 반원·부채꼴을 옮길 때 매끄러운 호가 톱니로 깨지던 문제 방지)
+          const preserveDef = !!s.defKind || s.points.length >= 20;
           return {
             ...s,
             points: st.startPoints.map((q) => roundIfInt(q, preserveDef)),

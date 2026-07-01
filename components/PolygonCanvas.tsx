@@ -28,7 +28,8 @@ import {
   uid,
 } from "@/lib/geometry";
 
-type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide";
+type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide" | "text";
+type TextNote = { id: string; x: number; y: number; text: string; color: string };
 
 // 1cm = 80 world px. 카메라(scale)로 화면 크기를 자유 조절한다.
 const GRID = 80;
@@ -113,7 +114,8 @@ type DragMode =
   | { type: "guide"; start: Point; current: Point }
   // 가이드/측정선 편집
   | { type: "auxEnd"; kind: "guide" | "measure"; id: string; end: "a" | "b" }
-  | { type: "auxMove"; kind: "guide" | "measure"; id: string; startA: Point; startB: Point; startPointer: Point };
+  | { type: "auxMove"; kind: "guide" | "measure"; id: string; startA: Point; startB: Point; startPointer: Point }
+  | { type: "textMove"; id: string; startPointer: Point; startX: number; startY: number };
 
 // 점 p에서 선분 a-b까지의 최단 거리
 function distToSegment(p: Point, a: Point, b: Point): number {
@@ -941,6 +943,7 @@ const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
   { id: "merge", icon: "🔗", label: "합치기", key: "F" },
   { id: "measure", icon: "📏", label: "길이재기", key: "Q" },
   { id: "guide", icon: "📐", label: "가이드", key: "W" },
+  { id: "text", icon: "📝", label: "글상자", key: "T" },
   { id: "delete", icon: "🗑️", label: "삭제", key: "E" },
 ];
 
@@ -954,7 +957,8 @@ const TOOL_HINT: Record<Tool, string> = {
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요.",
   measure: "두 점을 드래그해 길이를 재요. 끝점·선을 잡아 옮기고, Delete로 지울 수 있어요.",
   guide: "점선 보조선을 그어요. 끝점·선을 잡아 옮기고 조절, Delete로 지우기. (자르기 전 ‘여기서 자를까?’)",
-  delete: "지우고 싶은 도형을 누르세요.",
+  text: "빈 곳을 눌러 글상자를 만들고 설명을 써요. 글상자를 눌러 수정·드래그로 이동. 저장하면 그림과 함께 제출돼요!",
+  delete: "지우고 싶은 도형이나 글상자를 누르세요.",
 };
 
 // =============================================================
@@ -1030,6 +1034,13 @@ export default function PolygonCanvas() {
   const [flash, setFlash] = useState<string | null>(null);
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [guides, setGuides] = useState<Guide[]>([]);
+  // 글상자(설명 메모)
+  const [texts, setTexts] = useState<TextNote[]>([]);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [activeTextId, setActiveTextId] = useState<string | null>(null);
+  const textBoxRef = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map());
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const justCreatedTextRef = useRef(false);
   const [boardMode, setBoardMode] = useState(false);
   const [drawer, setDrawer] = useState<null | "shapes" | "scenarios">(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
@@ -1310,6 +1321,48 @@ export default function PolygonCanvas() {
     return null;
   }
 
+  // 월드 좌표 p에 있는 글상자 id (렌더 시 저장한 bbox 사용)
+  function textAt(p: Point): string | null {
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const b = textBoxRef.current.get(texts[i].id);
+      if (b && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return texts[i].id;
+    }
+    return null;
+  }
+  function createTextAt(p: Point) {
+    const id = uid();
+    setTexts((t) => [...t, { id, x: p.x, y: p.y, text: "", color: "#78350f" }]);
+    setActiveTextId(id);
+    setEditingTextId(id);
+    // 포인터 이벤트의 기본 포커스 동작과 경쟁하지 않도록, 잠깐 blur를 무시
+    justCreatedTextRef.current = true;
+    requestAnimationFrame(() => {
+      textAreaRef.current?.focus();
+      requestAnimationFrame(() => {
+        justCreatedTextRef.current = false;
+      });
+    });
+  }
+  function updateText(id: string, text: string) {
+    setTexts((t) => t.map((n) => (n.id === id ? { ...n, text } : n)));
+  }
+  function finishEditingText() {
+    // 방금 생성돼 아직 포커스가 안정되지 않은 상태에서 온 blur는 무시(자동 포커스 경쟁 방지)
+    if (justCreatedTextRef.current) {
+      textAreaRef.current?.focus();
+      return;
+    }
+    // 빈 글상자는 제거
+    setTexts((t) => t.filter((n) => n.id !== editingTextId || n.text.trim().length > 0));
+    setEditingTextId(null);
+  }
+  function deleteText(id: string) {
+    setTexts((t) => t.filter((n) => n.id !== id));
+    textBoxRef.current.delete(id);
+    if (activeTextId === id) setActiveTextId(null);
+    if (editingTextId === id) setEditingTextId(null);
+  }
+
   function rotationHandle(s: Shape, k: number): Point {
     const c = polygonCentroid(s.points);
     const minY = Math.min(...s.points.map((q) => q.y));
@@ -1377,7 +1430,25 @@ export default function PolygonCanvas() {
       return;
     }
 
+    if (tool === "text") {
+      const hitText = textAt(raw);
+      if (hitText) {
+        setActiveTextId(hitText);
+        setEditingTextId(hitText);
+      } else {
+        commitHistory();
+        createTextAt(p);
+      }
+      return;
+    }
+
     if (tool === "delete") {
+      const hitText = textAt(raw);
+      if (hitText) {
+        commitHistory();
+        deleteText(hitText);
+        return;
+      }
       const target = topShapeAt(raw);
       if (target) {
         commitHistory();
@@ -1452,6 +1523,19 @@ export default function PolygonCanvas() {
       return;
     }
 
+    // 선택 도구에서 글상자를 잡으면 이동 (도형보다 위)
+    {
+      const ht = textAt(raw);
+      if (ht) {
+        const note = texts.find((n) => n.id === ht)!;
+        setActiveTextId(ht);
+        setSelectedIds([]);
+        commitHistory();
+        dragRef.current = { type: "textMove", id: ht, startPointer: raw, startX: note.x, startY: note.y };
+        return;
+      }
+    }
+
     // select — 단일 선택일 때만 회전/꼭짓점/점추가 편집 허용
     if (selected && selectedIds.length === 1) {
       const handle = rotationHandle(selected, k);
@@ -1498,6 +1582,7 @@ export default function PolygonCanvas() {
         // Ctrl/Shift+클릭 → 선택 토글(추가/제외), 이동 없음
         toggleSelect(hit.id);
         setActiveAux(null);
+        setActiveTextId(null);
         dragRef.current = { type: "none" };
         return;
       }
@@ -1505,6 +1590,7 @@ export default function PolygonCanvas() {
       const inGroup = selectedIds.includes(hit.id) && selectedIds.length > 1;
       if (!inGroup) setSelectedId(hit.id);
       setActiveAux(null);
+      setActiveTextId(null);
       commitHistory();
       const groupIds = inGroup ? selectedIds : [hit.id];
       const group = groupIds
@@ -1577,6 +1663,12 @@ export default function PolygonCanvas() {
       else setGuides((g) => g.map(patch));
       return;
     }
+    if (dm.type === "textMove") {
+      const dx = raw.x - dm.startPointer.x;
+      const dy = raw.y - dm.startPointer.y;
+      setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, x: dm.startX + dx, y: dm.startY + dy } : n)));
+      return;
+    }
     if (dm.type === "translate") {
       // 이동은 연속(raw) 좌표 기준 — 격자 스냅으로 양자화하지 않음
       const dx0 = raw.x - dm.startPointer.x;
@@ -1646,7 +1738,10 @@ export default function PolygonCanvas() {
     const dm = dragRef.current;
     const k = 1 / camRef.current.scale;
     if (dm.type === "pan") {
-      if (dm.maybeDeselect && !dm.moved) setSelectedId(null);
+      if (dm.maybeDeselect && !dm.moved) {
+        setSelectedId(null);
+        setActiveTextId(null);
+      }
     } else if (dm.type === "cut") {
       const { sx, sy } = localXY(e);
       const b = vertexSnap(gridSnap(toWorld(sx, sy)), undefined, 16 * k);
@@ -1816,6 +1911,9 @@ export default function PolygonCanvas() {
           const ids = new Set(selectedIds);
           setShapes((all) => all.filter((s) => !ids.has(s.id)));
           setSelectedIds([]);
+        } else if (activeTextId) {
+          commitHistory();
+          deleteText(activeTextId);
         } else if (activeAux) {
           commitHistory();
           if (activeAux.kind === "measure") setMeasurements((m) => m.filter((s) => s.id !== activeAux.id));
@@ -1835,7 +1933,7 @@ export default function PolygonCanvas() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, draft.length, selectedIds, activeAux, snapStep, undo, redo, commitHistory, zoomCenter, setTool, transformSelected]);
+  }, [tool, draft.length, selectedIds, activeAux, activeTextId, snapStep, undo, redo, commitHistory, zoomCenter, setTool, transformSelected]);
 
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
     if (!selectedIds.length) return;
@@ -1877,6 +1975,18 @@ export default function PolygonCanvas() {
     const ids = new Set(selectedIds);
     setShapes((all) => all.filter((s) => !ids.has(s.id)));
     setSelectedIds([]);
+  }
+
+  // 더블클릭 → 글상자 편집
+  function handleDoubleClick(e: React.MouseEvent) {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const w = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+    const ht = textAt(w);
+    if (ht) {
+      setActiveTextId(ht);
+      setEditingTextId(ht);
+    }
   }
 
   // 꼭짓점 우클릭 → 점 삭제 (3개보다 많을 때)
@@ -2233,9 +2343,9 @@ export default function PolygonCanvas() {
         d.getHours()
       ).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
       a.href = url;
-      a.download = `다각형-${stamp}.png`;
+      a.download = `도형학습-${stamp}.png`;
       a.click();
-      setFlash("현재 화면을 PNG 이미지로 저장했어요. 📷");
+      setFlash("그림과 설명 글상자를 PNG 이미지로 저장했어요. 제출용으로 사용하세요! 📷");
     } catch {
       setFlash("이미지 저장에 실패했어요. 다시 시도해 주세요.");
     }
@@ -2499,6 +2609,36 @@ export default function PolygonCanvas() {
     for (const g of guides) drawGuide(g.a, g.b, "#0f172a", activeAux?.kind === "guide" && activeAux.id === g.id);
     if (tool === "guide" && dm.type === "guide") drawGuide(dm.start, dm.current, "#475569");
 
+    // 글상자(설명 메모) — 화면 크기 고정(k), 월드 앵커. 편집 중인 것은 textarea로 대체
+    textBoxRef.current.clear();
+    {
+      const FS = 15 * labelScale;
+      const padX = 9 * k;
+      const padY = 7 * k;
+      const lh = FS * 1.4 * k;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      for (const t of texts) {
+        const lines = t.text.length ? t.text.split("\n") : [""];
+        ctx.font = `600 ${FS * k}px sans-serif`;
+        let maxw = 0;
+        for (const ln of lines) maxw = Math.max(maxw, ctx.measureText(ln || " ").width);
+        const boxW = maxw + padX * 2;
+        const boxH = lines.length * lh + padY * 2;
+        textBoxRef.current.set(t.id, { x: t.x, y: t.y, w: boxW, h: boxH });
+        if (t.id === editingTextId) continue; // 편집 중이면 textarea가 보여줌
+        ctx.fillStyle = "rgba(254,249,231,0.97)";
+        ctx.fillRect(t.x, t.y, boxW, boxH);
+        ctx.strokeStyle = t.id === activeTextId ? "#f59e0b" : "#fcd34d";
+        ctx.lineWidth = (t.id === activeTextId ? 2.5 : 1.4) * k;
+        ctx.strokeRect(t.x, t.y, boxW, boxH);
+        ctx.fillStyle = t.color;
+        lines.forEach((ln, i) => ctx.fillText(ln, t.x + padX, t.y + padY + i * lh));
+      }
+    }
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+
     // 모눈 눈금 숫자 (화면 가장자리에 고정 = 자 느낌)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#94a3b8";
@@ -2513,7 +2653,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, labelScale, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, labelScale, lessonReference, quiz]);
 
   function drawShape(
     ctx: CanvasRenderingContext2D,
@@ -2938,8 +3078,49 @@ export default function PolygonCanvas() {
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
       />
+
+      {/* 글상자 편집 (textarea 오버레이) */}
+      {editingTextId &&
+        (() => {
+          const note = texts.find((n) => n.id === editingTextId);
+          if (!note) return null;
+          const sx = note.x * cam.scale + cam.tx;
+          const sy = note.y * cam.scale + cam.ty;
+          const fs = 15 * labelScale;
+          const lines = Math.max(1, note.text.split("\n").length);
+          return (
+            <textarea
+              ref={textAreaRef}
+              autoFocus
+              value={note.text}
+              onChange={(e) => updateText(editingTextId, e.target.value)}
+              onBlur={finishEditingText}
+              onFocus={(e) => e.currentTarget.setSelectionRange(e.currentTarget.value.length, e.currentTarget.value.length)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+              }}
+              rows={lines}
+              placeholder="설명을 써요…"
+              style={{
+                position: "absolute",
+                left: sx,
+                top: sy,
+                fontSize: fs,
+                lineHeight: 1.4,
+                width: "min(60vw, 260px)",
+                fontWeight: 600,
+              }}
+              className="z-30 resize-none overflow-hidden rounded border-2 border-amber-400 bg-amber-50 px-[9px] py-[7px] text-amber-900 shadow-lg outline-none"
+            />
+          );
+        })()}
 
       {/* 빈 화면 안내 */}
       {shapes.length === 0 && draft.length === 0 && (

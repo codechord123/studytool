@@ -3493,6 +3493,9 @@ export default function PolygonCanvas() {
     const isRef = !!s.isReference;
     // 원(defKind.circle)은 매끄러운 호로 렌더링 (다각형 근사 대신)
     const circleDef = typeof s.defKind === "object" && s.defKind !== null && "circle" in s.defKind ? s.defKind : null;
+    // 곡선형 도형: 원이거나, 꼭짓점이 아주 많은 조각(원을 잘라 만든 반원 등)
+    //   → 개별 꼭짓점 점·변 길이 라벨을 숨기고 매끄럽게 보이도록 처리
+    const isCurvy = !!circleDef || s.points.length >= 20;
     if (circleDef) {
       const c = polygonCentroid(s.points);
       const R = s.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / s.points.length;
@@ -3643,6 +3646,97 @@ export default function PolygonCanvas() {
       ctx.textBaseline = "alphabetic";
     }
 
+    // 마름모: 둘러싼 직사각형(두 변 = 두 대각선) + 두 대각선 표시
+    //   → 마름모 넓이가 이 직사각형 넓이의 '절반'임을 눈으로 보여줌
+    //   (넓이 모드가 켜진 단일 선택 마름모에서만)
+    if (
+      isSelected &&
+      selectedIds.length === 1 &&
+      s.defKind === "rhombus" &&
+      s.points.length === 4 &&
+      showAreaBadge &&
+      !isRef
+    ) {
+      const c = polygonCentroid(s.points);
+      const [p0, p1, p2, p3] = s.points;
+      const d1x = p2.x - p0.x, d1y = p2.y - p0.y; // 대각선 1 (p0→p2)
+      const d2x = p3.x - p1.x, d2y = p3.y - p1.y; // 대각선 2 (p1→p3)
+      const len1 = Math.hypot(d1x, d1y);
+      const len2 = Math.hypot(d2x, d2y);
+      if (len1 > 1 && len2 > 1) {
+        const u1x = d1x / len1, u1y = d1y / len1;
+        const u2x = d2x / len2, u2y = d2y / len2;
+        const h1 = len1 / 2, h2 = len2 / 2;
+        // 직사각형 네 꼭짓점 = 중심 ± (h1·대각선1방향) ± (h2·대각선2방향)
+        //   → 마름모 꼭짓점은 이 직사각형 각 변의 '중점'에 놓임
+        const corners = [
+          { x: c.x - h1 * u1x - h2 * u2x, y: c.y - h1 * u1y - h2 * u2y },
+          { x: c.x + h1 * u1x - h2 * u2x, y: c.y + h1 * u1y - h2 * u2y },
+          { x: c.x + h1 * u1x + h2 * u2x, y: c.y + h1 * u1y + h2 * u2y },
+          { x: c.x - h1 * u1x + h2 * u2x, y: c.y - h1 * u1y + h2 * u2y },
+        ];
+        ctx.save();
+        // 둘러싼 직사각형 (연보라 점선)
+        ctx.setLineDash([7 * k, 5 * k]);
+        ctx.strokeStyle = "#7c3aedcc";
+        ctx.lineWidth = 1.8 * k;
+        ctx.beginPath();
+        ctx.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < 4; i++) ctx.lineTo(corners[i].x, corners[i].y);
+        ctx.closePath();
+        ctx.stroke();
+        // 두 대각선 (실선, 연보라)
+        ctx.setLineDash([]);
+        ctx.strokeStyle = "#7c3aed88";
+        ctx.lineWidth = 1.4 * k;
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y); ctx.lineTo(p3.x, p3.y); ctx.stroke();
+        ctx.restore();
+        // 두 변 라벨: 직사각형 변 = 대각선 길이
+        const drawDiagLabel = (
+          text: string,
+          mx: number,
+          my: number,
+          nx: number,
+          ny: number // 바깥쪽 방향(단위벡터)
+        ) => {
+          const f = (boardMode ? 15 : 12) * labelScale;
+          ctx.font = `bold ${f * k}px sans-serif`;
+          const w = ctx.measureText(text).width;
+          const pad = 5 * k;
+          const bh = f * k + 6 * k;
+          const off = 14 * k;
+          const lx = mx + nx * off;
+          const ly = my + ny * off;
+          ctx.fillStyle = "rgba(255,255,255,0.96)";
+          ctx.strokeStyle = "#7c3aed";
+          ctx.lineWidth = 1.3 * k;
+          ctx.fillRect(lx - w / 2 - pad, ly - bh / 2, w + pad * 2, bh);
+          ctx.strokeRect(lx - w / 2 - pad, ly - bh / 2, w + pad * 2, bh);
+          ctx.fillStyle = "#6d28d9";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(text, lx, ly);
+          ctx.textAlign = "start";
+          ctx.textBaseline = "alphabetic";
+        };
+        // 변 corners[0]-corners[1] (길이=대각선1), 중점=c-h2·u2, 바깥=-u2
+        drawDiagLabel(
+          `대각선 ${fmtLen(len1 / GRID)}`,
+          c.x - h2 * u2x, c.y - h2 * u2y,
+          -u2x, -u2y
+        );
+        // 변 corners[1]-corners[2] (길이=대각선2), 중점=c+h1·u1, 바깥=+u1
+        drawDiagLabel(
+          `대각선 ${fmtLen(len2 / GRID)}`,
+          c.x + h1 * u1x, c.y + h1 * u1y,
+          u1x, u1y
+        );
+      }
+    }
+
     // 회전 손잡이(점선+초록 원) — 단일 선택일 때만 (원에는 표시 안 함)
     if (isSelected && selectedIds.length === 1 && !circleDef) {
       const c = polygonCentroid(s.points);
@@ -3669,7 +3763,7 @@ export default function PolygonCanvas() {
     const baseFont = (boardMode ? 20 : 16) * labelScale;
     ctx.font = `bold ${baseFont * k}px sans-serif`;
     const cx0 = polygonCentroid(s.points);
-    for (let i = 0; i < s.points.length && !circleDef; i++) {
+    for (let i = 0; i < s.points.length && !isCurvy; i++) {
       const a = s.points[i];
       const b = s.points[(i + 1) % s.points.length];
       const mx = (a.x + b.x) / 2;
@@ -3730,8 +3824,8 @@ export default function PolygonCanvas() {
     ctx.textAlign = "start";
     ctx.textBaseline = "alphabetic";
 
-    // 원은 꼭짓점 표시 안 함(48-각형 근사가 노출되지 않도록)
-    if (!circleDef) {
+    // 곡선형(원·원 조각)은 꼭짓점 점을 표시하지 않음 — 톱니처럼 보이지 않게
+    if (!isCurvy) {
       for (const v of s.points) {
         ctx.fillStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : s.color;
         ctx.beginPath();
@@ -4775,8 +4869,8 @@ function InfoCard({
         <div className="mb-3 flex items-center gap-2.5">
           <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
           <div className="leading-tight">
-            <div className="text-lg font-extrabold text-slate-800">{circleDef ? "원" : kind.name}</div>
-            <div className="text-xs font-medium text-amber-700">공식 · {circleDef ? `반지름 × 반지름 × ${pi}` : kind.formula}</div>
+            <div className="text-lg font-extrabold text-slate-800">{circleDef ? "원" : selected.points.length >= 20 ? "곡선 도형" : kind.name}</div>
+            <div className="text-xs font-medium text-amber-700">공식 · {circleDef ? `반지름 × 반지름 × ${pi}` : selected.points.length >= 20 ? "칸을 세어 어림해요" : kind.formula}</div>
           </div>
         </div>
       ) : (
@@ -4810,10 +4904,13 @@ function InfoCard({
         </div>
       )}
       {rhombusDiag && (
-        <div className="mb-2 rounded-xl bg-amber-50 px-3.5 py-2 text-sm">
-          <div className="text-xs font-semibold text-amber-600">대각선 (둘러싼 직사각형)</div>
-          <div className="text-xl font-extrabold text-amber-800">
+        <div className="mb-2 rounded-xl bg-violet-50 px-3.5 py-2 text-sm">
+          <div className="text-xs font-semibold text-violet-600">둘러싼 직사각형 (두 변 = 두 대각선)</div>
+          <div className="text-xl font-extrabold text-violet-800">
             {fmtLen(rhombusDiag.d1).replace("cm", "")} × {fmtLen(rhombusDiag.d2)}
+          </div>
+          <div className="mt-0.5 text-xs font-medium text-violet-600">
+            직사각형 넓이 {fmtArea(rhombusDiag.d1 * rhombusDiag.d2)} 의 <b>절반</b> = 마름모 넓이
           </div>
         </div>
       )}

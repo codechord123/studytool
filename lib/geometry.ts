@@ -473,13 +473,15 @@ export function detectShapeKind(points: Point[]): ShapeKind {
 export function reconstructDefShape(
   kind: NonNullable<Shape["defKind"]>,
   pts: Point[],
-  gridPx: number
+  gridPx: number,
+  anchor?: number // 잡은 꼭짓점 인덱스: 그 꼭짓점의 위치를 기준으로 크기·방향 결정
 ): Point[] | null {
   const n = pts.length;
   if (n < 3) return null;
-  // 중심(무게중심 대신 평균; 꼭짓점 개수가 일정하면 동일)
-  const cx = pts.reduce((s, p) => s + p.x, 0) / n;
-  const cy = pts.reduce((s, p) => s + p.y, 0) / n;
+  // 앵커가 있으면 나머지 꼭짓점들의 중심을 사용(앵커 이동이 즉시 반영됨)
+  const centerPts = typeof anchor === "number" ? pts.filter((_, i) => i !== anchor) : pts;
+  const cx = centerPts.reduce((s, p) => s + p.x, 0) / centerPts.length;
+  const cy = centerPts.reduce((s, p) => s + p.y, 0) / centerPts.length;
   if (kind === "rhombus" && n === 4) {
     // 두 대각선(짝수 인덱스 vs 홀수 인덱스가 마주보는 쌍)의 방향·길이를 뽑아 정수 변 재구성.
     // 마름모 꼭짓점 순서: 대각선 두 개가 pts[0]↔pts[2], pts[1]↔pts[3]
@@ -511,14 +513,23 @@ export function reconstructDefShape(
     ];
   }
   if (typeof kind === "object" && "regular" in kind && kind.regular === n) {
-    // 정n각형: 중심에서 각 꼭짓점까지의 평균 반지름 → 변 길이 → 자연수 반올림
-    const rSum = pts.reduce((s, p) => s + Math.hypot(p.x - cx, p.y - cy), 0);
-    const R = rSum / n / gridPx; // cm
-    const side = 2 * R * Math.sin(Math.PI / n); // cm
+    // 정n각형: 앵커(잡은 꼭짓점)가 있으면 그 꼭짓점 위치로 R·방향 결정,
+    //          없으면 평균 반지름 사용.
+    let R: number;
+    let a0: number;
+    if (typeof anchor === "number" && anchor >= 0 && anchor < n) {
+      const ap = pts[anchor];
+      R = Math.hypot(ap.x - cx, ap.y - cy) / gridPx;
+      // 앵커가 원래 도형 안 몇번째였는지 반영(회전 유지)
+      a0 = Math.atan2(ap.y - cy, ap.x - cx) - (anchor * 2 * Math.PI) / n;
+    } else {
+      const rSum = pts.reduce((s, p) => s + Math.hypot(p.x - cx, p.y - cy), 0);
+      R = rSum / n / gridPx;
+      a0 = Math.atan2(pts[0].y - cy, pts[0].x - cx);
+    }
+    const side = 2 * R * Math.sin(Math.PI / n);
     const sInt = Math.max(1, Math.round(side));
-    const newR = sInt / (2 * Math.sin(Math.PI / n)) * gridPx;
-    // 현재 첫 꼭짓점의 방향을 유지
-    const a0 = Math.atan2(pts[0].y - cy, pts[0].x - cx);
+    const newR = (sInt / (2 * Math.sin(Math.PI / n))) * gridPx;
     const out: Point[] = [];
     for (let i = 0; i < n; i++) {
       const a = a0 + (i * 2 * Math.PI) / n;

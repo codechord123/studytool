@@ -1167,6 +1167,9 @@ export default function PolygonCanvas() {
   const justCreatedTextRef = useRef(false);
   // 꼭짓점 롱프레스(꾹 눌러 삭제) 타이머
   const holdVertexRef = useRef<{ timer: number; shapeId: string; vertexIndex: number; sx: number; sy: number } | null>(null);
+  // 변·각 길게 누르기 → 등변/등각
+  const holdEdgeRef = useRef<{ timer: number; shapeId: string; sx: number; sy: number } | null>(null);
+  const holdAngleRef = useRef<{ timer: number; shapeId: string; sx: number; sy: number } | null>(null);
   // 도구모음(왼쪽 세로 막대) 접기 상태 — 저장은 세션 localStorage
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [infoCollapsed, setInfoCollapsed] = useState(false);
@@ -1750,7 +1753,7 @@ export default function PolygonCanvas() {
         holdVertexRef.current = { timer, shapeId, vertexIndex: vi, sx, sy };
         return;
       }
-      // 변 가운데 '+' 핸들 → 점 추가 후 바로 끌기
+      // 변 가운데 '+' 핸들 → 점 추가 후 바로 끌기 · 꾹 누르면 등변화
       if (tool === "select" && selected.points.length < 16) {
         for (let i = 0; i < selected.points.length; i++) {
           const a = selected.points[i];
@@ -1762,8 +1765,37 @@ export default function PolygonCanvas() {
             np.splice(i + 1, 0, { ...m });
             setShapes((all) => all.map((s) => (s.id === selected.id ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
             dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: i + 1 };
+            // 0.6초간 안 움직이면 → 방금 추가한 점 취소 후 등변화 (변을 꾹 눌러 모든 변 같게)
+            if (holdEdgeRef.current) window.clearTimeout(holdEdgeRef.current.timer);
+            const shapeId = selected.id;
+            const timer = window.setTimeout(() => {
+              // 점 추가를 되돌리고 원래 점으로 복원
+              setShapes((all) => all.map((s) => (s.id === shapeId ? { ...s, points: s.points.filter((_, j) => j !== i + 1) } : s)));
+              // 등변화 실행 (다음 프레임에서)
+              requestAnimationFrame(() => {
+                dragRef.current = { type: "none" };
+                equilateralizeShape(shapeId);
+              });
+              holdEdgeRef.current = null;
+            }, 600);
+            holdEdgeRef.current = { timer, shapeId, sx, sy };
             return;
           }
+        }
+      }
+      // 각도(내각 라벨) 부근에서 시작: 각도 켜져 있을 때만 꼭짓점 근처를 꾹 눌러 등각화
+      if (showAngles && tool === "select") {
+        const vi = selected.points.findIndex((v) => Math.hypot(v.x - p.x, v.y - p.y) < 22 * k && Math.hypot(v.x - p.x, v.y - p.y) >= 14 * k);
+        if (vi !== -1) {
+          if (holdAngleRef.current) window.clearTimeout(holdAngleRef.current.timer);
+          const shapeId = selected.id;
+          const timer = window.setTimeout(() => {
+            dragRef.current = { type: "none" };
+            equiangularizeShape(shapeId);
+            holdAngleRef.current = null;
+          }, 600);
+          holdAngleRef.current = { timer, shapeId, sx, sy };
+          return;
         }
       }
     }
@@ -1820,6 +1852,20 @@ export default function PolygonCanvas() {
       if (Math.hypot(sx - h.sx, sy - h.sy) > 6) {
         window.clearTimeout(h.timer);
         holdVertexRef.current = null;
+      }
+    }
+    if (holdEdgeRef.current) {
+      const h = holdEdgeRef.current;
+      if (Math.hypot(sx - h.sx, sy - h.sy) > 6) {
+        window.clearTimeout(h.timer);
+        holdEdgeRef.current = null;
+      }
+    }
+    if (holdAngleRef.current) {
+      const h = holdAngleRef.current;
+      if (Math.hypot(sx - h.sx, sy - h.sy) > 6) {
+        window.clearTimeout(h.timer);
+        holdAngleRef.current = null;
       }
     }
     if (dm.type === "none") return;
@@ -2002,7 +2048,7 @@ export default function PolygonCanvas() {
           // 정의 기반 도형(마름모·정n각형)은 정의 유지 → 한 변을 자연수로 스냅해
           //   나머지 변도 자동으로 자연수 cm가 되도록 재구성
           if (integerMode && s.defKind && !e.shiftKey) {
-            const rebuilt = reconstructDefShape(s.defKind, newPoints, GRID);
+            const rebuilt = reconstructDefShape(s.defKind, newPoints, GRID, dm.vertexIndex);
             if (rebuilt) newPoints = rebuilt;
           }
           return {
@@ -2026,6 +2072,14 @@ export default function PolygonCanvas() {
     if (holdVertexRef.current) {
       window.clearTimeout(holdVertexRef.current.timer);
       holdVertexRef.current = null;
+    }
+    if (holdEdgeRef.current) {
+      window.clearTimeout(holdEdgeRef.current.timer);
+      holdEdgeRef.current = null;
+    }
+    if (holdAngleRef.current) {
+      window.clearTimeout(holdAngleRef.current.timer);
+      holdAngleRef.current = null;
     }
     if (dm.type === "pan") {
       if (dm.maybeDeselect && !dm.moved) {
@@ -2268,6 +2322,87 @@ export default function PolygonCanvas() {
   }
 
   // 선택한 도형을 '정다각형'으로 반듯하게 맞추기 — 변 길이·내각을 딱 떨어지게
+  // 특정 도형을 등변(모든 변 같음)으로 변환
+  function equilateralizeShape(sid: string) {
+    const s = shapes.find((sh) => sh.id === sid);
+    if (!s) return;
+    const n = s.points.length;
+    if (n < 3) return;
+    if (n === 4) {
+      // 마름모: 두 대각선을 유지하며 한 변을 자연수 cm로
+      const rebuilt = reconstructDefShape("rhombus", s.points, GRID);
+      if (rebuilt) {
+        commitHistory();
+        setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: rebuilt, defKind: "rhombus", ghosts: undefined, edgeLabels: undefined } : sh)));
+        const side = Math.round(Math.hypot(rebuilt[0].x - rebuilt[1].x, rebuilt[0].y - rebuilt[1].y) / GRID);
+        setFlash(`🔷 등변으로 만들었어요! 모든 변이 ${side}cm (마름모)`);
+      }
+      return;
+    }
+    // 정n각형(=등변+등각)
+    const c = polygonCentroid(s.points);
+    const avgR = s.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / n;
+    const curSide = 2 * avgR * Math.sin(Math.PI / n);
+    const sideUnits = Math.max(1, Math.round(curSide / GRID));
+    const R = (sideUnits * GRID) / (2 * Math.sin(Math.PI / n));
+    const a0 = Math.atan2(s.points[0].y - c.y, s.points[0].x - c.x);
+    const pts: Point[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i * 2 * Math.PI) / n;
+      pts.push({ x: c.x + R * Math.cos(a), y: c.y + R * Math.sin(a) });
+    }
+    commitHistory();
+    setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
+    setFlash(`🔷 등변으로 만들었어요! 모든 변이 ${sideUnits}cm`);
+  }
+  function equilateralizeSelected() {
+    if (selectedIds.length === 1) equilateralizeShape(selectedIds[0]);
+  }
+  // 특정 도형을 등각(모든 각 같음)으로 변환
+  function equiangularizeShape(sid: string) {
+    const s = shapes.find((sh) => sh.id === sid);
+    if (!s) return;
+    const n = s.points.length;
+    if (n < 3) return;
+    const c = polygonCentroid(s.points);
+    if (n === 4) {
+      // 직사각형(모든 각 90°): 현재 bbox를 정수 cm로 반올림
+      const xs = s.points.map((p) => p.x);
+      const ys = s.points.map((p) => p.y);
+      const w = (Math.max(...xs) - Math.min(...xs)) / GRID;
+      const h = (Math.max(...ys) - Math.min(...ys)) / GRID;
+      const wi = Math.max(1, Math.round(w)) * GRID;
+      const hi = Math.max(1, Math.round(h)) * GRID;
+      const pts = [
+        { x: c.x - wi / 2, y: c.y - hi / 2 },
+        { x: c.x + wi / 2, y: c.y - hi / 2 },
+        { x: c.x + wi / 2, y: c.y + hi / 2 },
+        { x: c.x - wi / 2, y: c.y + hi / 2 },
+      ];
+      commitHistory();
+      setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
+      setFlash(`📐 등각으로 만들었어요! 모든 각이 90° (직사각형 ${Math.round(w)}×${Math.round(h)}cm)`);
+      return;
+    }
+    // n≠4: 정n각형(등변+등각). 크기(반지름)는 유지 후 한 변을 자연수 cm로.
+    const avgR = s.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / n;
+    const curSide = 2 * avgR * Math.sin(Math.PI / n);
+    const sideUnits = Math.max(1, Math.round(curSide / GRID));
+    const R = (sideUnits * GRID) / (2 * Math.sin(Math.PI / n));
+    const a0 = Math.atan2(s.points[0].y - c.y, s.points[0].x - c.x);
+    const pts: Point[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i * 2 * Math.PI) / n;
+      pts.push({ x: c.x + R * Math.cos(a), y: c.y + R * Math.sin(a) });
+    }
+    commitHistory();
+    setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
+    const interior = Math.round(((n - 2) * 180) / n);
+    setFlash(`📐 등각으로 만들었어요! 모든 각이 ${interior}° (정${n}각형)`);
+  }
+  function equiangularizeSelected() {
+    if (selectedIds.length === 1) equiangularizeShape(selectedIds[0]);
+  }
   function regularizeSelected() {
     const sel = shapes.filter((s) => selectedIds.includes(s.id));
     if (sel.length !== 1) return;
@@ -3920,8 +4055,8 @@ export default function PolygonCanvas() {
           inspecting={inspectId === selected.id}
           onToggleInspect={toggleInspect}
           onSplit={splitSelected}
-          canRegularize={regularizable}
-          onRegularize={regularizeSelected}
+          onEquilateralize={equilateralizeSelected}
+          onEquiangularize={equiangularizeSelected}
           dragRef={ctxDrag.ref}
           dragHandle={ctxDrag.handle}
           pos={ctxPos}
@@ -4321,8 +4456,8 @@ function ContextBar({
   inspecting,
   onToggleInspect,
   onSplit,
-  canRegularize,
-  onRegularize,
+  onEquilateralize,
+  onEquiangularize,
   dragRef,
   dragHandle,
   pos,
@@ -4341,8 +4476,8 @@ function ContextBar({
   inspecting: boolean;
   onToggleInspect: () => void;
   onSplit: () => void;
-  canRegularize: boolean;
-  onRegularize: () => void;
+  onEquilateralize: () => void;
+  onEquiangularize: () => void;
   dragRef: React.RefObject<HTMLDivElement>;
   dragHandle: object;
   pos: XY | null;
@@ -4409,17 +4544,22 @@ function ContextBar({
             </button>
           </MiniGroup>
         )}
-        {canRegularize && (
-          <MiniGroup label="맞추기">
-            <button
-              className="grid h-9 place-items-center rounded-lg border border-sky-200 bg-sky-50 px-2 text-sm font-semibold text-sky-700 hover:bg-sky-100"
-              onClick={onRegularize}
-              title="변 길이와 내각이 딱 떨어지는 정다각형으로 반듯하게 맞춰요"
-            >
-              🔷 반듯하게
-            </button>
-          </MiniGroup>
-        )}
+        <MiniGroup label="맞추기">
+          <button
+            className="grid h-9 place-items-center rounded-lg border border-sky-200 bg-sky-50 px-2 text-sm font-semibold text-sky-700 hover:bg-sky-100"
+            onClick={onEquilateralize}
+            title="모든 변의 길이를 같게 (마름모 / 정다각형). 변을 꾹 눌러도 됩니다."
+          >
+            🔷 등변
+          </button>
+          <button
+            className="grid h-9 place-items-center rounded-lg border border-violet-200 bg-violet-50 px-2 text-sm font-semibold text-violet-700 hover:bg-violet-100"
+            onClick={onEquiangularize}
+            title="모든 각을 같게 (직사각형 / 정다각형). 각 부근을 꾹 눌러도 됩니다."
+          >
+            📐 등각
+          </button>
+        </MiniGroup>
         <MiniGroup label="색상">
           <div className="flex h-9 items-center gap-1">
             {COLORS.map((c) => (

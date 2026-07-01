@@ -954,7 +954,7 @@ const TOOL_HINT: Record<Tool, string> = {
   select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동(선택 전체) · 변 가운데 ➕=점 추가 · 꼭짓점 우클릭=점 삭제",
   draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
   cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
-  merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요.",
+  merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요. (여러 개를 선택한 뒤 '합치기'를 누르면 한꺼번에!)",
   measure: "두 점을 드래그해 길이를 재요. 끝점·선을 잡아 옮기고, Delete로 지울 수 있어요.",
   guide: "점선 보조선을 그어요. 끝점·선을 잡아 옮기고 조절, Delete로 지우기. (자르기 전 ‘여기서 자를까?’)",
   text: "빈 곳을 눌러 글상자를 만들고 설명을 써요. 글상자를 눌러 수정·드래그로 이동. 저장하면 그림과 함께 제출돼요!",
@@ -1848,7 +1848,7 @@ export default function PolygonCanvas() {
         const lk = e.key.toLowerCase();
         const tk = TOOL_META.find((t) => t.key.toLowerCase() === lk);
         if (tk) {
-          setTool(tk.id);
+          activateTool(tk.id);
           return;
         }
         // 칸세기 모드 토글 (G)
@@ -1948,7 +1948,7 @@ export default function PolygonCanvas() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, draft.length, selectedIds, activeAux, activeTextId, snapStep, undo, redo, commitHistory, zoomCenter, setTool, transformSelected]);
+  }, [tool, draft.length, selectedIds, shapes, activeAux, activeTextId, snapStep, undo, redo, commitHistory, zoomCenter, setTool, transformSelected]);
 
   function transformSelected(fn: (pts: Point[], center: Point) => Point[]) {
     if (!selectedIds.length) return;
@@ -1990,6 +1990,59 @@ export default function PolygonCanvas() {
     const ids = new Set(selectedIds);
     setShapes((all) => all.filter((s) => !ids.has(s.id)));
     setSelectedIds([]);
+  }
+
+  // 선택한 여러 도형을 한 번에 합치기 (맞붙은 변을 찾아 반복 병합)
+  function mergeSelected(): boolean {
+    const sel = shapes.filter((s) => selectedIds.includes(s.id));
+    if (sel.length < 2) return false;
+    // 작업용 목록: 병합 가능한 쌍을 찾을 때까지 반복
+    let work: Shape[] = sel.map((s) => ({ ...s, ghosts: s.ghosts ?? [s.points] }));
+    let progress = true;
+    while (work.length > 1 && progress) {
+      progress = false;
+      outer: for (let i = 0; i < work.length; i++) {
+        for (let j = i + 1; j < work.length; j++) {
+          const merged = mergePolygons(work[i].points, work[j].points) || mergePolygons(work[j].points, work[i].points);
+          if (merged) {
+            const A = work[i];
+            const B = work[j];
+            const combined: Shape = {
+              id: A.id,
+              color: A.color,
+              points: merged,
+              ghosts: [...(A.ghosts ?? [A.points]), ...(B.ghosts ?? [B.points])],
+              edgeLabels: inferEdgeLabels(merged, [A, B]),
+            };
+            work = work.filter((_, idx) => idx !== i && idx !== j);
+            work.push(combined);
+            progress = true;
+            break outer;
+          }
+        }
+      }
+    }
+    if (work.length === sel.length) {
+      // 하나도 못 합침
+      setFlash("합치려면 도형들이 한 변씩 정확히 맞붙어 있어야 해요. 🧲 자석을 켜고 붙여 보세요!");
+      return false;
+    }
+    commitHistory();
+    const removed = new Set(sel.map((s) => s.id));
+    setShapes((all) => [...all.filter((s) => !removed.has(s.id)), ...work]);
+    setSelectedIds(work.map((s) => s.id));
+    if (work.length === 1) setFlash("선택한 도형들을 하나로 합쳤어요! 합쳐진 자국이 점선으로 보여요.");
+    else setFlash(`맞붙은 것끼리 합쳐 ${work.length}개가 됐어요. 나머지는 변을 정확히 붙여 다시 합쳐 보세요.`);
+    return true;
+  }
+
+  // 도구 선택: '합치기'는 여러 개가 선택돼 있으면 바로 합침(버튼·단축키 공통)
+  function activateTool(id: Tool) {
+    if (id === "merge" && selectedIds.length >= 2) {
+      mergeSelected();
+      return;
+    }
+    setTool(id);
   }
 
   // 더블클릭 → 글상자 편집
@@ -3287,7 +3340,7 @@ export default function PolygonCanvas() {
             return (
               <button
                 key={t.id}
-                onClick={() => setTool(t.id)}
+                onClick={() => activateTool(t.id)}
                 title={`${t.label} (단축키 ${t.key})`}
                 className={`group relative flex h-14 w-14 flex-col items-center justify-center gap-0.5 rounded-xl transition ${
                   active ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"

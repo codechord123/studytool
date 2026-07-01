@@ -402,8 +402,7 @@ const PRESETS: Preset[] = [
   { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegularSide(5, 4), defKind: { regular: 5 } },
   { id: "hex", label: "정육각형", formula: "삼각형 6개로 나누기", build: () => makeHexagon(0, 0, 3 * GRID), defKind: { regular: 6 } },
   { id: "reg8", label: "정팔각형", formula: "삼각형 8개로 나누기", build: () => makeRegularSide(8, 3), defKind: { regular: 8 } },
-  { id: "reg10", label: "정십각형", formula: "삼각형 10개로 나누기", build: () => makeRegularSide(10, 2), defKind: { regular: 10 } },
-  { id: "reg12", label: "정십이각형", formula: "삼각형 12개로 나누기", build: () => makeRegularSide(12, 2), defKind: { regular: 12 } },
+  // 정10·정12각형은 초등 5-6학년 커리큘럼 밖 → 인지 부담 완화 위해 제거
   { id: "lshape", label: "ㄴ자 모양", formula: "두 직사각형 합", build: () => makeLShape(0, 0, 6 * GRID, 4 * GRID, 2 * GRID, 2 * GRID) },
   { id: "cross", label: "십자 모양", formula: "정사각형 5개", build: () => makeCross(0, 0, 2 * GRID, 2 * GRID) },
 ];
@@ -1105,7 +1104,7 @@ export default function PolygonCanvas() {
   const [labelScale, setLabelScale] = useState(1); // 변·넓이 숫자 라벨 크기 배율 (수업용)
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
-  const [snapStep, setSnapStep] = useState<0 | 0.1 | 0.5 | 1>(0.5);
+  const [snapStep, setSnapStep] = useState<0 | 0.5 | 1>(0.5);
   // 자연수 모드: 모든 꼭짓점을 정수 cm(모눈 교차점)에 강제 스냅 — 기본값 ON
   const [integerMode, setIntegerMode] = useState(true);
   useEffect(() => {
@@ -4004,7 +4003,7 @@ export default function PolygonCanvas() {
             <div className="flex max-w-full flex-wrap items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur">
               <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="모눈 칸 간격: 도형을 움직일 때 이 간격에 맞춰 딱 맞게 붙어요">격자</span>
               <div className="flex gap-0.5 rounded-lg bg-slate-100 p-0.5">
-                {([1, 0.5, 0.1, 0] as const).map((s) => (
+                {([1, 0.5, 0] as const).map((s) => (
                   <button
                     key={s}
                     onClick={() => setSnapStep(s)}

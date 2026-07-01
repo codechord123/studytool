@@ -7,6 +7,9 @@ export type Shape = {
   ghosts?: Point[][]; // 합치기 전 원본 도형들의 외곽선 (희미하게 표시)
   edgeLabels?: string[]; // 변 i의 의미 라벨 (예: "윗변", "밑변") — 학습 모드용
   isReference?: boolean; // 원본 박제(읽기 전용, 점선 표시)
+  // 정의상 변 길이가 같은 도형(마름모·정n각형). 자연수 모드에서 변 조작 시
+  // 한 변을 자연수 cm로 스냅 → 정의에 의해 나머지 변도 자연수가 되도록 재구성.
+  defKind?: "rhombus" | { regular: number };
 };
 
 export function polygonArea(points: Point[]): number {
@@ -462,4 +465,66 @@ export function detectShapeKind(points: Point[]): ShapeKind {
   if (n === 7) return { name: "칠각형", formula: "여러 도형으로 나누어 더하기" };
   if (n === 8) return { name: "팔각형", formula: "여러 도형으로 나누어 더하기" };
   return { name: `${n}각형`, formula: "여러 도형으로 나누어 더하기" };
+}
+
+// 정의상 변 길이가 같은 도형(마름모·정n각형)을 자연수 변 길이로 재구성.
+// 사용자의 조작 결과(pts)에서 중심·방향·크기를 뽑아내어, 한 변을 자연수 cm로 스냅한
+// 새 도형 좌표를 반환. 그러면 정의에 의해 모든 변이 자연수가 됨.
+export function reconstructDefShape(
+  kind: NonNullable<Shape["defKind"]>,
+  pts: Point[],
+  gridPx: number
+): Point[] | null {
+  const n = pts.length;
+  if (n < 3) return null;
+  // 중심(무게중심 대신 평균; 꼭짓점 개수가 일정하면 동일)
+  const cx = pts.reduce((s, p) => s + p.x, 0) / n;
+  const cy = pts.reduce((s, p) => s + p.y, 0) / n;
+  if (kind === "rhombus" && n === 4) {
+    // 두 대각선(짝수 인덱스 vs 홀수 인덱스가 마주보는 쌍)의 방향·길이를 뽑아 정수 변 재구성.
+    // 마름모 꼭짓점 순서: 대각선 두 개가 pts[0]↔pts[2], pts[1]↔pts[3]
+    const v02 = { x: pts[2].x - pts[0].x, y: pts[2].y - pts[0].y };
+    const v13 = { x: pts[3].x - pts[1].x, y: pts[3].y - pts[1].y };
+    const d1 = Math.hypot(v02.x, v02.y) / gridPx; // cm
+    const d2 = Math.hypot(v13.x, v13.y) / gridPx; // cm
+    if (d1 < 0.1 || d2 < 0.1) return null;
+    const side = Math.hypot(d1 / 2, d2 / 2); // cm
+    const sInt = Math.max(1, Math.round(side));
+    // 현재 대각선 비율을 유지하며 side = sInt이 되도록 스케일
+    // (d1/2)²·k² + (d2/2)²·k² = sInt²  →  k = sInt / side
+    const k = sInt / side;
+    const D1 = d1 * k * gridPx; // world px
+    const D2 = d2 * k * gridPx;
+    // 대각선 방향(단위 벡터)
+    const u1 = { x: v02.x / (d1 * gridPx), y: v02.y / (d1 * gridPx) };
+    const u2 = { x: v13.x / (d2 * gridPx), y: v13.y / (d2 * gridPx) };
+    // 두 대각선이 정확히 수직이 아니면 강제 수직화(u1과 수직인 방향으로 u2 재설정)
+    const perp = { x: -u1.y, y: u1.x };
+    const sign = (u2.x * perp.x + u2.y * perp.y) >= 0 ? 1 : -1;
+    const u2p = { x: perp.x * sign, y: perp.y * sign };
+    // 재구성된 꼭짓점 (원래 순서 유지)
+    return [
+      { x: cx - u1.x * D1 / 2, y: cy - u1.y * D1 / 2 },
+      { x: cx - u2p.x * D2 / 2, y: cy - u2p.y * D2 / 2 },
+      { x: cx + u1.x * D1 / 2, y: cy + u1.y * D1 / 2 },
+      { x: cx + u2p.x * D2 / 2, y: cy + u2p.y * D2 / 2 },
+    ];
+  }
+  if (typeof kind === "object" && "regular" in kind && kind.regular === n) {
+    // 정n각형: 중심에서 각 꼭짓점까지의 평균 반지름 → 변 길이 → 자연수 반올림
+    const rSum = pts.reduce((s, p) => s + Math.hypot(p.x - cx, p.y - cy), 0);
+    const R = rSum / n / gridPx; // cm
+    const side = 2 * R * Math.sin(Math.PI / n); // cm
+    const sInt = Math.max(1, Math.round(side));
+    const newR = sInt / (2 * Math.sin(Math.PI / n)) * gridPx;
+    // 현재 첫 꼭짓점의 방향을 유지
+    const a0 = Math.atan2(pts[0].y - cy, pts[0].x - cx);
+    const out: Point[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i * 2 * Math.PI) / n;
+      out.push({ x: cx + newR * Math.cos(a), y: cy + newR * Math.sin(a) });
+    }
+    return out;
+  }
+  return null;
 }

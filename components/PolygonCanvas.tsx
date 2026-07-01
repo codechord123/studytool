@@ -21,6 +21,7 @@ import {
   polygonArea,
   polygonCentroid,
   pointInPolygon,
+  reconstructDefShape,
   rotatePoints,
   scalePoints,
   splitPolygonByLine,
@@ -302,7 +303,7 @@ function placeAtCenter(pts: Point[], cx: number, cy: number): Point[] {
   return pts.map((p) => ({ x: p.x - mx + cx, y: p.y - my + cy }));
 }
 
-type Preset = { id: string; label: string; formula: string; build: () => Point[] };
+type Preset = { id: string; label: string; formula: string; build: () => Point[]; defKind?: Shape["defKind"] };
 
 // 정n각형 (꼭짓점이 위를 향하도록, 외접원 반지름 R)
 function makeRegular(n: number, R: number): Point[] {
@@ -394,13 +395,13 @@ const PRESETS: Preset[] = [
   { id: "tri", label: "삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeTriangle(0, 0, 6 * GRID, 4 * GRID) },
   { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
   { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID) },
-  { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 8 * GRID, 6 * GRID) },
-  { id: "reg3", label: "정삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRegularSide(3, 6) },
-  { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegularSide(5, 4) },
-  { id: "hex", label: "정육각형", formula: "삼각형 6개로 나누기", build: () => makeHexagon(0, 0, 3 * GRID) },
-  { id: "reg8", label: "정팔각형", formula: "삼각형 8개로 나누기", build: () => makeRegularSide(8, 3) },
-  { id: "reg10", label: "정십각형", formula: "삼각형 10개로 나누기", build: () => makeRegularSide(10, 2) },
-  { id: "reg12", label: "정십이각형", formula: "삼각형 12개로 나누기", build: () => makeRegularSide(12, 2) },
+  { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 8 * GRID, 6 * GRID), defKind: "rhombus" },
+  { id: "reg3", label: "정삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRegularSide(3, 6), defKind: { regular: 3 } },
+  { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegularSide(5, 4), defKind: { regular: 5 } },
+  { id: "hex", label: "정육각형", formula: "삼각형 6개로 나누기", build: () => makeHexagon(0, 0, 3 * GRID), defKind: { regular: 6 } },
+  { id: "reg8", label: "정팔각형", formula: "삼각형 8개로 나누기", build: () => makeRegularSide(8, 3), defKind: { regular: 8 } },
+  { id: "reg10", label: "정십각형", formula: "삼각형 10개로 나누기", build: () => makeRegularSide(10, 2), defKind: { regular: 10 } },
+  { id: "reg12", label: "정십이각형", formula: "삼각형 12개로 나누기", build: () => makeRegularSide(12, 2), defKind: { regular: 12 } },
   { id: "lshape", label: "ㄴ자 모양", formula: "두 직사각형 합", build: () => makeLShape(0, 0, 6 * GRID, 4 * GRID, 2 * GRID, 2 * GRID) },
   { id: "cross", label: "십자 모양", formula: "정사각형 5개", build: () => makeCross(0, 0, 2 * GRID, 2 * GRID) },
 ];
@@ -1122,6 +1123,15 @@ export default function PolygonCanvas() {
     setShapes((all) => {
       let changed = false;
       const next = all.map((s) => {
+        // 정의 기반 도형(마름모·정n각형)은 정수 격자 강제 대신 정의(등변)를 유지 → 재구성
+        if (s.defKind) {
+          const rebuilt = reconstructDefShape(s.defKind, s.points, GRID);
+          if (rebuilt) {
+            changed = true;
+            return { ...s, points: rebuilt, edgeLabels: undefined };
+          }
+          return s;
+        }
         const pts = s.points.map((q) => {
           const nx = Math.round(q.x / GRID) * GRID;
           const ny = Math.round(q.y / GRID) * GRID;
@@ -1942,11 +1952,12 @@ export default function PolygonCanvas() {
         : 0;
       const Dx = dx0 + tdx;
       const Dy = dy0 + tdy;
-      // 자연수 모드: 모든 꼭짓점을 정수 cm(모눈 교차점)에 개별 반올림
-      const roundIfInt = (q: Point): Point =>
-        integerMode && !e.shiftKey
+      // 자연수 모드: 모든 꼭짓점을 정수 cm에 개별 반올림 (정의 기반 도형은 예외 — 정의 유지)
+      const translated = (q: Point): Point => ({ x: q.x + Dx, y: q.y + Dy });
+      const roundIfInt = (q: Point, preserveDef: boolean): Point =>
+        integerMode && !e.shiftKey && !preserveDef
           ? { x: Math.round((q.x + Dx) / GRID) * GRID, y: Math.round((q.y + Dy) / GRID) * GRID }
-          : { x: q.x + Dx, y: q.y + Dy };
+          : translated(q);
       // 선택 그룹 전체를 같은 양만큼 이동
       const grp = dm.group ?? [{ id: dm.shapeId, startPoints: dm.startPoints, startGhosts: dm.startGhosts }];
       const startMap = new Map(grp.map((g) => [g.id, g]));
@@ -1954,10 +1965,11 @@ export default function PolygonCanvas() {
         all.map((s) => {
           const st = startMap.get(s.id);
           if (!st) return s;
+          const preserveDef = !!s.defKind; // 정의 기반 도형은 정의 유지(개별 반올림 X)
           return {
             ...s,
-            points: st.startPoints.map(roundIfInt),
-            ghosts: st.startGhosts?.map((g) => g.map(roundIfInt)),
+            points: st.startPoints.map((q) => roundIfInt(q, preserveDef)),
+            ghosts: st.startGhosts?.map((g) => g.map((q) => roundIfInt(q, preserveDef))),
           };
         })
       );
@@ -1986,9 +1998,16 @@ export default function PolygonCanvas() {
             const nice = snapVertexNice(raw, P, N, 12 * k);
             snapped = nice ?? gridSnap(raw);
           }
+          let newPoints = s.points.map((q, i) => (i === dm.vertexIndex ? snapped : q));
+          // 정의 기반 도형(마름모·정n각형)은 정의 유지 → 한 변을 자연수로 스냅해
+          //   나머지 변도 자동으로 자연수 cm가 되도록 재구성
+          if (integerMode && s.defKind && !e.shiftKey) {
+            const rebuilt = reconstructDefShape(s.defKind, newPoints, GRID);
+            if (rebuilt) newPoints = rebuilt;
+          }
           return {
             ...s,
-            points: s.points.map((q, i) => (i === dm.vertexIndex ? snapped : q)),
+            points: newPoints,
             ghosts: undefined,
           };
         }
@@ -2436,7 +2455,7 @@ export default function PolygonCanvas() {
   function addPreset(pr: Preset) {
     commitHistory();
     const { x: cx, y: cy } = viewCenterWorld();
-    const s: Shape = { id: uid(), color: nextColor(), points: placeAtCenter(pr.build(), cx, cy) };
+    const s: Shape = { id: uid(), color: nextColor(), points: placeAtCenter(pr.build(), cx, cy), defKind: pr.defKind };
     setShapes((all) => [...all, s]);
     setSelectedId(s.id);
     setTool("select");

@@ -46,23 +46,25 @@ function fmtLen(cm: number): string {
   if (Math.abs(cm - r) < 0.05) return `${r}cm`;
   const h = Math.round(cm * 2) / 2;
   if (Math.abs(cm - h) < 0.05) return `${h}cm`;
-  return `약 ${r}cm`;
+  // 대각선처럼 무리수 길이 → 소수 첫째자리로 정확히 표기 ('약 6cm' 대신 '약 5.7cm')
+  return `약 ${cm.toFixed(1)}cm`;
 }
 function fmtArea(cm2: number): string {
   const r = Math.round(cm2);
   if (Math.abs(cm2 - r) < 0.05) return `${r}cm²`;
   const h = Math.round(cm2 * 2) / 2;
   if (Math.abs(cm2 - h) < 0.05) return `${h}cm²`;
-  return `약 ${r}cm²`;
+  return `약 ${cm2.toFixed(1)}cm²`;
 }
 
-// 한 변의 '표시 길이'(라벨에 보이는 값)를 0.5cm 단위 수치로 반환
+// 한 변의 '표시 길이'(라벨에 보이는 값)를 소수 첫째자리 단위 수치로 반환
 function niceLenCm(cm: number): number {
   const r = Math.round(cm);
   if (Math.abs(cm - r) < 0.05) return r;
   const h = Math.round(cm * 2) / 2;
   if (Math.abs(cm - h) < 0.05) return h;
-  return r; // 어림값은 가장 가까운 정수로
+  // 어림값은 소수 첫째자리 (예: 5.66 → 5.7)
+  return Math.round(cm * 10) / 10;
 }
 // 둘레 = 화면에 보이는 각 변 라벨의 합 (아이가 변을 더한 값과 일치, 깔끔한 수)
 function displayPerimeterCm(points: Point[]): number {

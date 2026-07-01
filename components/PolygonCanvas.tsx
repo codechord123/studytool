@@ -120,7 +120,8 @@ type DragMode =
   | { type: "auxEnd"; kind: "guide" | "measure"; id: string; end: "a" | "b" }
   | { type: "auxMove"; kind: "guide" | "measure"; id: string; startA: Point; startB: Point; startPointer: Point }
   | { type: "textMove"; id: string; startPointer: Point; startX: number; startY: number }
-  | { type: "textResize"; id: string; startPointer: Point; startScale: number; startW: number; startH: number };
+  | { type: "textResize"; id: string; startPointer: Point; startScale: number; startW: number; startH: number }
+  | { type: "circleResize"; shapeId: string; center: Point };
 
 // 점 p에서 선분 a-b까지의 최단 거리
 function distToSegment(p: Point, a: Point, b: Point): number {
@@ -1737,6 +1738,19 @@ export default function PolygonCanvas() {
 
     // select — 단일 선택일 때만 회전/꼭짓점/점추가 편집 허용
     if (selected && selectedIds.length === 1) {
+      // 원: 테두리(경계선) 근처를 잡으면 반지름 조절 — 자연수 cm로 스냅
+      const isCircle = typeof selected.defKind === "object" && selected.defKind !== null && "circle" in selected.defKind;
+      if (isCircle) {
+        const c = polygonCentroid(selected.points);
+        const R = selected.points.reduce((sum, q) => sum + Math.hypot(q.x - c.x, q.y - c.y), 0) / selected.points.length;
+        const dist = Math.hypot(raw.x - c.x, raw.y - c.y);
+        if (Math.abs(dist - R) < 16 * k) {
+          commitHistory();
+          dragRef.current = { type: "circleResize", shapeId: selected.id, center: c };
+          return;
+        }
+        // 원은 회전 손잡이·꼭짓점 편집 없음 → 아래 일반 로직(이동/선택)으로 진행
+      } else {
       const handle = rotationHandle(selected, k);
       if (Math.hypot(p.x - handle.x, p.y - handle.y) < 16 * k) {
         commitHistory();
@@ -1828,6 +1842,7 @@ export default function PolygonCanvas() {
           return;
         }
       }
+      } // end: 원이 아닌 도형의 회전/꼭짓점/점추가/각도 편집
     }
     const hit = topShapeAt(raw);
     if (hit) {
@@ -1968,6 +1983,20 @@ export default function PolygonCanvas() {
       const f = startD > 0 ? newD / startD : 1;
       const next = Math.max(0.5, Math.min(4, dm.startScale * f));
       setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, scale: next } : n)));
+      return;
+    }
+    if (dm.type === "circleResize") {
+      // 포인터-중심 거리 = 새 반지름. 자연수 모드(또는 격자 켬)면 정수/반정수 cm 스냅
+      let rCm = Math.hypot(raw.x - dm.center.x, raw.y - dm.center.y) / GRID;
+      if (!e.shiftKey) {
+        if (integerMode) rCm = Math.max(1, Math.round(rCm));
+        else if (snapStep > 0) rCm = Math.max(snapStep, Math.round(rCm / snapStep) * snapStep);
+      }
+      rCm = Math.max(0.5, Math.min(50, rCm));
+      const newPts = makeCircle(dm.center.x, dm.center.y, rCm * GRID);
+      setShapes((all) =>
+        all.map((s) => (s.id === dm.shapeId ? { ...s, points: newPts, defKind: { circle: rCm } } : s))
+      );
       return;
     }
     if (dm.type === "rotate") {
@@ -2361,6 +2390,8 @@ export default function PolygonCanvas() {
   function equilateralizeShape(sid: string) {
     const s = shapesLiveRef.current.find((sh) => sh.id === sid);
     if (!s) return;
+    // 원은 이미 '완벽한 등변' — 48각형으로 바뀌지 않도록 차단
+    if (typeof s.defKind === "object" && s.defKind !== null && "circle" in s.defKind) return;
     const n = s.points.length;
     if (n < 3) return;
     if (n === 4) {
@@ -2398,6 +2429,8 @@ export default function PolygonCanvas() {
   function equiangularizeShape(sid: string) {
     const s = shapesLiveRef.current.find((sh) => sh.id === sid);
     if (!s) return;
+    // 원은 각 개념이 없음 — 정48각형으로 바뀌지 않도록 차단
+    if (typeof s.defKind === "object" && s.defKind !== null && "circle" in s.defKind) return;
     const n = s.points.length;
     if (n < 3) return;
     const c = polygonCentroid(s.points);
@@ -3722,8 +3755,8 @@ export default function PolygonCanvas() {
       ctx.fillText("1️⃣", s.points[0].x - 10 * k, s.points[0].y - 14 * k);
     }
 
-    // 각도 표시: 내각 + (선택 시) 삼각형 분할로 내각의 합 유도
-    if (showAngles && !isRef && s.points.length >= 3) {
+    // 각도 표시: 내각 + (선택 시) 삼각형 분할로 내각의 합 유도 — 원은 제외
+    if (showAngles && !isRef && s.points.length >= 3 && !circleDef) {
       const pts = s.points;
       const n = pts.length;
       // 한 꼭짓점에서 대각선을 그어 (n-2)개 삼각형으로 분할 (선택된 도형만)
@@ -3829,7 +3862,14 @@ export default function PolygonCanvas() {
       : cellCount != null
       ? `= ${cellCount}칸`
       : showAreaBadge
-      ? fmtArea(polygonArea(s.points) / (GRID * GRID))
+      ? circleDef
+        ? (() => {
+            // 원: 다각형 근사값 대신 정확한 πr²로 표기(정보 카드와 일치)
+            const cc = polygonCentroid(s.points);
+            const rr = s.points.reduce((sum, q) => sum + Math.hypot(q.x - cc.x, q.y - cc.y), 0) / s.points.length / GRID;
+            return fmtArea(Math.PI * rr * rr);
+          })()
+        : fmtArea(polygonArea(s.points) / (GRID * GRID))
       : null;
     if (centerLabel) {
       const lf = (isCellLabel ? (boardMode ? 19 : 16) : boardMode ? 17 : 14) * labelScale * k;
@@ -4334,6 +4374,7 @@ export default function PolygonCanvas() {
           onSplit={splitSelected}
           onEquilateralize={equilateralizeSelected}
           onEquiangularize={equiangularizeSelected}
+          isCircle={typeof selected.defKind === "object" && selected.defKind !== null && "circle" in selected.defKind}
           dragRef={ctxDrag.ref}
           dragHandle={ctxDrag.handle}
           pos={ctxPos}
@@ -4725,7 +4766,7 @@ function InfoCard({
           <div className={`font-extrabold leading-tight text-slate-900 ${big}`}>{fmtLen(peri)}</div>
         </div>
       </div>
-      {showAngles && selected && selected.points.length >= 3 && (
+      {showAngles && selected && selected.points.length >= 3 && !circleDef && (
         <div className="mt-2.5 rounded-xl bg-violet-50 px-3.5 py-2.5">
           <div className="text-xs font-semibold text-violet-500">내각의 합</div>
           <div className="text-2xl font-extrabold text-violet-700">{(selected.points.length - 2) * 180}°</div>
@@ -4753,6 +4794,7 @@ function ContextBar({
   onSplit,
   onEquilateralize,
   onEquiangularize,
+  isCircle,
   dragRef,
   dragHandle,
   pos,
@@ -4773,6 +4815,7 @@ function ContextBar({
   onSplit: () => void;
   onEquilateralize: () => void;
   onEquiangularize: () => void;
+  isCircle?: boolean;
   dragRef: React.RefObject<HTMLDivElement>;
   dragHandle: object;
   pos: XY | null;
@@ -4839,22 +4882,24 @@ function ContextBar({
             </button>
           </MiniGroup>
         )}
-        <MiniGroup label="맞추기">
-          <button
-            className="grid h-9 place-items-center rounded-lg border border-sky-200 bg-sky-50 px-2 text-sm font-semibold text-sky-700 hover:bg-sky-100"
-            onClick={onEquilateralize}
-            title="모든 변의 길이를 같게 (마름모 / 정다각형). 변을 꾹 눌러도 됩니다."
-          >
-            🔷 등변
-          </button>
-          <button
-            className="grid h-9 place-items-center rounded-lg border border-violet-200 bg-violet-50 px-2 text-sm font-semibold text-violet-700 hover:bg-violet-100"
-            onClick={onEquiangularize}
-            title="모든 각을 같게 (직사각형 / 정다각형). 각 부근을 꾹 눌러도 됩니다."
-          >
-            📐 등각
-          </button>
-        </MiniGroup>
+        {!isCircle && (
+          <MiniGroup label="맞추기">
+            <button
+              className="grid h-9 place-items-center rounded-lg border border-sky-200 bg-sky-50 px-2 text-sm font-semibold text-sky-700 hover:bg-sky-100"
+              onClick={onEquilateralize}
+              title="모든 변의 길이를 같게 (마름모 / 정다각형). 변을 꾹 눌러도 됩니다."
+            >
+              🔷 등변
+            </button>
+            <button
+              className="grid h-9 place-items-center rounded-lg border border-violet-200 bg-violet-50 px-2 text-sm font-semibold text-violet-700 hover:bg-violet-100"
+              onClick={onEquiangularize}
+              title="모든 각을 같게 (직사각형 / 정다각형). 각 부근을 꾹 눌러도 됩니다."
+            >
+              📐 등각
+            </button>
+          </MiniGroup>
+        )}
         <MiniGroup label="색상">
           <div className="flex h-9 items-center gap-1">
             {COLORS.map((c) => (
@@ -4870,25 +4915,29 @@ function ContextBar({
             ))}
           </div>
         </MiniGroup>
-        <MiniGroup label="회전">
-          <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90° (Z)">
-            ↶90°
-          </button>
-          <button className={mini} onClick={() => onRotate(90)} title="시계 90° (X)">
-            ↷90°
-          </button>
-          <button className={mini} onClick={() => onRotate(180)} title="180°">
-            180°
-          </button>
-        </MiniGroup>
-        <MiniGroup label="뒤집기">
-          <button className={mini} onClick={() => onFlip("horizontal")} title="좌우 뒤집기 (C)">
-            ↔
-          </button>
-          <button className={mini} onClick={() => onFlip("vertical")} title="위아래 뒤집기 (V)">
-            ↕
-          </button>
-        </MiniGroup>
+        {!isCircle && (
+          <MiniGroup label="회전">
+            <button className={mini} onClick={() => onRotate(-90)} title="시계 반대 90° (Z)">
+              ↶90°
+            </button>
+            <button className={mini} onClick={() => onRotate(90)} title="시계 90° (X)">
+              ↷90°
+            </button>
+            <button className={mini} onClick={() => onRotate(180)} title="180°">
+              180°
+            </button>
+          </MiniGroup>
+        )}
+        {!isCircle && (
+          <MiniGroup label="뒤집기">
+            <button className={mini} onClick={() => onFlip("horizontal")} title="좌우 뒤집기 (C)">
+              ↔
+            </button>
+            <button className={mini} onClick={() => onFlip("vertical")} title="위아래 뒤집기 (V)">
+              ↕
+            </button>
+          </MiniGroup>
+        )}
         <MiniGroup label="크기">
           <button className={mini} onClick={() => onScale(0.5)} title="절반으로">
             ×½

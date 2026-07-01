@@ -1041,6 +1041,8 @@ export default function PolygonCanvas() {
   const textBoxRef = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map());
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const justCreatedTextRef = useRef(false);
+  // 회전 중 각도 배지(돌린 양·스냅 여부·화면 위치)
+  const [rotInfo, setRotInfo] = useState<{ deg: number; snapped: boolean; sx: number; sy: number } | null>(null);
   const [boardMode, setBoardMode] = useState(false);
   const [drawer, setDrawer] = useState<null | "shapes" | "scenarios">(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
@@ -1669,6 +1671,30 @@ export default function PolygonCanvas() {
       setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, x: dm.startX + dx, y: dm.startY + dy } : n)));
       return;
     }
+    if (dm.type === "rotate") {
+      const curAbs = Math.atan2(p.y - dm.center.y, p.x - dm.center.x);
+      const rawAng = curAbs - dm.startAngle;
+      // 절대 방향 기준 스냅 → 시작 각도와 상관없이 30·45·60·90°처럼 반듯하게 딱 맞춰짐
+      const SNAP = Math.PI / 12; // 15° 간격(15·30·45·60·75·90…)
+      const TOL = e.shiftKey ? 0 : (Math.PI / 180) * 7; // Shift 누르면 자석 끔(자유 회전)
+      const snappedAbs = Math.round(curAbs / SNAP) * SNAP;
+      const isSnap = TOL > 0 && Math.abs(curAbs - snappedAbs) < TOL;
+      const ang = isSnap ? snappedAbs - dm.startAngle : rawAng;
+      // 돌린 양(도) 배지
+      let deg = ((ang * 180) / Math.PI) % 360;
+      if (deg > 180) deg -= 360;
+      if (deg < -180) deg += 360;
+      const cam = camRef.current;
+      setRotInfo({ deg: Math.round(deg), snapped: isSnap, sx: dm.center.x * cam.scale + cam.tx, sy: dm.center.y * cam.scale + cam.ty });
+      setShapes((all) =>
+        all.map((s) =>
+          s.id === dm.shapeId
+            ? { ...s, points: rotatePoints(dm.startPoints, dm.center, ang), ghosts: dm.startGhosts?.map((g) => rotatePoints(g, dm.center, ang)) }
+            : s
+        )
+      );
+      return;
+    }
     if (dm.type === "translate") {
       // 이동은 연속(raw) 좌표 기준 — 격자 스냅으로 양자화하지 않음
       const dx0 = raw.x - dm.startPointer.x;
@@ -1715,18 +1741,6 @@ export default function PolygonCanvas() {
             ghosts: undefined,
           };
         }
-        if (dm.type === "rotate") {
-          const rawAng = Math.atan2(p.y - dm.center.y, p.x - dm.center.x) - dm.startAngle;
-          // 15° 배수(15·30·45·90…)에 7° 이내면 자석 스냅
-          const SNAP = Math.PI / 12;
-          const near = Math.round(rawAng / SNAP) * SNAP;
-          const ang = Math.abs(rawAng - near) < (Math.PI / 180) * 7 ? near : rawAng;
-          return {
-            ...s,
-            points: rotatePoints(dm.startPoints, dm.center, ang),
-            ghosts: dm.startGhosts?.map((g) => rotatePoints(g, dm.center, ang)),
-          };
-        }
         return s;
       })
     );
@@ -1737,6 +1751,7 @@ export default function PolygonCanvas() {
     if (pointersRef.current.size < 2) pinchRef.current = null;
     const dm = dragRef.current;
     const k = 1 / camRef.current.scale;
+    if (dm.type === "rotate") setRotInfo(null);
     if (dm.type === "pan") {
       if (dm.maybeDeselect && !dm.moved) {
         setSelectedId(null);
@@ -3121,6 +3136,19 @@ export default function PolygonCanvas() {
             />
           );
         })()}
+
+      {/* 회전 각도 배지 */}
+      {rotInfo && (
+        <div
+          className={`pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-1/2 rounded-full px-2.5 py-1 text-sm font-extrabold shadow-lg ring-2 ${
+            rotInfo.snapped ? "bg-emerald-500 text-white ring-emerald-200" : "bg-slate-800 text-white ring-slate-300"
+          }`}
+          style={{ left: rotInfo.sx, top: rotInfo.sy }}
+        >
+          {rotInfo.snapped ? "🧲 " : "↻ "}
+          {Math.abs(rotInfo.deg)}°
+        </div>
+      )}
 
       {/* 빈 화면 안내 */}
       {shapes.length === 0 && draft.length === 0 && (

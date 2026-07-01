@@ -2986,6 +2986,66 @@ export default function PolygonCanvas() {
     requestAnimationFrame(() => requestAnimationFrame(() => exportSubmission(saveName, saveTitle)));
   }
 
+  // ----- 파일로 저장·불러오기 (JSON) — 학생이 다음 시간에 이어서 작업할 수 있게 -----
+  function exportSaveFile() {
+    try {
+      const payload = {
+        app: "임선생의 도형학습",
+        version: 1,
+        savedAt: new Date().toISOString(),
+        shapes: shapes.map((s) => ({ ...s })),
+        texts: texts.map((t) => ({ ...t })),
+        measurements: measurements.map((m) => ({ ...m })),
+        guides: guides.map((g) => ({ ...g })),
+        settings: { snapStep, magnetic, integerMode, showAngles, showEdgeLen, showSymmetry, labelScale },
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const d = new Date();
+      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+      a.href = url;
+      a.download = `도형학습-${stamp}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setFlash("작업 파일로 저장했어요! 다음 시간에 '📁 열기'로 이어서 작업할 수 있어요. 💾");
+    } catch {
+      setFlash("파일 저장에 실패했어요. 다시 시도해 주세요.");
+    }
+  }
+  function importSaveFile(file: File) {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const data = JSON.parse(String(r.result));
+        if (!data || !Array.isArray(data.shapes)) {
+          setFlash("파일 형식이 맞지 않아요. '도형학습-….json' 파일인지 확인해 주세요.");
+          return;
+        }
+        commitHistory();
+        setShapes(data.shapes);
+        setTexts(Array.isArray(data.texts) ? data.texts : []);
+        setMeasurements(Array.isArray(data.measurements) ? data.measurements : []);
+        setGuides(Array.isArray(data.guides) ? data.guides : []);
+        setSelectedIds([]);
+        setActiveTextId(null);
+        setEditingTextId(null);
+        const st = data.settings || {};
+        if (st.snapStep !== undefined) setSnapStep(st.snapStep);
+        if (typeof st.magnetic === "boolean") setMagnetic(st.magnetic);
+        if (typeof st.integerMode === "boolean") setIntegerMode(st.integerMode);
+        if (typeof st.showAngles === "boolean") setShowAngles(st.showAngles);
+        if (typeof st.showEdgeLen === "boolean") setShowEdgeLen(st.showEdgeLen);
+        if (typeof st.showSymmetry === "boolean") setShowSymmetry(st.showSymmetry);
+        if (typeof st.labelScale === "number") setLabelScale(st.labelScale);
+        setFlash("작업을 불러왔어요! 이어서 진행하세요. 📁");
+      } catch {
+        setFlash("파일을 읽을 수 없어요. 손상됐거나 다른 앱의 파일일 수 있어요.");
+      }
+    };
+    r.readAsText(file);
+  }
+
   // ----- 캔버스 렌더링 -----
   useEffect(() => {
     const c = canvasRef.current;
@@ -4060,11 +4120,34 @@ export default function PolygonCanvas() {
               </IconBtn>
               <Chip active={boardMode} onClick={() => setBoardMode(true)} icon="📺" label="전자칠판" tone="sky" />
               <button
+                onClick={exportSaveFile}
+                className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 sm:px-2.5"
+                title="작업을 파일(.json)로 저장 — 다음 시간에 이어서 작업할 수 있어요"
+              >
+                💾 <span className="hidden lg:inline">파일 저장</span>
+              </button>
+              <label
+                className="flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 sm:px-2.5"
+                title="저장된 작업 파일 불러오기"
+              >
+                📁 <span className="hidden lg:inline">열기</span>
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) importSaveFile(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <button
                 onClick={openSaveDialog}
                 className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 sm:px-2.5"
                 title="이름을 넣어 제출용 이미지로 저장"
               >
-                📷 <span className="hidden lg:inline">저장·제출</span>
+                📷 <span className="hidden lg:inline">제출</span>
               </button>
               <button
                 onClick={clearAll}

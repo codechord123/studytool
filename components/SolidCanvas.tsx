@@ -334,19 +334,19 @@ export default function SolidCanvas() {
         <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-lg backdrop-blur">
           <a href="/" className="whitespace-nowrap text-sm font-bold text-slate-400 hover:text-slate-700" title="평면 도형 학습으로">← 평면</a>
           <span className="mx-1 h-5 w-px bg-slate-200" />
-          <span className="whitespace-nowrap text-base font-extrabold text-slate-800">🧊 임선생의 도형학습 · 입체</span>
+          <span className="whitespace-nowrap text-base font-extrabold text-slate-800">🧊 <span className="hidden sm:inline">임선생의 도형학습 · </span>입체</span>
         </div>
-        <div className="pointer-events-auto flex gap-1.5 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur">
-          <button onClick={() => setMode("view")} className={seg(mode === "view")}>📦 입체보기</button>
-          <button onClick={() => setMode("stack")} className={seg(mode === "stack")}>🧊 쌓기나무</button>
-          <button onClick={() => setMode("net")} className={seg(mode === "net")}>📄 전개도</button>
-          <button onClick={() => setMode("section")} className={seg(mode === "section")}>✂️ 단면</button>
-          <button onClick={() => setSolidQuiz(true)} className="rounded-lg bg-rose-500 px-3 py-1.5 text-sm font-bold text-white hover:bg-rose-600">❓ 퀴즈</button>
+        <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-1.5 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur">
+          <button onClick={() => setMode("view")} className={seg(mode === "view")} title="입체보기">📦<span className="hidden sm:inline"> 입체보기</span></button>
+          <button onClick={() => setMode("stack")} className={seg(mode === "stack")} title="쌓기나무">🧊<span className="hidden sm:inline"> 쌓기나무</span></button>
+          <button onClick={() => setMode("net")} className={seg(mode === "net")} title="전개도">📄<span className="hidden sm:inline"> 전개도</span></button>
+          <button onClick={() => setMode("section")} className={seg(mode === "section")} title="단면">✂️<span className="hidden sm:inline"> 단면</span></button>
+          <button onClick={() => setSolidQuiz(true)} className="rounded-lg bg-rose-500 px-3 py-1.5 text-sm font-bold text-white hover:bg-rose-600" title="퀴즈">❓<span className="hidden sm:inline"> 퀴즈</span></button>
         </div>
       </div>
 
       {/* 입체 종류 선택 (상단 중앙) */}
-      <div className="pointer-events-auto absolute left-1/2 top-16 z-10 flex max-w-[94vw] -translate-x-1/2 flex-wrap justify-center gap-1 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur">
+      <div className="pointer-events-auto absolute left-1/2 top-28 z-10 flex max-w-[94vw] -translate-x-1/2 flex-wrap justify-center gap-1 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur sm:top-16">
         {SOLIDS.map((s) => (
           <button
             key={s.id}
@@ -362,7 +362,7 @@ export default function SolidCanvas() {
       </div>
 
       {/* 좌하단: 크기 조절 */}
-      <div className="pointer-events-auto absolute bottom-3 left-3 w-[min(86vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+      <div className="pointer-events-auto absolute bottom-3 left-3 w-[min(45vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-2.5 shadow-xl backdrop-blur sm:w-[min(86vw,300px)] sm:p-3">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-extrabold text-slate-700">📏 크기 (cm)</span>
           {isBox && (
@@ -418,7 +418,7 @@ export default function SolidCanvas() {
       </div>
 
       {/* 우하단: 정보/도구 */}
-      <div className="pointer-events-auto absolute bottom-3 right-3 w-[min(86vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+      <div className="pointer-events-auto absolute bottom-3 right-3 w-[min(45vw,300px)] rounded-2xl border border-slate-200 bg-white/95 p-2.5 shadow-xl backdrop-blur sm:w-[min(86vw,300px)] sm:p-3">
         {mode === "net" ? (
           <>
             <div className="mb-2 text-sm font-extrabold text-slate-700">📄 {data.name} 전개도</div>

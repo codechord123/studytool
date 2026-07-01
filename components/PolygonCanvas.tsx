@@ -1100,6 +1100,7 @@ export default function PolygonCanvas() {
   const [showAreaBadge, setShowAreaBadge] = useState(true);
   const [gridCountMode, setGridCountMode] = useState(false); // 칸세기 모드(어떤 도형이든 모눈 칸 표시)
   const [showAngles, setShowAngles] = useState(false); // 각도 표시(내각 + 내각의 합 유도)
+  const [showSymmetry, setShowSymmetry] = useState(false); // 🪞 대칭축 표시(선대칭)
   const [showEdgeLen, setShowEdgeLen] = useState(true); // 변 길이(cm) 라벨 표시
   const [labelScale, setLabelScale] = useState(1); // 변·넓이 숫자 라벨 크기 배율 (수업용)
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
@@ -3305,8 +3306,72 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, labelScale, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, showSymmetry, labelScale, lessonReference, quiz]);
 
+  // 선대칭도형의 대칭축을 도형 폭보다 조금 더 길게 점선으로 그림
+  function drawSymmetryAxes(
+    ctx: CanvasRenderingContext2D,
+    s: Shape,
+    k: number,
+    circleDef: { circle: number } | null
+  ) {
+    const c = polygonCentroid(s.points);
+    // 도형 바운딩 반지름 (표시 길이 결정)
+    const bbR = Math.max(...s.points.map((p) => Math.hypot(p.x - c.x, p.y - c.y))) * 1.15;
+    const drawLine = (angle: number) => {
+      const dx = Math.cos(angle) * bbR;
+      const dy = Math.sin(angle) * bbR;
+      ctx.beginPath();
+      ctx.moveTo(c.x - dx, c.y - dy);
+      ctx.lineTo(c.x + dx, c.y + dy);
+      ctx.stroke();
+    };
+    ctx.save();
+    ctx.setLineDash([8 * k, 5 * k]);
+    ctx.strokeStyle = "#ec4899cc";
+    ctx.lineWidth = 1.8 * k;
+    if (circleDef) {
+      // 원 — 대표 4개 대칭축(수직·수평·대각선 2)
+      drawLine(0);
+      drawLine(Math.PI / 2);
+      drawLine(Math.PI / 4);
+      drawLine(-Math.PI / 4);
+    } else if (s.defKind === "rhombus" && s.points.length === 4) {
+      // 마름모 — 두 대각선
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      ctx.lineTo(s.points[2].x, s.points[2].y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(s.points[1].x, s.points[1].y);
+      ctx.lineTo(s.points[3].x, s.points[3].y);
+      ctx.stroke();
+    } else if (typeof s.defKind === "object" && s.defKind !== null && "regular" in s.defKind) {
+      // 정n각형 — n개 축 (n 짝수: 마주보는 꼭짓점, 마주보는 변 중점)
+      const n = s.defKind.regular;
+      const a0 = Math.atan2(s.points[0].y - c.y, s.points[0].x - c.x);
+      if (n % 2 === 0) {
+        // 짝수: 꼭짓점 축 n/2개 + 변 중점 축 n/2개
+        for (let i = 0; i < n / 2; i++) drawLine(a0 + (i * Math.PI) / (n / 2));
+        for (let i = 0; i < n / 2; i++) drawLine(a0 + Math.PI / n + (i * Math.PI) / (n / 2));
+      } else {
+        // 홀수: n개 축 각각 꼭짓점 → 반대편 변 중점
+        for (let i = 0; i < n; i++) drawLine(a0 + (i * Math.PI) / n);
+      }
+    } else if (s.points.length === 4) {
+      // 축평행 직사각형 자동 감지(대략): 두 변이 평행하고 인접 변이 수직인지 확인
+      const xs = s.points.map((p) => p.x);
+      const ys = s.points.map((p) => p.y);
+      const xSet = new Set(xs.map((v) => Math.round(v * 100)));
+      const ySet = new Set(ys.map((v) => Math.round(v * 100)));
+      if (xSet.size === 2 && ySet.size === 2) {
+        // 축평행 사각형 → 두 축(수평 중심, 수직 중심)
+        drawLine(0);
+        drawLine(Math.PI / 2);
+      }
+    }
+    ctx.restore();
+  }
   function drawShape(
     ctx: CanvasRenderingContext2D,
     s: Shape,
@@ -3411,6 +3476,11 @@ export default function PolygonCanvas() {
     ctx.lineWidth = (isMergeFirst || isSelected ? 3.5 : isRef ? 2 : 2.5) * k;
     ctx.stroke();
     ctx.restore();
+
+    // 🪞 대칭축 표시 — 선대칭도형의 대칭축 자동 감지 후 점선 표시
+    if (showSymmetry && !isRef) {
+      drawSymmetryAxes(ctx, s, k, circleDef);
+    }
 
     // 원본 박제 워터마크 라벨
     if (isRef) {
@@ -3959,6 +4029,7 @@ export default function PolygonCanvas() {
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />
+              <Chip active={showSymmetry} onClick={() => setShowSymmetry(!showSymmetry)} icon="🪞" label="대칭" title="대칭축: 선대칭도형의 대칭축을 점선으로 보여줘요 (정n각형, 마름모, 직사각형, 원)" />
               <Chip active={showEdgeLen} onClick={() => setShowEdgeLen(!showEdgeLen)} icon="📏" label="변길이" title="변 길이(cm) 라벨을 켜고 끄기" />
               <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="변·넓이 숫자 크기 (수업용)">글자</span>
               <div className="flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5" title="변·넓이 숫자 크기 조절 (수업용)">

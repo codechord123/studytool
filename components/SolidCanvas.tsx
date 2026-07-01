@@ -332,9 +332,9 @@ export default function SolidCanvas() {
       {/* 상단 바 */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-wrap items-start justify-between gap-2 p-3">
         <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-lg backdrop-blur">
-          <a href="/" className="whitespace-nowrap text-sm font-bold text-slate-400 hover:text-slate-700" title="2D 다각형 체험실로">← 평면</a>
+          <a href="/" className="whitespace-nowrap text-sm font-bold text-slate-400 hover:text-slate-700" title="평면 도형 학습으로">← 평면</a>
           <span className="mx-1 h-5 w-px bg-slate-200" />
-          <span className="whitespace-nowrap text-base font-extrabold text-slate-800">🧊 입체도형 체험실</span>
+          <span className="whitespace-nowrap text-base font-extrabold text-slate-800">🧊 임선생의 도형학습 · 입체</span>
         </div>
         <div className="pointer-events-auto flex gap-1.5 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur">
           <button onClick={() => setMode("view")} className={seg(mode === "view")}>📦 입체보기</button>

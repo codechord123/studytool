@@ -2972,7 +2972,7 @@ export default function PolygonCanvas() {
       {!boardMode && (
         <div ref={headerRef} className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-2 sm:p-3">
           <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-2.5 py-2 shadow-lg backdrop-blur sm:px-3">
-            <span className="whitespace-nowrap text-base font-extrabold tracking-tight text-slate-800">📐 <span className="hidden sm:inline">다각형 체험실</span></span>
+            <span className="whitespace-nowrap text-base font-extrabold tracking-tight text-slate-800">📐 <span className="hidden sm:inline">임선생의 도형학습</span></span>
             <span className="hidden text-xs text-slate-400 xl:inline">초등 5학년 · 둘레와 넓이</span>
             <span className="mx-1 hidden h-5 w-px bg-slate-200 sm:block" />
             <DrawerToggle active={drawer === "shapes"} onClick={() => setDrawer(drawer === "shapes" ? null : "shapes")} icon="📐" label="도형 추가" />

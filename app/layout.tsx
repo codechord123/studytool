@@ -2,8 +2,8 @@ import "./globals.css";
 import type { Metadata, Viewport } from "next";
 
 export const metadata: Metadata = {
-  title: "다각형 둘레와 넓이 학습 도구",
-  description: "초등학교 5학년 다각형의 둘레와 넓이 수업용 인터랙티브 도구",
+  title: "임선생의 도형학습",
+  description: "초등 5·6학년 도형(둘레·넓이·각도·입체) 수업용 인터랙티브 학습 도구",
 };
 
 export const viewport: Viewport = {

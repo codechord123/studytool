@@ -1100,17 +1100,45 @@ export default function PolygonCanvas() {
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
   const [snapStep, setSnapStep] = useState<0 | 0.1 | 0.5 | 1>(0.5);
-  // 자연수 모드: 모든 꼭짓점을 정수 cm(모눈 교차점)에 강제 스냅
-  const [integerMode, setIntegerMode] = useState(false);
+  // 자연수 모드: 모든 꼭짓점을 정수 cm(모눈 교차점)에 강제 스냅 — 기본값 ON
+  const [integerMode, setIntegerMode] = useState(true);
   useEffect(() => {
     try {
-      if (localStorage.getItem("integerMode") === "1") setIntegerMode(true);
+      const v = localStorage.getItem("integerMode");
+      // "0"으로 명시적으로 꺼둔 사용자만 OFF 유지, 그 외(null·"1")는 ON
+      if (v === "0") setIntegerMode(false);
+      else setIntegerMode(true);
     } catch {}
   }, []);
   useEffect(() => {
     try { localStorage.setItem("integerMode", integerMode ? "1" : "0"); } catch {}
     if (integerMode && snapStep !== 1) setSnapStep(1);
   }, [integerMode, snapStep]);
+  // 자연수 모드가 켜질 때 기존 도형의 모든 꼭짓점을 정수 cm에 반올림 → "약" 흔적 즉시 제거
+  useEffect(() => {
+    if (!integerMode) return;
+    setShapes((all) => {
+      let changed = false;
+      const next = all.map((s) => {
+        const pts = s.points.map((q) => {
+          const nx = Math.round(q.x / GRID) * GRID;
+          const ny = Math.round(q.y / GRID) * GRID;
+          if (nx !== q.x || ny !== q.y) changed = true;
+          return { x: nx, y: ny };
+        });
+        // 반올림해서 두 꼭짓점이 겹치면 원래대로 유지(도형 붕괴 방지)
+        for (let i = 0; i < pts.length; i++) {
+          for (let j = i + 1; j < pts.length; j++) {
+            if (Math.abs(pts[i].x - pts[j].x) < 1e-6 && Math.abs(pts[i].y - pts[j].y) < 1e-6) {
+              return s;
+            }
+          }
+        }
+        return changed ? { ...s, points: pts, edgeLabels: undefined } : s;
+      });
+      return changed ? next : all;
+    });
+  }, [integerMode]);
   const [magnetic, setMagnetic] = useState(true);
   const [draft, setDraft] = useState<Point[]>([]);
   const [hoverPt, setHoverPt] = useState<Point | null>(null);

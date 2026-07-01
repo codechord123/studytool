@@ -511,33 +511,47 @@ export function reconstructDefShape(
     cy = centerPts.reduce((s, p) => s + p.y, 0) / centerPts.length;
   }
   if (kind === "rhombus" && n === 4) {
-    // 두 대각선(짝수 인덱스 vs 홀수 인덱스가 마주보는 쌍)의 방향·길이를 뽑아 정수 변 재구성.
-    // 마름모 꼭짓점 순서: 대각선 두 개가 pts[0]↔pts[2], pts[1]↔pts[3]
+    // 마름모는 '대각선 × 대각선 ÷ 2'(둘러싼 직사각형의 절반)로 넓이를 유도하므로
+    // 변이 아니라 ★대각선★을 자연수에 맞춘다:
+    //   반대각선(대각선의 절반)을 정수 cm로 스냅 → 대각선은 짝수 정수,
+    //   축 정렬 + 중심이 격자점이면 네 꼭짓점 모두 격자 교차점에 정확히 놓임.
+    //   → 넓이 = d1×d2÷2 가 항상 자연수, 둘러싼 직사각형도 자연수×자연수.
     const v02 = { x: pts[2].x - pts[0].x, y: pts[2].y - pts[0].y };
     const v13 = { x: pts[3].x - pts[1].x, y: pts[3].y - pts[1].y };
     const d1 = Math.hypot(v02.x, v02.y) / gridPx; // cm
     const d2 = Math.hypot(v13.x, v13.y) / gridPx; // cm
     if (d1 < 0.1 || d2 < 0.1) return null;
-    const side = Math.hypot(d1 / 2, d2 / 2); // cm
-    const sInt = Math.max(1, Math.round(side));
-    // 현재 대각선 비율을 유지하며 side = sInt이 되도록 스케일
-    // (d1/2)²·k² + (d2/2)²·k² = sInt²  →  k = sInt / side
-    const k = sInt / side;
-    const D1 = d1 * k * gridPx; // world px
-    const D2 = d2 * k * gridPx;
-    // 대각선 방향(단위 벡터)
-    const u1 = { x: v02.x / (d1 * gridPx), y: v02.y / (d1 * gridPx) };
-    const u2 = { x: v13.x / (d2 * gridPx), y: v13.y / (d2 * gridPx) };
-    // 두 대각선이 정확히 수직이 아니면 강제 수직화(u1과 수직인 방향으로 u2 재설정)
+    const h1 = Math.max(1, Math.round(d1 / 2)); // 반대각선1 (정수 cm)
+    const h2 = Math.max(1, Math.round(d2 / 2)); // 반대각선2 (정수 cm)
+    // 대각선 방향: 수평/수직에 가깝다면(±10°) 축에 정렬 → '둘러싼 직사각형'이 반듯해짐
+    let ang1 = Math.atan2(v02.y, v02.x);
+    const normA = (x: number) => {
+      let v = x;
+      while (v <= -Math.PI) v += 2 * Math.PI;
+      while (v > Math.PI) v -= 2 * Math.PI;
+      return v;
+    };
+    const nearAxis = Math.round(ang1 / (Math.PI / 2)) * (Math.PI / 2);
+    const axisAligned = Math.abs(normA(ang1 - nearAxis)) < (Math.PI / 180) * 10;
+    if (axisAligned) ang1 = nearAxis;
+    const u1 = { x: Math.cos(ang1), y: Math.sin(ang1) };
     const perp = { x: -u1.y, y: u1.x };
-    const sign = (u2.x * perp.x + u2.y * perp.y) >= 0 ? 1 : -1;
+    const sign = (v13.x * perp.x + v13.y * perp.y) >= 0 ? 1 : -1;
     const u2p = { x: perp.x * sign, y: perp.y * sign };
-    // 재구성된 꼭짓점 (원래 순서 유지). NaN/무한대/과도한 값 방어.
+    // 축 정렬 상태면 중심도 격자 교차점에 스냅 → 꼭짓점 4개가 모두 격자에 붙음
+    let ccx = cx;
+    let ccy = cy;
+    if (axisAligned) {
+      ccx = Math.round(cx / gridPx) * gridPx;
+      ccy = Math.round(cy / gridPx) * gridPx;
+    }
+    const H1 = h1 * gridPx;
+    const H2 = h2 * gridPx;
     const out: Point[] = [
-      { x: cx - u1.x * D1 / 2, y: cy - u1.y * D1 / 2 },
-      { x: cx - u2p.x * D2 / 2, y: cy - u2p.y * D2 / 2 },
-      { x: cx + u1.x * D1 / 2, y: cy + u1.y * D1 / 2 },
-      { x: cx + u2p.x * D2 / 2, y: cy + u2p.y * D2 / 2 },
+      { x: ccx - u1.x * H1, y: ccy - u1.y * H1 },
+      { x: ccx - u2p.x * H2, y: ccy - u2p.y * H2 },
+      { x: ccx + u1.x * H1, y: ccy + u1.y * H1 },
+      { x: ccx + u2p.x * H2, y: ccy + u2p.y * H2 },
     ];
     const MAX = 1e5 * gridPx; // 100,000 cm 이상은 폭주로 간주
     for (const p of out) {

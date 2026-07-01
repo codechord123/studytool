@@ -1103,6 +1103,19 @@ export default function PolygonCanvas() {
   const [showSymmetry, setShowSymmetry] = useState(false); // 🪞 대칭축 표시(선대칭)
   const [showEdgeLen, setShowEdgeLen] = useState(true); // 변 길이(cm) 라벨 표시
   const [labelScale, setLabelScale] = useState(1); // 변·넓이 숫자 라벨 크기 배율 (수업용)
+  // 원주율 어림값 모드 — 교과서에 따라 3 / 3.1 / 3.14 로 계산 (6학년 원 단원)
+  const [piMode, setPiMode] = useState<3 | 3.1 | 3.14>(3.14);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("piMode");
+      if (v === "3") setPiMode(3);
+      else if (v === "3.1") setPiMode(3.1);
+      else if (v === "3.14") setPiMode(3.14);
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("piMode", String(piMode)); } catch {}
+  }, [piMode]);
   const [mergeFirstId, setMergeFirstId] = useState<string | null>(null);
   const [tool, setToolState] = useState<Tool>("select");
   const [snapStep, setSnapStep] = useState<0 | 0.5 | 1>(0.5);
@@ -1180,7 +1193,11 @@ export default function PolygonCanvas() {
   useEffect(() => {
     try {
       if (localStorage.getItem("railCollapsed") === "1") setRailCollapsed(true);
-      if (localStorage.getItem("infoCollapsed") === "1") setInfoCollapsed(true);
+      const savedInfo = localStorage.getItem("infoCollapsed");
+      if (savedInfo === "1") setInfoCollapsed(true);
+      // 스마트폰(폭 480px 미만)에선 정보 카드가 화면 중앙을 가리므로,
+      // 사용자가 명시적으로 펴 둔 적 없으면 접힌 상태로 시작
+      else if (savedInfo === null && window.innerWidth < 480) setInfoCollapsed(true);
       if (localStorage.getItem("ctxCollapsed") === "1") setCtxCollapsed(true);
     } catch {}
   }, []);
@@ -2395,13 +2412,14 @@ export default function PolygonCanvas() {
     const n = s.points.length;
     if (n < 3) return;
     if (n === 4) {
-      // 마름모: 두 대각선을 유지하며 한 변을 자연수 cm로
+      // 마름모: 대각선을 자연수(짝수) cm로 스냅 → 넓이 = 대각선×대각선÷2 관계가 깔끔하게 유지
       const rebuilt = reconstructDefShape("rhombus", s.points, GRID);
       if (rebuilt) {
         commitHistory();
         setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: rebuilt, defKind: "rhombus", ghosts: undefined, edgeLabels: undefined } : sh)));
-        const side = Math.round(Math.hypot(rebuilt[0].x - rebuilt[1].x, rebuilt[0].y - rebuilt[1].y) / GRID);
-        setFlash(`🔷 등변으로 만들었어요! 모든 변이 ${side}cm (마름모)`);
+        const dd1 = Math.round(Math.hypot(rebuilt[2].x - rebuilt[0].x, rebuilt[2].y - rebuilt[0].y) / GRID);
+        const dd2 = Math.round(Math.hypot(rebuilt[3].x - rebuilt[1].x, rebuilt[3].y - rebuilt[1].y) / GRID);
+        setFlash(`🔷 마름모! 대각선 ${dd1}×${dd2}cm → 넓이 ${(dd1 * dd2) / 2}cm² (둘러싼 직사각형의 절반)`);
       }
       return;
     }
@@ -3398,7 +3416,7 @@ export default function PolygonCanvas() {
       const sy = y * camera.scale + camera.ty;
       if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
     }
-  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, showSymmetry, labelScale, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, showSymmetry, labelScale, piMode, lessonReference, quiz]);
 
   // 선대칭도형의 대칭축을 도형 폭보다 조금 더 길게 점선으로 그림
   function drawSymmetryAxes(
@@ -3867,7 +3885,7 @@ export default function PolygonCanvas() {
             // 원: 다각형 근사값 대신 정확한 πr²로 표기(정보 카드와 일치)
             const cc = polygonCentroid(s.points);
             const rr = s.points.reduce((sum, q) => sum + Math.hypot(q.x - cc.x, q.y - cc.y), 0) / s.points.length / GRID;
-            return fmtArea(Math.PI * rr * rr);
+            return fmtArea(piMode * rr * rr);
           })()
         : fmtArea(polygonArea(s.points) / (GRID * GRID))
       : null;
@@ -4320,6 +4338,8 @@ export default function PolygonCanvas() {
               : null
           }
           collapsed={infoCollapsed}
+          piMode={piMode}
+          onPiMode={setPiMode}
           onToggleCollapsed={() => setInfoCollapsed((v) => !v)}
         />
       )}
@@ -4614,6 +4634,8 @@ function InfoCard({
   multi,
   collapsed,
   onToggleCollapsed,
+  piMode,
+  onPiMode,
 }: {
   selected: Shape | null;
   boardMode: boolean;
@@ -4629,6 +4651,8 @@ function InfoCard({
   multi?: { count: number; area: number; peri: number } | null;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+  piMode?: 3 | 3.1 | 3.14;
+  onPiMode?: (v: 3 | 3.1 | 3.14) => void;
 }) {
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -4654,19 +4678,29 @@ function InfoCard({
     grabRef.current = null;
   }
   if (count === 0) return null;
-  // 원(defKind.circle)이면 반지름 기반 정확한 π 공식으로 계산
+  // 원(defKind.circle)이면 반지름 기반 원주율(piMode: 3/3.1/3.14) 공식으로 계산
   const circleDef = selected && typeof selected.defKind === "object" && selected.defKind !== null && "circle" in selected.defKind ? selected.defKind : null;
+  const pi = piMode ?? 3.14;
   let area: number;
   let peri: number;
   let radiusCm: number | null = null;
+  let rhombusDiag: { d1: number; d2: number } | null = null;
   if (circleDef) {
     const c = polygonCentroid(selected!.points);
     radiusCm = selected!.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / selected!.points.length / GRID;
-    area = Math.PI * radiusCm * radiusCm;
-    peri = 2 * Math.PI * radiusCm;
+    area = pi * radiusCm * radiusCm;
+    peri = 2 * pi * radiusCm;
   } else {
     area = multi ? multi.area : selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
     peri = multi ? multi.peri : selected ? displayPerimeterCm(selected.points) : totalPeri;
+    // 마름모: 대각선 표시 → '대각선×대각선÷2 = 둘러싼 직사각형의 절반' 관계를 눈으로 확인
+    if (selected && selected.defKind === "rhombus" && selected.points.length === 4) {
+      const p = selected.points;
+      rhombusDiag = {
+        d1: Math.hypot(p[2].x - p[0].x, p[2].y - p[0].y) / GRID,
+        d2: Math.hypot(p[3].x - p[1].x, p[3].y - p[1].y) / GRID,
+      };
+    }
   }
   const big = boardMode ? "text-4xl" : "text-2xl sm:text-3xl";
   if (collapsed) {
@@ -4742,7 +4776,7 @@ function InfoCard({
           <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
           <div className="leading-tight">
             <div className="text-lg font-extrabold text-slate-800">{circleDef ? "원" : kind.name}</div>
-            <div className="text-xs font-medium text-amber-700">공식 · {circleDef ? "반지름 × 반지름 × π" : kind.formula}</div>
+            <div className="text-xs font-medium text-amber-700">공식 · {circleDef ? `반지름 × 반지름 × ${pi}` : kind.formula}</div>
           </div>
         </div>
       ) : (
@@ -4750,19 +4784,48 @@ function InfoCard({
       )}
       {circleDef && radiusCm !== null && (
         <div className="mb-2 rounded-xl bg-sky-50 px-3.5 py-2 text-sm">
-          <div className="text-xs font-semibold text-sky-500">반지름</div>
-          <div className="text-xl font-extrabold text-sky-800">{fmtLen(radiusCm)}</div>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs font-semibold text-sky-500">반지름</div>
+              <div className="text-xl font-extrabold text-sky-800">{fmtLen(radiusCm)}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs font-semibold text-sky-500">원주율</div>
+              <div className="flex gap-0.5 rounded-lg bg-white p-0.5">
+                {([3, 3.1, 3.14] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => onPiMode?.(v)}
+                    className={`rounded-md px-1.5 py-0.5 text-xs font-bold transition ${
+                      pi === v ? "bg-sky-600 text-white" : "text-sky-600 hover:bg-sky-100"
+                    }`}
+                    title={`원주율을 ${v}(으)로 어림하여 계산`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {rhombusDiag && (
+        <div className="mb-2 rounded-xl bg-amber-50 px-3.5 py-2 text-sm">
+          <div className="text-xs font-semibold text-amber-600">대각선 (둘러싼 직사각형)</div>
+          <div className="text-xl font-extrabold text-amber-800">
+            {fmtLen(rhombusDiag.d1).replace("cm", "")} × {fmtLen(rhombusDiag.d2)}
+          </div>
         </div>
       )}
       <div className="flex items-stretch gap-2.5">
         <div className="flex-1 rounded-xl bg-slate-50 px-3.5 py-2.5">
-          <div className="text-xs font-semibold text-slate-400">넓이{circleDef ? " (=πr²)" : ""}</div>
+          <div className="text-xs font-semibold text-slate-400">넓이{circleDef ? ` (=r×r×${pi})` : rhombusDiag ? " (=대각선×대각선÷2)" : ""}</div>
           <div className={`font-extrabold leading-tight ${hideArea ? "text-slate-300" : "text-slate-900"} ${big}`}>
             {hideArea ? "?cm²" : fmtArea(area)}
           </div>
         </div>
         <div className="flex-1 rounded-xl bg-slate-50 px-3.5 py-2.5">
-          <div className="text-xs font-semibold text-slate-400">{circleDef ? "원주 (=2πr)" : "둘레"}</div>
+          <div className="text-xs font-semibold text-slate-400">{circleDef ? `원주 (=지름×${pi})` : "둘레"}</div>
           <div className={`font-extrabold leading-tight text-slate-900 ${big}`}>{fmtLen(peri)}</div>
         </div>
       </div>
@@ -4907,7 +4970,7 @@ function ContextBar({
                 key={c}
                 onClick={() => onColor(c)}
                 title="색 바꾸기"
-                className={`h-6 w-6 rounded-full ring-2 transition ${
+                className={`h-8 w-8 rounded-full ring-2 transition ${
                   shape.color === c ? "ring-slate-900" : "ring-transparent hover:ring-slate-300"
                 }`}
                 style={{ backgroundColor: c }}

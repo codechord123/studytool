@@ -29,7 +29,7 @@ import {
 } from "@/lib/geometry";
 
 type Tool = "draw" | "select" | "cut" | "delete" | "merge" | "measure" | "guide" | "text";
-type TextNote = { id: string; x: number; y: number; text: string; color: string };
+type TextNote = { id: string; x: number; y: number; text: string; color: string; scale?: number };
 
 // 1cm = 80 world px. 카메라(scale)로 화면 크기를 자유 조절한다.
 const GRID = 80;
@@ -115,7 +115,8 @@ type DragMode =
   // 가이드/측정선 편집
   | { type: "auxEnd"; kind: "guide" | "measure"; id: string; end: "a" | "b" }
   | { type: "auxMove"; kind: "guide" | "measure"; id: string; startA: Point; startB: Point; startPointer: Point }
-  | { type: "textMove"; id: string; startPointer: Point; startX: number; startY: number };
+  | { type: "textMove"; id: string; startPointer: Point; startX: number; startY: number }
+  | { type: "textResize"; id: string; startPointer: Point; startScale: number; startW: number; startH: number };
 
 // 점 p에서 선분 a-b까지의 최단 거리
 function distToSegment(p: Point, a: Point, b: Point): number {
@@ -997,13 +998,13 @@ const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
 const ACTION_KEYS = { rotL: "z", rotR: "x", flipH: "c", flipV: "v", gridCount: "g" } as const;
 
 const TOOL_HINT: Record<Tool, string> = {
-  select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동(선택 전체) · 변 가운데 ➕=점 추가 · 꼭짓점 우클릭=점 삭제",
+  select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동(선택 전체) · 변 가운데 ➕=점 추가 · 꼭짓점 우클릭 또는 꾹 누르기=점 삭제",
   draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
   cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요. (여러 개를 선택한 뒤 '합치기'를 누르면 한꺼번에!)",
   measure: "두 점을 드래그해 길이를 재요. 끝점·선을 잡아 옮기고, Delete로 지울 수 있어요.",
   guide: "점선 보조선을 그어요. 끝점·선을 잡아 옮기고 조절, Delete로 지우기. (자르기 전 ‘여기서 자를까?’)",
-  text: "빈 곳을 눌러 글상자를 만들고 설명을 써요. 글상자를 눌러 수정·드래그로 이동. 저장하면 그림과 함께 제출돼요!",
+  text: "빈 곳을 눌러 글상자를 만들고 설명을 써요. 글상자를 눌러 수정·드래그로 이동 · 오른쪽 아래 손잡이로 크기 조절 · 저장하면 그림과 함께 제출돼요!",
   delete: "지우고 싶은 도형이나 글상자를 누르세요.",
 };
 
@@ -1087,6 +1088,19 @@ export default function PolygonCanvas() {
   const textBoxRef = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map());
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const justCreatedTextRef = useRef(false);
+  // 꼭짓점 롱프레스(꾹 눌러 삭제) 타이머
+  const holdVertexRef = useRef<{ timer: number; shapeId: string; vertexIndex: number; sx: number; sy: number } | null>(null);
+  // 도구모음(왼쪽 세로 막대) 접기 상태 — 저장은 세션 localStorage
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("railCollapsed");
+      if (v === "1") setRailCollapsed(true);
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("railCollapsed", railCollapsed ? "1" : "0"); } catch {}
+  }, [railCollapsed]);
   // 회전 중 각도 배지(돌린 양·스냅 여부·화면 위치)
   const [rotInfo, setRotInfo] = useState<{ deg: number; snapped: boolean; sx: number; sy: number } | null>(null);
   // 제출용 저장 대화상자
@@ -1575,6 +1589,29 @@ export default function PolygonCanvas() {
       return;
     }
 
+    // 선택된 글상자의 오른쪽 아래 손잡이를 잡으면 크기 조절
+    if (activeTextId) {
+      const b = textBoxRef.current.get(activeTextId);
+      const note = texts.find((n) => n.id === activeTextId);
+      if (b && note) {
+        const hs = 12 * k;
+        const hx = b.x + b.w - hs;
+        const hy = b.y + b.h - hs;
+        // 넉넉히(터치 대응) — 손잡이 + 여유
+        if (raw.x >= hx - 4 * k && raw.x <= hx + hs + 4 * k && raw.y >= hy - 4 * k && raw.y <= hy + hs + 4 * k) {
+          commitHistory();
+          dragRef.current = {
+            type: "textResize",
+            id: activeTextId,
+            startPointer: raw,
+            startScale: note.scale ?? 1,
+            startW: b.w,
+            startH: b.h,
+          };
+          return;
+        }
+      }
+    }
     // 선택 도구에서 글상자를 잡으면 이동 (도형보다 위)
     {
       const ht = textAt(raw);
@@ -1608,6 +1645,23 @@ export default function PolygonCanvas() {
       if (vi !== -1) {
         commitHistory();
         dragRef.current = { type: "vertex", shapeId: selected.id, vertexIndex: vi };
+        // 꾹 누르기(0.6초, 거의 안 움직였을 때) → 꼭짓점 삭제
+        if (holdVertexRef.current) window.clearTimeout(holdVertexRef.current.timer);
+        const shapeId = selected.id;
+        const timer = window.setTimeout(() => {
+          const cur = shapes.find((s) => s.id === shapeId);
+          if (!cur || cur.points.length <= 3) {
+            setFlash("삼각형은 더 줄일 수 없어요 (점 3개 최소)");
+            holdVertexRef.current = null;
+            return;
+          }
+          const np = cur.points.filter((_, i) => i !== vi);
+          setShapes((all) => all.map((s) => (s.id === shapeId ? { ...s, points: np, ghosts: undefined, edgeLabels: undefined } : s)));
+          setFlash("꼭짓점을 지웠어요! (꾹 누르기)");
+          dragRef.current = { type: "none" };
+          holdVertexRef.current = null;
+        }, 600);
+        holdVertexRef.current = { timer, shapeId, vertexIndex: vi, sx, sy };
         return;
       }
       // 변 가운데 '+' 핸들 → 점 추가 후 바로 끌기
@@ -1674,6 +1728,14 @@ export default function PolygonCanvas() {
     const p = gridSnap(raw);
     setHoverPt(p);
     const dm = dragRef.current;
+    // 꾹 누르기 삭제 대기 중 조금이라도 움직이면 취소(=일반 드래그로 이동)
+    if (holdVertexRef.current) {
+      const h = holdVertexRef.current;
+      if (Math.hypot(sx - h.sx, sy - h.sy) > 6) {
+        window.clearTimeout(h.timer);
+        holdVertexRef.current = null;
+      }
+    }
     if (dm.type === "none") return;
 
     if (dm.type === "pan") {
@@ -1719,6 +1781,17 @@ export default function PolygonCanvas() {
       const dx = raw.x - dm.startPointer.x;
       const dy = raw.y - dm.startPointer.y;
       setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, x: dm.startX + dx, y: dm.startY + dy } : n)));
+      return;
+    }
+    if (dm.type === "textResize") {
+      // 시작 상자 크기와 포인터 이동량으로 스케일 계산 (대각선 기준)
+      const dx = raw.x - dm.startPointer.x;
+      const dy = raw.y - dm.startPointer.y;
+      const startD = Math.hypot(dm.startW, dm.startH);
+      const newD = Math.hypot(dm.startW + dx, dm.startH + dy);
+      const f = startD > 0 ? newD / startD : 1;
+      const next = Math.max(0.5, Math.min(4, dm.startScale * f));
+      setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, scale: next } : n)));
       return;
     }
     if (dm.type === "rotate") {
@@ -1815,6 +1888,11 @@ export default function PolygonCanvas() {
     const dm = dragRef.current;
     const k = 1 / camRef.current.scale;
     if (dm.type === "rotate") setRotInfo(null);
+    // 꾹 누르기 대기 취소(손을 뗀 경우)
+    if (holdVertexRef.current) {
+      window.clearTimeout(holdVertexRef.current.timer);
+      holdVertexRef.current = null;
+    }
     if (dm.type === "pan") {
       if (dm.maybeDeselect && !dm.moved) {
         setSelectedId(null);
@@ -2837,13 +2915,14 @@ export default function PolygonCanvas() {
     // 글상자(설명 메모) — 화면 크기 고정(k), 월드 앵커. 편집 중인 것은 textarea로 대체
     textBoxRef.current.clear();
     {
-      const FS = 15 * labelScale;
-      const padX = 9 * k;
-      const padY = 7 * k;
-      const lh = FS * 1.4 * k;
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
       for (const t of texts) {
+        const sc = t.scale ?? 1;
+        const FS = 15 * labelScale * sc;
+        const padX = 9 * sc * k;
+        const padY = 7 * sc * k;
+        const lh = FS * 1.4 * k;
         const lines = t.text.length ? t.text.split("\n") : [""];
         ctx.font = `600 ${FS * k}px sans-serif`;
         let maxw = 0;
@@ -2859,6 +2938,22 @@ export default function PolygonCanvas() {
         ctx.strokeRect(t.x, t.y, boxW, boxH);
         ctx.fillStyle = t.color;
         lines.forEach((ln, i) => ctx.fillText(ln, t.x + padX, t.y + padY + i * lh));
+        // 선택된 글상자: 오른쪽 아래 크기 조절 손잡이
+        if (t.id === activeTextId) {
+          const hs = 12 * k; // 손잡이 크기
+          const hx = t.x + boxW - hs;
+          const hy = t.y + boxH - hs;
+          ctx.fillStyle = "#f59e0b";
+          ctx.fillRect(hx, hy, hs, hs);
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.5 * k;
+          ctx.beginPath();
+          ctx.moveTo(hx + hs * 0.25, hy + hs * 0.75);
+          ctx.lineTo(hx + hs * 0.75, hy + hs * 0.25);
+          ctx.moveTo(hx + hs * 0.55, hy + hs * 0.75);
+          ctx.lineTo(hx + hs * 0.75, hy + hs * 0.55);
+          ctx.stroke();
+        }
       }
     }
     ctx.textAlign = "start";
@@ -3314,7 +3409,7 @@ export default function PolygonCanvas() {
           if (!note) return null;
           const sx = note.x * cam.scale + cam.tx;
           const sy = note.y * cam.scale + cam.ty;
-          const fs = 15 * labelScale;
+          const fs = 15 * labelScale * (note.scale ?? 1);
           const lines = Math.max(1, note.text.split("\n").length);
           return (
             <textarea
@@ -3529,7 +3624,20 @@ export default function PolygonCanvas() {
       >
         <div className="flex flex-col gap-1.5 rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-xl backdrop-blur">
           <Grip handle={railDrag.handle} onReset={() => setRailPos(null)} className="h-3" />
-          {TOOL_META.map((t) => {
+          {/* 접기/펴기 토글 */}
+          <button
+            onClick={() => setRailCollapsed((v) => !v)}
+            title={railCollapsed ? "도구모음 펴기" : "도구모음 접기"}
+            aria-label={railCollapsed ? "도구모음 펴기" : "도구모음 접기"}
+            className="grid h-8 w-14 place-items-center rounded-lg border border-slate-200 bg-slate-50 text-sm font-extrabold text-slate-500 hover:bg-slate-100"
+          >
+            {railCollapsed ? (
+              <span className="flex items-center gap-1"><span>🧰</span><span className="text-[10px]">펴기</span></span>
+            ) : (
+              <span className="flex items-center gap-1"><span>◀</span><span className="text-[10px]">접기</span></span>
+            )}
+          </button>
+          {!railCollapsed && TOOL_META.map((t) => {
             const active = tool === t.id;
             return (
               <button
@@ -3552,6 +3660,16 @@ export default function PolygonCanvas() {
               </button>
             );
           })}
+          {/* 접었을 때 현재 도구만 표시(간단 조회) */}
+          {railCollapsed && (() => {
+            const cur = TOOL_META.find((t) => t.id === tool)!;
+            return (
+              <div className="grid h-14 w-14 place-items-center rounded-xl bg-slate-100 text-slate-500" title={`현재 도구: ${cur.label}`}>
+                <span className="text-lg leading-none">{cur.icon}</span>
+                <span className="text-[9px] font-bold leading-none text-slate-400">{cur.label}</span>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

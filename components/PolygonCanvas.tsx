@@ -1880,19 +1880,23 @@ export default function PolygonCanvas() {
       const step = e.shiftKey ? 0 : (snapStep > 0 ? snapStep * GRID : 0);
       const engagedX = mag.dx !== 0 || al.dx !== 0;
       const engagedY = mag.dy !== 0 || al.dy !== 0;
-      // 도형의 실제 위치(왼쪽·위 모서리)를 격자에 맞춰 딱 붙임
-      // (이전에는 이동량만 반올림해서, 시작 위치가 격자 밖이면 도착도 격자 밖이었음)
-      const startMinX = Math.min(...dm.startPoints.map((q) => q.x));
-      const startMinY = Math.min(...dm.startPoints.map((q) => q.y));
+      // 잡은 손잡이(=드래그 시작점에서 가장 가까운 꼭짓점)를 격자 교차점에 딱 붙임
+      // → 어디를 잡든 그 꼭짓점이 항상 모눈 교차점 위에 놓임(도형이 rotated/off-grid여도)
+      let anchor = dm.startPoints[0];
+      let bestD = Infinity;
+      for (const q of dm.startPoints) {
+        const d = Math.hypot(q.x - dm.startPointer.x, q.y - dm.startPointer.y);
+        if (d < bestD) { bestD = d; anchor = q; }
+      }
       const tdx = engagedX
         ? mag.dx + al.dx
         : step
-        ? Math.round((startMinX + dx0) / step) * step - (startMinX + dx0)
+        ? Math.round((anchor.x + dx0) / step) * step - (anchor.x + dx0)
         : 0;
       const tdy = engagedY
         ? mag.dy + al.dy
         : step
-        ? Math.round((startMinY + dy0) / step) * step - (startMinY + dy0)
+        ? Math.round((anchor.y + dy0) / step) * step - (anchor.y + dy0)
         : 0;
       const Dx = dx0 + tdx;
       const Dy = dy0 + tdy;

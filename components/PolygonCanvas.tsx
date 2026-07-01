@@ -1004,7 +1004,7 @@ const TOOL_HINT: Record<Tool, string> = {
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요. (여러 개를 선택한 뒤 '합치기'를 누르면 한꺼번에!)",
   measure: "두 점을 드래그해 길이를 재요. 끝점·선을 잡아 옮기고, Delete로 지울 수 있어요.",
   guide: "점선 보조선을 그어요. 끝점·선을 잡아 옮기고 조절, Delete로 지우기. (자르기 전 ‘여기서 자를까?’)",
-  text: "빈 곳을 눌러 글상자를 만들고 설명을 써요. 글상자를 눌러 수정·드래그로 이동 · 오른쪽 아래 손잡이로 크기 조절 · 저장하면 그림과 함께 제출돼요!",
+  text: "빈 곳을 눌러 글상자를 만들고 설명을 써요. 드래그로 이동 · 오른쪽 아래 손잡이로 크기 조절 (격자에 딱딱 맞아요, Shift 누르면 자유) · 저장하면 그림과 함께 제출돼요!",
   delete: "지우고 싶은 도형이나 글상자를 누르세요.",
 };
 
@@ -1789,7 +1789,15 @@ export default function PolygonCanvas() {
     if (dm.type === "textMove") {
       const dx = raw.x - dm.startPointer.x;
       const dy = raw.y - dm.startPointer.y;
-      setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, x: dm.startX + dx, y: dm.startY + dy } : n)));
+      let nx = dm.startX + dx;
+      let ny = dm.startY + dy;
+      // Shift로 스냅 잠시 해제, 그 외에는 현재 격자 간격에 맞춰 스냅
+      if (!e.shiftKey && snapStep > 0) {
+        const step = snapStep * GRID;
+        nx = Math.round(nx / step) * step;
+        ny = Math.round(ny / step) * step;
+      }
+      setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, x: nx, y: ny } : n)));
       return;
     }
     if (dm.type === "textResize") {
@@ -1797,7 +1805,13 @@ export default function PolygonCanvas() {
       const dx = raw.x - dm.startPointer.x;
       const dy = raw.y - dm.startPointer.y;
       const startD = Math.hypot(dm.startW, dm.startH);
-      const newD = Math.hypot(dm.startW + dx, dm.startH + dy);
+      let newD = Math.hypot(dm.startW + dx, dm.startH + dy);
+      // 격자 스냅: 새 대각선 길이를 격자 배수에 가깝게 맞춤
+      if (!e.shiftKey && snapStep > 0) {
+        const step = snapStep * GRID;
+        const stepD = step * Math.SQRT2; // 대각선 상의 격자 단위
+        newD = Math.max(stepD, Math.round(newD / stepD) * stepD);
+      }
       const f = startD > 0 ? newD / startD : 1;
       const next = Math.max(0.5, Math.min(4, dm.startScale * f));
       setTexts((t) => t.map((n) => (n.id === dm.id ? { ...n, scale: next } : n)));

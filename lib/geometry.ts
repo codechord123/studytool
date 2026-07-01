@@ -9,7 +9,7 @@ export type Shape = {
   isReference?: boolean; // 원본 박제(읽기 전용, 점선 표시)
   // 정의상 변 길이가 같은 도형(마름모·정n각형). 자연수 모드에서 변 조작 시
   // 한 변을 자연수 cm로 스냅 → 정의에 의해 나머지 변도 자연수가 되도록 재구성.
-  defKind?: "rhombus" | { regular: number };
+  defKind?: "rhombus" | { regular: number } | { circle: number };
 };
 
 export function polygonArea(points: Point[]): number {
@@ -282,6 +282,16 @@ export function makeHexagon(cx: number, cy: number, r: number): Point[] {
   const out: Point[] = [];
   for (let i = 0; i < 6; i++) {
     const a = (Math.PI * 2 * i) / 6 - Math.PI / 2;
+    out.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+  }
+  return out;
+}
+
+// 원 — 48 꼭짓점 정다각형으로 근사(내부적으로는 다각형처럼 다루되, 렌더는 매끄러운 호로)
+export function makeCircle(cx: number, cy: number, r: number, n: number = 48): Point[] {
+  const out: Point[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (Math.PI * 2 * i) / n;
     out.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
   }
   return out;

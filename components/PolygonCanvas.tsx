@@ -8,6 +8,7 @@ import {
   cloneShapes,
   detectShapeKind,
   flipPoints,
+  makeCircle,
   makeCross,
   makeHexagon,
   makeLShape,
@@ -396,6 +397,7 @@ const PRESETS: Preset[] = [
   { id: "para", label: "평행사변형", formula: "밑변 × 높이", build: () => makeParallelogram(0, 0, 6 * GRID, 4 * GRID, 2 * GRID) },
   { id: "trap", label: "사다리꼴", formula: "(윗변 + 아랫변) × 높이 ÷ 2", build: () => makeTrapezoid(0, 0, 2 * GRID, 6 * GRID, 4 * GRID) },
   { id: "rhom", label: "마름모", formula: "대각선 × 대각선 ÷ 2", build: () => makeRhombus(0, 0, 8 * GRID, 6 * GRID), defKind: "rhombus" },
+  { id: "circle", label: "원", formula: "반지름 × 반지름 × π", build: () => makeCircle(0, 0, 3 * GRID), defKind: { circle: 3 } },
   { id: "reg3", label: "정삼각형", formula: "밑변 × 높이 ÷ 2", build: () => makeRegularSide(3, 6), defKind: { regular: 3 } },
   { id: "reg5", label: "정오각형", formula: "삼각형 5개로 나누기", build: () => makeRegularSide(5, 4), defKind: { regular: 5 } },
   { id: "hex", label: "정육각형", formula: "삼각형 6개로 나누기", build: () => makeHexagon(0, 0, 3 * GRID), defKind: { regular: 6 } },
@@ -3314,10 +3316,20 @@ export default function PolygonCanvas() {
   ) {
     if (s.points.length < 2) return;
     const isRef = !!s.isReference;
-    ctx.beginPath();
-    ctx.moveTo(s.points[0].x, s.points[0].y);
-    for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
-    ctx.closePath();
+    // 원(defKind.circle)은 매끄러운 호로 렌더링 (다각형 근사 대신)
+    const circleDef = typeof s.defKind === "object" && s.defKind !== null && "circle" in s.defKind ? s.defKind : null;
+    if (circleDef) {
+      const c = polygonCentroid(s.points);
+      const R = s.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / s.points.length;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
+      ctx.closePath();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
+      ctx.closePath();
+    }
     ctx.fillStyle = isMergeFirst ? "#f59e0b55" : isRef ? s.color + "22" : s.color + "55";
     ctx.fill();
 
@@ -3384,8 +3396,14 @@ export default function PolygonCanvas() {
     }
 
     ctx.beginPath();
-    ctx.moveTo(s.points[0].x, s.points[0].y);
-    for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
+    if (circleDef) {
+      const c = polygonCentroid(s.points);
+      const R = s.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / s.points.length;
+      ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
+    }
     ctx.closePath();
     ctx.save();
     if (isRef) ctx.setLineDash([10 * k, 6 * k]);
@@ -3404,8 +3422,49 @@ export default function PolygonCanvas() {
       ctx.textAlign = "start";
     }
 
-    // 회전 손잡이(점선+초록 원) — 단일 선택일 때만
-    if (isSelected && selectedIds.length === 1) {
+    // 원: 반지름 선 표시 + '반지름 Ncm' 라벨 (선택 시)
+    if (isSelected && selectedIds.length === 1 && circleDef && !isRef) {
+      const c = polygonCentroid(s.points);
+      const R = s.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / s.points.length;
+      ctx.save();
+      ctx.setLineDash([6 * k, 4 * k]);
+      ctx.strokeStyle = "#0284c7";
+      ctx.lineWidth = 2 * k;
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(c.x + R, c.y);
+      ctx.stroke();
+      ctx.restore();
+      // 중심점
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 3 * k, 0, Math.PI * 2);
+      ctx.fill();
+      // 반지름 라벨
+      const rText = fmtLen(R / GRID);
+      const rf = (boardMode ? 16 : 13) * labelScale;
+      ctx.font = `bold ${rf * k}px sans-serif`;
+      const rtxt = `반지름 ${rText}`;
+      const rw = ctx.measureText(rtxt).width;
+      const rp = 5 * k;
+      const rh = rf * k + 6 * k;
+      const rlabX = c.x + R / 2;
+      const rlabY = c.y - 12 * k;
+      ctx.fillStyle = "rgba(255,255,255,0.96)";
+      ctx.strokeStyle = "#0284c7";
+      ctx.lineWidth = 1.4 * k;
+      ctx.fillRect(rlabX - rw / 2 - rp, rlabY - rh / 2, rw + rp * 2, rh);
+      ctx.strokeRect(rlabX - rw / 2 - rp, rlabY - rh / 2, rw + rp * 2, rh);
+      ctx.fillStyle = "#075985";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(rtxt, rlabX, rlabY);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    }
+
+    // 회전 손잡이(점선+초록 원) — 단일 선택일 때만 (원에는 표시 안 함)
+    if (isSelected && selectedIds.length === 1 && !circleDef) {
       const c = polygonCentroid(s.points);
       const h = rotationHandle(s, k);
       ctx.save();
@@ -3426,11 +3485,11 @@ export default function PolygonCanvas() {
       ctx.stroke();
     }
 
-    // 변 길이 라벨 (labelScale = 수업용 글자 크기 배율)
+    // 변 길이 라벨 (labelScale = 수업용 글자 크기 배율). 원은 개별 변 없음
     const baseFont = (boardMode ? 20 : 16) * labelScale;
     ctx.font = `bold ${baseFont * k}px sans-serif`;
     const cx0 = polygonCentroid(s.points);
-    for (let i = 0; i < s.points.length; i++) {
+    for (let i = 0; i < s.points.length && !circleDef; i++) {
       const a = s.points[i];
       const b = s.points[(i + 1) % s.points.length];
       const mx = (a.x + b.x) / 2;
@@ -3491,15 +3550,19 @@ export default function PolygonCanvas() {
     ctx.textAlign = "start";
     ctx.textBaseline = "alphabetic";
 
-    for (const v of s.points) {
-      ctx.fillStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : s.color;
-      ctx.beginPath();
-      ctx.arc(v.x, v.y, (isSelected || isMergeFirst ? 6 : 4) * k, 0, Math.PI * 2);
-      ctx.fill();
+    // 원은 꼭짓점 표시 안 함(48-각형 근사가 노출되지 않도록)
+    if (!circleDef) {
+      for (const v of s.points) {
+        ctx.fillStyle = isMergeFirst ? "#d97706" : isSelected ? "#0f172a" : s.color;
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, (isSelected || isMergeFirst ? 6 : 4) * k, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     // 점 추가 핸들: 단일 선택+선택도구일 때 각 변 가운데 '+' (눌러서 꼭짓점 추가)
-    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && s.points.length < 16) {
+    //   원은 꼭짓점이 없으므로 이 핸들을 표시하지 않음
+    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && s.points.length < 16 && !circleDef) {
       for (let i = 0; i < s.points.length; i++) {
         const a = s.points[i];
         const b = s.points[(i + 1) % s.points.length];
@@ -4397,8 +4460,20 @@ function InfoCard({
     grabRef.current = null;
   }
   if (count === 0) return null;
-  const area = multi ? multi.area : selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
-  const peri = multi ? multi.peri : selected ? displayPerimeterCm(selected.points) : totalPeri;
+  // 원(defKind.circle)이면 반지름 기반 정확한 π 공식으로 계산
+  const circleDef = selected && typeof selected.defKind === "object" && selected.defKind !== null && "circle" in selected.defKind ? selected.defKind : null;
+  let area: number;
+  let peri: number;
+  let radiusCm: number | null = null;
+  if (circleDef) {
+    const c = polygonCentroid(selected!.points);
+    radiusCm = selected!.points.reduce((sum, p) => sum + Math.hypot(p.x - c.x, p.y - c.y), 0) / selected!.points.length / GRID;
+    area = Math.PI * radiusCm * radiusCm;
+    peri = 2 * Math.PI * radiusCm;
+  } else {
+    area = multi ? multi.area : selected ? polygonArea(selected.points) / (GRID * GRID) : totalArea;
+    peri = multi ? multi.peri : selected ? displayPerimeterCm(selected.points) : totalPeri;
+  }
   const big = boardMode ? "text-4xl" : "text-2xl sm:text-3xl";
   if (collapsed) {
     return (
@@ -4472,22 +4547,28 @@ function InfoCard({
         <div className="mb-3 flex items-center gap-2.5">
           <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />
           <div className="leading-tight">
-            <div className="text-lg font-extrabold text-slate-800">{kind.name}</div>
-            {kind.formula && <div className="text-xs font-medium text-amber-700">공식 · {kind.formula}</div>}
+            <div className="text-lg font-extrabold text-slate-800">{circleDef ? "원" : kind.name}</div>
+            <div className="text-xs font-medium text-amber-700">공식 · {circleDef ? "반지름 × 반지름 × π" : kind.formula}</div>
           </div>
         </div>
       ) : (
         <div className="mb-3 text-base font-bold text-slate-500">📊 전체 도형 {count}개</div>
       )}
+      {circleDef && radiusCm !== null && (
+        <div className="mb-2 rounded-xl bg-sky-50 px-3.5 py-2 text-sm">
+          <div className="text-xs font-semibold text-sky-500">반지름</div>
+          <div className="text-xl font-extrabold text-sky-800">{fmtLen(radiusCm)}</div>
+        </div>
+      )}
       <div className="flex items-stretch gap-2.5">
         <div className="flex-1 rounded-xl bg-slate-50 px-3.5 py-2.5">
-          <div className="text-xs font-semibold text-slate-400">넓이</div>
+          <div className="text-xs font-semibold text-slate-400">넓이{circleDef ? " (=πr²)" : ""}</div>
           <div className={`font-extrabold leading-tight ${hideArea ? "text-slate-300" : "text-slate-900"} ${big}`}>
             {hideArea ? "?cm²" : fmtArea(area)}
           </div>
         </div>
         <div className="flex-1 rounded-xl bg-slate-50 px-3.5 py-2.5">
-          <div className="text-xs font-semibold text-slate-400">둘레</div>
+          <div className="text-xs font-semibold text-slate-400">{circleDef ? "원주 (=2πr)" : "둘레"}</div>
           <div className={`font-extrabold leading-tight text-slate-900 ${big}`}>{fmtLen(peri)}</div>
         </div>
       </div>

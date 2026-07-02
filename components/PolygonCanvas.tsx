@@ -119,7 +119,7 @@ type DragMode =
   // 가이드/측정선 편집
   | { type: "auxEnd"; kind: "guide" | "measure"; id: string; end: "a" | "b" }
   | { type: "auxMove"; kind: "guide" | "measure"; id: string; startA: Point; startB: Point; startPointer: Point }
-  | { type: "textMove"; id: string; startPointer: Point; startX: number; startY: number }
+  | { type: "textMove"; id: string; startPointer: Point; startX: number; startY: number; downSX: number; downSY: number; wasActive: boolean }
   | { type: "textResize"; id: string; startPointer: Point; startScale: number; startW: number; startH: number }
   | { type: "circleResize"; shapeId: string; center: Point };
 
@@ -1035,7 +1035,7 @@ const TOOL_HINT: Record<Tool, string> = {
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요. (여러 개를 선택한 뒤 '합치기'를 누르면 한꺼번에!)",
   measure: "두 점을 드래그해 길이를 재요. 끝점·선을 잡아 옮기고, Delete로 지울 수 있어요.",
   guide: "점선 보조선을 그어요. 끝점·선을 잡아 옮기고 조절, Delete로 지우기. (자르기 전 ‘여기서 자를까?’)",
-  text: "빈 곳을 눌러 글상자를 만들고 설명을 써요. 드래그로 이동 · 오른쪽 아래 손잡이로 크기 조절 (격자에 딱딱 맞아요, Shift 누르면 자유) · 저장하면 그림과 함께 제출돼요!",
+  text: "빈 곳을 눌러 글상자를 만들어요. 글상자를 드래그=이동 · 다시 탭=글자 수정 · 오른쪽 아래 손잡이=크기 조절 (Shift 누르면 격자 무시). 선택 도구에서도 똑같이 다룰 수 있어요!",
   delete: "지우고 싶은 도형이나 글상자를 누르세요.",
 };
 
@@ -1612,6 +1612,38 @@ export default function PolygonCanvas() {
     }
     if (e.button !== 0 && e.pointerType === "mouse") return;
 
+    // 글상자(프레젠테이션식): 선택·글상자 도구 어디서든 자유롭게 이동·크기조절·편집
+    //   손잡이 드래그=크기, 몸통 드래그=이동, 몸통 탭=편집, 빈 곳(글상자 도구)=새로 만들기
+    if (tool === "select" || tool === "text") {
+      // 1) 활성 글상자의 오른쪽 아래 손잡이 → 크기(글자) 조절
+      if (activeTextId) {
+        const b = textBoxRef.current.get(activeTextId);
+        const note = texts.find((n) => n.id === activeTextId);
+        if (b && note) {
+          // 손잡이는 오른쪽 아래 '모서리'에 중심을 둠(절반은 상자 밖) → 작은 상자에서도 본문 탭을 가리지 않음
+          const hs = 13 * k;
+          const hcx = b.x + b.w;
+          const hcy = b.y + b.h;
+          if (Math.abs(raw.x - hcx) <= hs / 2 + 4 * k && Math.abs(raw.y - hcy) <= hs / 2 + 4 * k) {
+            commitHistory();
+            dragRef.current = { type: "textResize", id: activeTextId, startPointer: raw, startScale: note.scale ?? 1, startW: b.w, startH: b.h };
+            return;
+          }
+        }
+      }
+      // 2) 글상자 몸통 → 드래그로 이동 / (거의 안 움직이면) 탭으로 편집
+      const ht = textAt(raw);
+      if (ht) {
+        const note = texts.find((n) => n.id === ht)!;
+        const wasActive = activeTextId === ht;
+        setActiveTextId(ht);
+        setSelectedIds([]);
+        commitHistory();
+        dragRef.current = { type: "textMove", id: ht, startPointer: raw, startX: note.x, startY: note.y, downSX: sx, downSY: sy, wasActive };
+        return;
+      }
+    }
+
     if (tool === "draw") {
       if (draft.length >= 3) {
         const first = draft[0];
@@ -1625,14 +1657,8 @@ export default function PolygonCanvas() {
     }
 
     if (tool === "text") {
-      const hitText = textAt(raw);
-      if (hitText) {
-        setActiveTextId(hitText);
-        setEditingTextId(hitText);
-      } else {
-        commitHistory();
-        createTextAt(p);
-      }
+      // 글상자 히트는 위 통합 블록에서 처리됨 → 여기 오면 빈 곳 클릭 = 새 글상자 만들기(바로 편집)
+      createTextAt(p);
       return;
     }
 
@@ -1717,41 +1743,7 @@ export default function PolygonCanvas() {
       return;
     }
 
-    // 선택된 글상자의 오른쪽 아래 손잡이를 잡으면 크기 조절
-    if (activeTextId) {
-      const b = textBoxRef.current.get(activeTextId);
-      const note = texts.find((n) => n.id === activeTextId);
-      if (b && note) {
-        const hs = 12 * k;
-        const hx = b.x + b.w - hs;
-        const hy = b.y + b.h - hs;
-        // 넉넉히(터치 대응) — 손잡이 + 여유
-        if (raw.x >= hx - 4 * k && raw.x <= hx + hs + 4 * k && raw.y >= hy - 4 * k && raw.y <= hy + hs + 4 * k) {
-          commitHistory();
-          dragRef.current = {
-            type: "textResize",
-            id: activeTextId,
-            startPointer: raw,
-            startScale: note.scale ?? 1,
-            startW: b.w,
-            startH: b.h,
-          };
-          return;
-        }
-      }
-    }
-    // 선택 도구에서 글상자를 잡으면 이동 (도형보다 위)
-    {
-      const ht = textAt(raw);
-      if (ht) {
-        const note = texts.find((n) => n.id === ht)!;
-        setActiveTextId(ht);
-        setSelectedIds([]);
-        commitHistory();
-        dragRef.current = { type: "textMove", id: ht, startPointer: raw, startX: note.x, startY: note.y };
-        return;
-      }
-    }
+    // (글상자 이동·크기조절은 위쪽 통합 블록에서 처리)
 
     // select — 단일 선택일 때만 회전/꼭짓점/점추가 편집 허용
     if (selected && selectedIds.length === 1) {
@@ -2196,6 +2188,20 @@ export default function PolygonCanvas() {
       if (dm.maybeDeselect && !dm.moved) {
         setSelectedId(null);
         setActiveTextId(null);
+      }
+    } else if (dm.type === "textMove") {
+      // 거의 안 움직였으면 '탭' (프레젠테이션 글상자처럼):
+      //   - 처음 탭 = 선택(손잡이 표시)  - 이미 선택된 글상자를 다시 탭 = 글자 편집
+      const { sx, sy } = localXY(e);
+      if (Math.hypot(sx - dm.downSX, sy - dm.downSY) < 5 && dm.wasActive) {
+        setEditingTextId(dm.id);
+        justCreatedTextRef.current = true;
+        requestAnimationFrame(() => {
+          textAreaRef.current?.focus();
+          requestAnimationFrame(() => {
+            justCreatedTextRef.current = false;
+          });
+        });
       }
     } else if (dm.type === "cut") {
       const { sx, sy } = localXY(e);
@@ -3415,20 +3421,30 @@ export default function PolygonCanvas() {
         ctx.strokeRect(t.x, t.y, boxW, boxH);
         ctx.fillStyle = t.color;
         lines.forEach((ln, i) => ctx.fillText(ln, t.x + padX, t.y + padY + i * lh));
-        // 선택된 글상자: 오른쪽 아래 크기 조절 손잡이
+        // 선택된 글상자: 오른쪽 아래 크기 조절 손잡이 + 이동 안내
         if (t.id === activeTextId) {
-          const hs = 12 * k; // 손잡이 크기
-          const hx = t.x + boxW - hs;
-          const hy = t.y + boxH - hs;
+          const hs = 13 * k; // 손잡이 크기
+          // 오른쪽 아래 모서리에 중심을 둠(절반은 상자 밖) — 본문 글자를 가리지 않게
+          const hx = t.x + boxW - hs / 2;
+          const hy = t.y + boxH - hs / 2;
           ctx.fillStyle = "#f59e0b";
-          ctx.fillRect(hx, hy, hs, hs);
-          ctx.strokeStyle = "#ffffff";
-          ctx.lineWidth = 1.5 * k;
           ctx.beginPath();
-          ctx.moveTo(hx + hs * 0.25, hy + hs * 0.75);
-          ctx.lineTo(hx + hs * 0.75, hy + hs * 0.25);
-          ctx.moveTo(hx + hs * 0.55, hy + hs * 0.75);
-          ctx.lineTo(hx + hs * 0.75, hy + hs * 0.55);
+          // 둥근 모서리 손잡이
+          const r = 3 * k;
+          ctx.moveTo(hx + r, hy);
+          ctx.arcTo(hx + hs, hy, hx + hs, hy + hs, r);
+          ctx.arcTo(hx + hs, hy + hs, hx, hy + hs, r);
+          ctx.arcTo(hx, hy + hs, hx, hy, r);
+          ctx.arcTo(hx, hy, hx + hs, hy, r);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.6 * k;
+          ctx.beginPath();
+          ctx.moveTo(hx + hs * 0.28, hy + hs * 0.72);
+          ctx.lineTo(hx + hs * 0.72, hy + hs * 0.28);
+          ctx.moveTo(hx + hs * 0.5, hy + hs * 0.74);
+          ctx.lineTo(hx + hs * 0.74, hy + hs * 0.5);
           ctx.stroke();
         }
       }
@@ -4226,7 +4242,7 @@ export default function PolygonCanvas() {
       )}
 
       {/* 빈 화면 안내 */}
-      {shapes.length === 0 && draft.length === 0 && (
+      {shapes.length === 0 && draft.length === 0 && texts.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200 bg-white/80 px-8 py-7 text-center shadow-xl backdrop-blur">
             <div className="text-4xl">📐✨</div>

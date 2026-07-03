@@ -308,11 +308,12 @@ export function makeLShape(
 ): Point[] {
   const x0 = cx - w / 2;
   const y0 = cy - h / 2;
+  // 오른쪽 위 모서리에서 정확히 (cutW × cutH) 만큼 잘라낸 ㄴ자 → 넓이 = w*h - cutW*cutH
   return [
     { x: x0, y: y0 },
     { x: x0 + (w - cutW), y: y0 },
-    { x: x0 + (w - cutW), y: y0 + (h - cutH) },
-    { x: x0 + w, y: y0 + (h - cutH) },
+    { x: x0 + (w - cutW), y: y0 + cutH },
+    { x: x0 + w, y: y0 + cutH },
     { x: x0 + w, y: y0 + h },
     { x: x0, y: y0 + h },
   ];

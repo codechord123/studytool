@@ -1308,6 +1308,34 @@ export default function PolygonCanvas() {
   const railDrag = useDraggable(setRailPos);
   const zoomDrag = useDraggable(setZoomPos);
   const ctxDrag = useDraggable(setCtxPos);
+  // 🧹 화면 정리: 옮겨 놓은 패널을 전부 기본 위치로 (스마트폰에서 패널이 겹쳐 엉킬 때 한 번에 복구)
+  function resetPanelLayout() {
+    setInfoPos(null);
+    setRailPos(null);
+    setCtxPos(null);
+    setZoomPos(null);
+    setInfoCollapsed(false);
+    setFlash("🧹 패널을 기본 위치로 정리했어요!");
+  }
+  // 화면 크기가 바뀌면(회전·키보드 등) 화면 밖에 남은 패널을 안으로 끌어옴
+  useEffect(() => {
+    const clampAll = () => {
+      const W = window.innerWidth;
+      const H = window.innerHeight;
+      const fix = (p: XY | null): XY | null => {
+        if (!p) return p;
+        const x = Math.max(2, Math.min(W - 64, p.x));
+        const y = Math.max(2, Math.min(H - 64, p.y));
+        return x === p.x && y === p.y ? p : { x, y };
+      };
+      setInfoPos((p) => fix(p));
+      setRailPos((p) => fix(p));
+      setCtxPos((p) => fix(p));
+      setZoomPos((p) => fix(p));
+    };
+    window.addEventListener("resize", clampAll);
+    return () => window.removeEventListener("resize", clampAll);
+  }, []);
 
   const dragRef = useRef<DragMode>({ type: "none" });
   const clipboardRef = useRef<{ points: Point[]; color: string; ghosts?: Point[][]; edgeLabels?: string[]; defKind?: Shape["defKind"] }[] | null>(null);
@@ -2837,6 +2865,8 @@ export default function PolygonCanvas() {
     setShapes((all) => [...all, s]);
     setSelectedId(s.id);
     setTool("select");
+    // 좁은 화면(스마트폰)에서는 드로어가 화면 대부분을 가리므로 도형을 추가하면 자동으로 닫음
+    if (typeof window !== "undefined" && window.innerWidth < 640) setDrawer(null);
   }
 
   function loadScenario(sc: Scenario) {
@@ -4474,6 +4504,13 @@ export default function PolygonCanvas() {
                 title="이름을 넣어 제출용 이미지로 저장"
               >
                 📷 <span className="hidden lg:inline">제출</span>
+              </button>
+              <button
+                onClick={resetPanelLayout}
+                title="화면 정리: 옮겨 놓은 패널(도구·정보카드·줌·아래 메뉴)을 기본 위치로 되돌려요. 도형은 그대로!"
+                className="whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-100 sm:px-2.5"
+              >
+                🧹 <span className="hidden lg:inline">화면 정리</span>
               </button>
               <button
                 onClick={clearAll}

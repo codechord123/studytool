@@ -58,6 +58,60 @@ function fmtArea(cm2: number): string {
   if (Math.abs(cm2 - h) < 0.05) return `${h}cm²`;
   return `약 ${cm2.toFixed(1)}cm²`;
 }
+// 넓이가 딱 떨어지는지(정수 또는 반정수) 판정
+function isAreaNice(cm2: number): boolean {
+  return Math.abs(cm2 * 2 - Math.round(cm2 * 2)) < 0.03;
+}
+// 넓이가 소수(무리수)로 떨어지는 도형을, 모양을 최대한 유지하면서
+// 넓이가 딱 떨어지도록(정수/반정수) 꼭짓점을 최소한으로 자동 조정.
+//   - 삼각형(밑변이 격자에 수평/수직): 밑변을 격자에 맞추고 꼭짓점을 수직으로 옮겨
+//     높이를 정수 cm로 → 넓이 = ½ × 밑변 × 높이 (좌우 대칭 유지)
+//   - 그 외: 모든 꼭짓점을 가장 가까운 격자 교차점으로 (격자 위 도형은 넓이가 항상 정수/반정수)
+// 이미 깔끔하면 null 반환.
+function niceAreaSnap(points: Point[]): Point[] | null {
+  const n = points.length;
+  if (n < 3) return null;
+  const areaCm2 = polygonArea(points) / (GRID * GRID);
+  if (areaCm2 <= 0.0001) return null;
+  if (isAreaNice(areaCm2)) return null; // 이미 딱 떨어짐
+
+  const gridSnapAll = () => points.map((p) => ({ x: Math.round(p.x / GRID) * GRID, y: Math.round(p.y / GRID) * GRID }));
+
+  if (n === 3) {
+    // 가장 수평인 변을 밑변으로 선택(동률이면 더 긴 변)
+    let bi = 0, bestKey = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const a = points[i], b = points[(i + 1) % 3];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const key = Math.abs(dy) - Math.hypot(dx, dy) * 1e-6;
+      if (key < bestKey) { bestKey = key; bi = i; }
+    }
+    const Ci = (bi + 2) % 3;
+    const As = { x: Math.round(points[bi].x / GRID) * GRID, y: Math.round(points[bi].y / GRID) * GRID };
+    const Bs = { x: Math.round(points[(bi + 1) % 3].x / GRID) * GRID, y: Math.round(points[(bi + 1) % 3].y / GRID) * GRID };
+    const baseLen = Math.hypot(Bs.x - As.x, Bs.y - As.y);
+    // 밑변이 격자에 수평/수직이라 길이가 정수 cm일 때만 '높이 스냅'으로 대칭 유지
+    const axisAligned = (As.y === Bs.y || As.x === Bs.x) && baseLen >= GRID * 0.5;
+    if (!axisAligned) return gridSnapAll();
+    const ux = (Bs.x - As.x) / baseLen, uy = (Bs.y - As.y) / baseLen;
+    const nx = -uy, ny = ux;
+    const C = points[Ci];
+    const hCur = (C.x - As.x) * nx + (C.y - As.y) * ny; // 부호 있는 높이(px)
+    const sign = hCur >= 0 ? 1 : -1;
+    const hCells = Math.max(1, Math.round(Math.abs(hCur) / GRID));
+    const along = (C.x - As.x) * ux + (C.y - As.y) * uy; // 밑변 방향 성분 유지(대칭)
+    const Cn = {
+      x: As.x + ux * along + nx * hCells * GRID * sign,
+      y: As.y + uy * along + ny * hCells * GRID * sign,
+    };
+    const out = points.slice();
+    out[bi] = As;
+    out[(bi + 1) % 3] = Bs;
+    out[Ci] = Cn;
+    return out;
+  }
+  return gridSnapAll();
+}
 
 // 한 변의 '표시 길이'(라벨에 보이는 값)를 소수 첫째자리 단위 수치로 반환
 function niceLenCm(cm: number): number {
@@ -1121,14 +1175,21 @@ export default function PolygonCanvas() {
   const [snapStep, setSnapStep] = useState<0 | 0.5 | 1>(0.5);
   // 자연수 모드: 모든 꼭짓점을 정수 cm(모눈 교차점)에 강제 스냅 — 기본값 ON
   const [integerMode, setIntegerMode] = useState(true);
+  // 알파(딱맞춤) 모드: 등변/등각·프리셋 등으로 도형을 만들 때 넓이가 소수로 떨어지면
+  //   모양을 최대한 유지하며 넓이가 딱 떨어지도록 자동 조정 (기본 OFF)
+  const [alphaMode, setAlphaMode] = useState(false);
   useEffect(() => {
     try {
       const v = localStorage.getItem("integerMode");
       // "0"으로 명시적으로 꺼둔 사용자만 OFF 유지, 그 외(null·"1")는 ON
       if (v === "0") setIntegerMode(false);
       else setIntegerMode(true);
+      if (localStorage.getItem("alphaMode") === "1") setAlphaMode(true);
     } catch {}
   }, []);
+  useEffect(() => {
+    try { localStorage.setItem("alphaMode", alphaMode ? "1" : "0"); } catch {}
+  }, [alphaMode]);
   useEffect(() => {
     try { localStorage.setItem("integerMode", integerMode ? "1" : "0"); } catch {}
     if (integerMode && snapStep !== 1) setSnapStep(1);
@@ -2476,12 +2537,44 @@ export default function PolygonCanvas() {
       pts.push({ x: c.x + R * Math.cos(a), y: c.y + R * Math.sin(a) });
     }
     commitHistory();
-    setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
-    setFlash(`🔷 등변으로 만들었어요! 모든 변이 ${sideUnits}cm`);
+    // 알파(딱맞춤) 모드: 넓이가 소수로 떨어지면 모양을 살짝 조정해 딱 떨어지게
+    const alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
+    if (alphaSnap) {
+      setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: alphaSnap, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
+      setFlash(`🎯 넓이가 딱 떨어지게 맞췄어요! (${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))})`);
+    } else {
+      setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
+      setFlash(`🔷 등변으로 만들었어요! 모든 변이 ${sideUnits}cm`);
+    }
   }
   equilateralizeShapeRef.current = equilateralizeShape;
   function equilateralizeSelected() {
     if (selectedIds.length === 1) equilateralizeShape(selectedIds[0]);
+  }
+  // 🎯 알파(딱맞춤): 선택 도형의 넓이를 딱 떨어지는 값으로 자동 조정
+  function snapNiceAreaShape(sid: string, silent = false): boolean {
+    const s = shapesLiveRef.current.find((sh) => sh.id === sid);
+    if (!s) return false;
+    // 원은 넓이가 반지름×반지름×π 라서 정수가 될 수 없음 → 제외
+    if (typeof s.defKind === "object" && s.defKind !== null && "circle" in s.defKind) {
+      if (!silent) setFlash("원의 넓이는 반지름×반지름×π 라서 딱 떨어지지 않아요");
+      return false;
+    }
+    const snapped = niceAreaSnap(s.points);
+    if (!snapped) {
+      if (!silent) setFlash("이미 넓이가 딱 떨어져요 👍");
+      return false;
+    }
+    if (!silent) commitHistory();
+    setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: snapped, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
+    if (!silent) {
+      const a = polygonArea(snapped) / (GRID * GRID);
+      setFlash(`🎯 넓이를 ${fmtArea(a)}로 딱 맞췄어요!`);
+    }
+    return true;
+  }
+  function snapNiceAreaSelected() {
+    if (selectedIds.length === 1) snapNiceAreaShape(selectedIds[0]);
   }
   // 특정 도형을 등각(모든 각 같음)으로 변환
   function equiangularizeShape(sid: string) {
@@ -2534,9 +2627,15 @@ export default function PolygonCanvas() {
       pts.push({ x: c.x + R * Math.cos(a), y: c.y + R * Math.sin(a) });
     }
     commitHistory();
-    setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
-    const interior = Math.round(((n - 2) * 180) / n);
-    setFlash(`📐 등각으로 만들었어요! 모든 각이 ${interior}° (정${n}각형)`);
+    const alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
+    if (alphaSnap) {
+      setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: alphaSnap, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
+      setFlash(`🎯 넓이가 딱 떨어지게 맞췄어요! (${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))})`);
+    } else {
+      setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
+      const interior = Math.round(((n - 2) * 180) / n);
+      setFlash(`📐 등각으로 만들었어요! 모든 각이 ${interior}° (정${n}각형)`);
+    }
   }
   equiangularizeShapeRef.current = equiangularizeShape;
   function equiangularizeSelected() {
@@ -4312,6 +4411,7 @@ export default function PolygonCanvas() {
               </div>
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
               <Chip active={integerMode} onClick={() => setIntegerMode(!integerMode)} icon="🔒" label="자연수" title="자연수 모드: 모든 꼭짓점이 모눈 교차점(정수 cm)에만 놓이도록 강제. 회전은 90° 단위, 격자 1cm 고정." />
+              <Chip active={alphaMode} onClick={() => setAlphaMode(!alphaMode)} icon="🎯" label="딱맞춤" title="딱맞춤(알파) 모드: 등변·등각으로 만들 때 넓이가 소수로 떨어지면, 모양을 살짝 조정해 넓이가 딱 떨어지는 값이 되도록 자동으로 맞춰줘요. (도형을 고르면 넓이 옆 '🎯 넓이 딱 맞추기' 버튼으로 언제든 맞출 수 있어요)" />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />
@@ -4510,6 +4610,7 @@ export default function PolygonCanvas() {
           piMode={piMode}
           onPiMode={setPiMode}
           onToggleCollapsed={() => setInfoCollapsed((v) => !v)}
+          onSnapArea={snapNiceAreaSelected}
         />
       )}
 
@@ -4805,6 +4906,7 @@ function InfoCard({
   onToggleCollapsed,
   piMode,
   onPiMode,
+  onSnapArea,
 }: {
   selected: Shape | null;
   boardMode: boolean;
@@ -4822,6 +4924,7 @@ function InfoCard({
   onToggleCollapsed?: () => void;
   piMode?: 3 | 3.1 | 3.14;
   onPiMode?: (v: 3 | 3.1 | 3.14) => void;
+  onSnapArea?: () => void;
 }) {
   const kind = useMemo(() => (selected ? detectShapeKind(selected.points) : null), [selected]);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -4995,6 +5098,16 @@ function InfoCard({
           <div className={`font-extrabold leading-tight ${hideArea ? "text-slate-300" : "text-slate-900"} ${big}`}>
             {hideArea ? "?cm²" : fmtArea(area)}
           </div>
+          {/* 넓이가 소수(무리수)로 떨어질 때 → 한 번에 딱 맞추기 */}
+          {!hideArea && !circleDef && selected && selected.points.length >= 3 && !isAreaNice(area) && onSnapArea && (
+            <button
+              onClick={onSnapArea}
+              title="도형을 살짝 조정해 넓이를 딱 떨어지는 값으로 자동으로 맞춰요"
+              className="mt-1.5 w-full rounded-lg bg-amber-500 px-2 py-1.5 text-xs font-extrabold text-white shadow hover:bg-amber-600"
+            >
+              🎯 넓이 딱 맞추기
+            </button>
+          )}
         </div>
         <div className="flex-1 rounded-xl bg-slate-50 px-3.5 py-2.5">
           <div className="text-xs font-semibold text-slate-400">{circleDef ? `원주 (=지름×${pi})` : "둘레"}</div>

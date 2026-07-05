@@ -62,55 +62,54 @@ function fmtArea(cm2: number): string {
 function isAreaNice(cm2: number): boolean {
   return Math.abs(cm2 * 2 - Math.round(cm2 * 2)) < 0.03;
 }
-// 넓이가 소수(무리수)로 떨어지는 도형을, 모양을 최대한 유지하면서
-// 넓이가 딱 떨어지도록(정수/반정수) 꼭짓점을 최소한으로 자동 조정.
-//   - 삼각형(밑변이 격자에 수평/수직): 밑변을 격자에 맞추고 꼭짓점을 수직으로 옮겨
-//     높이를 정수 cm로 → 넓이 = ½ × 밑변 × 높이 (좌우 대칭 유지)
-//   - 그 외: 모든 꼭짓점을 가장 가까운 격자 교차점으로 (격자 위 도형은 넓이가 항상 정수/반정수)
-// 이미 깔끔하면 null 반환.
+// 🎯 슈퍼 알파(딱맞춤) 알고리즘 — 초등 학습 우선순위:
+//   1순위) 모든 꼭짓점을 격자 교차점(정수 cm) 위에 올림   → 칸을 셀 수 있게
+//   2순위) 그 상태에서 넓이가 '정수'가 되도록 최소한으로 보정
+// 원리: 꼭짓점이 모두 격자 위이면 (신발끈 공식상) 넓이는 항상 정수 또는 반정수.
+//   반정수(x.5)면, 한 꼭짓점만 '반대편 격자선'으로 한 칸 옮겨 정수로 만든다(최소 이동).
+// 이미 '격자 위 + 정수 넓이'면 null 반환.
 function niceAreaSnap(points: Point[]): Point[] | null {
   const n = points.length;
   if (n < 3) return null;
-  const areaCm2 = polygonArea(points) / (GRID * GRID);
-  if (areaCm2 <= 0.0001) return null;
-  if (isAreaNice(areaCm2)) return null; // 이미 딱 떨어짐
-
-  const gridSnapAll = () => points.map((p) => ({ x: Math.round(p.x / GRID) * GRID, y: Math.round(p.y / GRID) * GRID }));
-
-  if (n === 3) {
-    // 가장 수평인 변을 밑변으로 선택(동률이면 더 긴 변)
-    let bi = 0, bestKey = Infinity;
-    for (let i = 0; i < 3; i++) {
-      const a = points[i], b = points[(i + 1) % 3];
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const key = Math.abs(dy) - Math.hypot(dx, dy) * 1e-6;
-      if (key < bestKey) { bestKey = key; bi = i; }
+  // 2 × 넓이(칸²) — 꼭짓점이 격자 위면 정수. 짝수면 넓이가 정수, 홀수면 반정수.
+  const doubledCells = (pts: Point[]) => {
+    let d = 0;
+    for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      d += (a.x / GRID) * (b.y / GRID) - (b.x / GRID) * (a.y / GRID);
     }
-    const Ci = (bi + 2) % 3;
-    const As = { x: Math.round(points[bi].x / GRID) * GRID, y: Math.round(points[bi].y / GRID) * GRID };
-    const Bs = { x: Math.round(points[(bi + 1) % 3].x / GRID) * GRID, y: Math.round(points[(bi + 1) % 3].y / GRID) * GRID };
-    const baseLen = Math.hypot(Bs.x - As.x, Bs.y - As.y);
-    // 밑변이 격자에 수평/수직이라 길이가 정수 cm일 때만 '높이 스냅'으로 대칭 유지
-    const axisAligned = (As.y === Bs.y || As.x === Bs.x) && baseLen >= GRID * 0.5;
-    if (!axisAligned) return gridSnapAll();
-    const ux = (Bs.x - As.x) / baseLen, uy = (Bs.y - As.y) / baseLen;
-    const nx = -uy, ny = ux;
-    const C = points[Ci];
-    const hCur = (C.x - As.x) * nx + (C.y - As.y) * ny; // 부호 있는 높이(px)
-    const sign = hCur >= 0 ? 1 : -1;
-    const hCells = Math.max(1, Math.round(Math.abs(hCur) / GRID));
-    const along = (C.x - As.x) * ux + (C.y - As.y) * uy; // 밑변 방향 성분 유지(대칭)
-    const Cn = {
-      x: As.x + ux * along + nx * hCells * GRID * sign,
-      y: As.y + uy * along + ny * hCells * GRID * sign,
-    };
-    const out = points.slice();
-    out[bi] = As;
-    out[(bi + 1) % 3] = Bs;
-    out[Ci] = Cn;
-    return out;
+    return d;
+  };
+  const areaCells = (pts: Point[]) => Math.abs(doubledCells(pts)) / 2;
+  const onGrid = (pts: Point[]) => pts.every((p) => Math.abs(p.x / GRID - Math.round(p.x / GRID)) < 1e-6 && Math.abs(p.y / GRID - Math.round(p.y / GRID)) < 1e-6);
+  const isWhole = (pts: Point[]) => Math.abs(Math.round(doubledCells(pts)) % 2) < 1e-9;
+  // 이미 격자 위 + 정수 넓이면 손대지 않음
+  if (onGrid(points) && isWhole(points) && areaCells(points) > 0.4) return null;
+
+  // 1) 모든 꼭짓점을 가장 가까운 격자 교차점으로
+  const base = points.map((p) => ({ x: Math.round(p.x / GRID) * GRID, y: Math.round(p.y / GRID) * GRID }));
+  if (areaCells(base) > 0.4 && isWhole(base)) return base; // 격자 위 + 넓이 정수 → 완료
+
+  // 2) 반정수(x.5) → 한 꼭짓점을 '원래 위치의 반대편 격자선'으로 한 칸 옮겨 정수 넓이로.
+  //    여러 후보 중 원래 위치에서 가장 덜 벗어나는(최소 이동) 것을 선택.
+  let best: Point[] | null = null;
+  let bestErr = Infinity;
+  const axes: ("x" | "y")[] = ["x", "y"];
+  for (let i = 0; i < n; i++) {
+    for (const ax of axes) {
+      const alt = base.map((p) => ({ ...p }));
+      const cur = base[i][ax];
+      const orig = points[i][ax];
+      alt[i][ax] = cur + (orig >= cur ? GRID : -GRID); // 원래 좌표 기준 두 번째로 가까운 격자선
+      if (areaCells(alt) > 0.4 && isWhole(alt)) {
+        const err = Math.hypot(alt[i].x - points[i].x, alt[i].y - points[i].y);
+        if (err < bestErr) { bestErr = err; best = alt; }
+      }
+    }
   }
-  return gridSnapAll();
+  if (best) return best;
+  // 3) 정수 해를 못 찾으면 격자 스냅(반정수 넓이)이라도 반환
+  return areaCells(base) > 0.4 ? base : null;
 }
 
 // 한 변의 '표시 길이'(라벨에 보이는 값)를 소수 첫째자리 단위 수치로 반환
@@ -2541,7 +2540,7 @@ export default function PolygonCanvas() {
     const alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
     if (alphaSnap) {
       setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: alphaSnap, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
-      setFlash(`🎯 넓이가 딱 떨어지게 맞췄어요! (${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))})`);
+      setFlash(`🎯 격자에 딱 맞추고 넓이를 ${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))}로 만들었어요!`);
     } else {
       setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
       setFlash(`🔷 등변으로 만들었어요! 모든 변이 ${sideUnits}cm`);
@@ -2569,7 +2568,7 @@ export default function PolygonCanvas() {
     setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: snapped, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
     if (!silent) {
       const a = polygonArea(snapped) / (GRID * GRID);
-      setFlash(`🎯 넓이를 ${fmtArea(a)}로 딱 맞췄어요!`);
+      setFlash(`🎯 꼭짓점을 격자에 딱 맞추고 넓이를 ${fmtArea(a)}로 만들었어요!`);
     }
     return true;
   }
@@ -2630,7 +2629,7 @@ export default function PolygonCanvas() {
     const alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
     if (alphaSnap) {
       setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: alphaSnap, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
-      setFlash(`🎯 넓이가 딱 떨어지게 맞췄어요! (${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))})`);
+      setFlash(`🎯 격자에 딱 맞추고 넓이를 ${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))}로 만들었어요!`);
     } else {
       setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: pts, defKind: { regular: n }, ghosts: undefined, edgeLabels: undefined } : sh)));
       const interior = Math.round(((n - 2) * 180) / n);
@@ -4411,7 +4410,7 @@ export default function PolygonCanvas() {
               </div>
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
               <Chip active={integerMode} onClick={() => setIntegerMode(!integerMode)} icon="🔒" label="자연수" title="자연수 모드: 모든 꼭짓점이 모눈 교차점(정수 cm)에만 놓이도록 강제. 회전은 90° 단위, 격자 1cm 고정." />
-              <Chip active={alphaMode} onClick={() => setAlphaMode(!alphaMode)} icon="🎯" label="딱맞춤" title="딱맞춤(알파) 모드: 등변·등각으로 만들 때 넓이가 소수로 떨어지면, 모양을 살짝 조정해 넓이가 딱 떨어지는 값이 되도록 자동으로 맞춰줘요. (도형을 고르면 넓이 옆 '🎯 넓이 딱 맞추기' 버튼으로 언제든 맞출 수 있어요)" />
+              <Chip active={alphaMode} onClick={() => setAlphaMode(!alphaMode)} icon="🎯" label="딱맞춤" title="딱맞춤(알파) 모드: 넓이가 소수로 떨어지는 도형을 초등 학습에 맞게 ①모든 꼭짓점을 격자 교차점에 올리고 ②넓이가 정수가 되도록 자동 보정해요. 등변·등각으로 만들 때 자동 적용되고, 도형을 고르면 넓이 옆 '🎯 넓이 딱 맞추기' 버튼으로 언제든 맞출 수 있어요." />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />

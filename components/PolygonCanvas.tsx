@@ -1082,7 +1082,7 @@ const TOOL_META: { id: Tool; icon: string; label: string; key: string }[] = [
 const ACTION_KEYS = { rotL: "z", rotR: "x", flipH: "c", flipV: "v", gridCount: "g" } as const;
 
 const TOOL_HINT: Record<Tool, string> = {
-  select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동 · 손잡이(초록)=회전 · 변 가운데 ➕=점 추가 · 꼭짓점 옆 ➖=점 삭제",
+  select: "도형 눌러 선택 · Ctrl/Shift+클릭=여러 개 선택 · 드래그=이동 · 손잡이(초록)=회전(15°씩, Shift=자유) · 변 가운데 ➕=점 추가 · 꼭짓점 옆 ➖=점 삭제",
   draw: "빈 곳을 클릭해 꼭짓점을 찍어요. 첫 점을 다시 누르거나 Enter로 도형 완성!",
   cut: "도형 위를 드래그해 잘라요. 가로·세로·대각선 모두 가능.",
   merge: "합칠 도형 두 개를 차례로 누르세요. 한 변이 맞붙어야 합쳐져요. (여러 개를 선택한 뒤 '합치기'를 누르면 한꺼번에!)",
@@ -2119,18 +2119,16 @@ export default function PolygonCanvas() {
       return;
     }
     if (dm.type === "rotate") {
-      // 회전 각도는 격자 스냅된 p가 아니라 실제 포인터(raw)로 계산 — 부드럽게 돌아가도록
+      // 회전 각도는 격자 스냅된 p가 아니라 실제 포인터(raw)로 계산
       const curAbs = Math.atan2(raw.y - dm.center.y, raw.x - dm.center.x);
       const rawAng = curAbs - dm.startAngle;
-      // 절대 방향 기준 스냅 → 시작 각도와 상관없이 30·45·60·90°처럼 반듯하게 딱 맞춰짐
-      // 회전은 자연수·자석 모드와 무관하게 항상 부드럽게 — 15° 간격에 살짝 자석(±6°).
-      //   (예전엔 자연수 모드에서 90°로만 튕겨 "회전이 잘 안 되는" 느낌이었음)
-      //   Shift를 누르면 자석 없이 완전 자유 회전.
-      const SNAP = Math.PI / 12; // 15°
-      const TOL = e.shiftKey ? 0 : (Math.PI / 180) * 6;
-      const snappedAbs = Math.round(curAbs / SNAP) * SNAP;
-      const isSnap = TOL > 0 && Math.abs(curAbs - snappedAbs) < TOL;
-      const ang = isSnap ? snappedAbs - dm.startAngle : rawAng;
+      // 초록 손잡이 회전은 '돌린 양' 기준 15° 단위로만 —
+      //   0·15·30·…·90·180° 처럼 딱딱 끊어지고, 180° 돌리면 정확히 반대,
+      //   같은 만큼 되돌리면 처음 위치로 정확히 돌아옴 (이상한 각도로 남지 않음)
+      //   Shift를 누르면 자유 회전.
+      const STEP = Math.PI / 12; // 15°
+      const isSnap = !e.shiftKey;
+      const ang = isSnap ? Math.round(rawAng / STEP) * STEP : rawAng;
       // 돌린 양(도) 배지
       let deg = ((ang * 180) / Math.PI) % 360;
       if (deg > 180) deg -= 360;

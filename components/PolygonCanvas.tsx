@@ -112,6 +112,50 @@ function niceAreaSnap(points: Point[]): Point[] | null {
   return areaCells(base) > 0.4 ? base : null;
 }
 
+// 🎓 학습모드: 꼭짓점 vi를 주변(±2칸) 격자점 중 '인접 두 변이 모두 정수 cm'가
+//   되는 곳으로 스냅. 예) 밑변 16 삼각형의 꼭대기가 높이 14 근처면 → 높이 15로
+//   옮겨 17·17·16 (피타고라스 수) 완성. 그런 곳이 없으면 null(변화 없음).
+function learnSnapVertex(pts: Point[], vi: number): Point[] | null {
+  const n = pts.length;
+  if (n < 3 || n >= 20) return null;
+  const P = pts[(vi - 1 + n) % n];
+  const N = pts[(vi + 1) % n];
+  const V = pts[vi];
+  const near = (v: number) => Math.abs(v - Math.round(v)) < 0.02;
+  const vx0 = Math.round(V.x / GRID);
+  const vy0 = Math.round(V.y / GRID);
+  let best: Point | null = null;
+  let bestD = Infinity;
+  for (let dx = -2; dx <= 2; dx++) {
+    for (let dy = -2; dy <= 2; dy++) {
+      const c = { x: (vx0 + dx) * GRID, y: (vy0 + dy) * GRID };
+      const l1 = Math.hypot(c.x - P.x, c.y - P.y) / GRID;
+      const l2 = Math.hypot(c.x - N.x, c.y - N.y) / GRID;
+      if (l1 < 0.9 || l2 < 0.9) continue;
+      if (!near(l1) || !near(l2)) continue; // 두 변 모두 정수일 때만 후보
+      const d = Math.hypot(c.x - V.x, c.y - V.y);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+  }
+  if (!best) return null;
+  if (Math.abs(best.x - V.x) < 1e-6 && Math.abs(best.y - V.y) < 1e-6) return null; // 이미 그 자리
+  const out = pts.map((q, i) => (i === vi ? best! : q));
+  if (Math.abs(polygonArea(out)) < GRID * GRID * 0.4) return null; // 찌그러지면 취소
+  return out;
+}
+// 🎓 학습모드: 삼각형의 세 변이 모두 정수 cm가 되도록 꼭짓점 하나를 보정 (가능할 때만)
+function learnRefineTriangle(pts: Point[]): Point[] | null {
+  if (pts.length !== 3) return null;
+  const isInt = (v: number) => Math.abs(v - Math.round(v)) < 0.02;
+  const sideLens = (q: Point[]) => q.map((p, i) => Math.hypot(q[(i + 1) % 3].x - p.x, q[(i + 1) % 3].y - p.y) / GRID);
+  if (sideLens(pts).every(isInt)) return null; // 이미 모두 정수
+  for (let vi = 0; vi < 3; vi++) {
+    const r = learnSnapVertex(pts, vi);
+    if (r && sideLens(r).every(isInt)) return r;
+  }
+  return null;
+}
+
 // 한 변의 '표시 길이'(라벨에 보이는 값)를 소수 첫째자리 단위 수치로 반환
 function niceLenCm(cm: number): number {
   const r = Math.round(cm);
@@ -1177,6 +1221,9 @@ export default function PolygonCanvas() {
   // 알파(딱맞춤) 모드: 등변/등각·프리셋 등으로 도형을 만들 때 넓이가 소수로 떨어지면
   //   모양을 최대한 유지하며 넓이가 딱 떨어지도록 자동 조정 (기본 OFF)
   const [alphaMode, setAlphaMode] = useState(false);
+  // 🎓 학습모드: 자연수+딱맞춤을 강제하고, 회전은 90°씩, 도형을 만들거나 꼭짓점을
+  //   놓을 때 변 길이·넓이가 '딱 떨어지는' 정합적인 값으로만 맞춰지도록 안내 (기본 OFF = 자유모드)
+  const [learnMode, setLearnMode] = useState(false);
   useEffect(() => {
     try {
       const v = localStorage.getItem("integerMode");
@@ -1184,11 +1231,30 @@ export default function PolygonCanvas() {
       if (v === "0") setIntegerMode(false);
       else setIntegerMode(true);
       if (localStorage.getItem("alphaMode") === "1") setAlphaMode(true);
+      if (localStorage.getItem("learnMode") === "1") {
+        setLearnMode(true);
+        setIntegerMode(true);
+        setAlphaMode(true);
+      }
     } catch {}
   }, []);
   useEffect(() => {
     try { localStorage.setItem("alphaMode", alphaMode ? "1" : "0"); } catch {}
   }, [alphaMode]);
+  useEffect(() => {
+    try { localStorage.setItem("learnMode", learnMode ? "1" : "0"); } catch {}
+  }, [learnMode]);
+  function toggleLearnMode() {
+    const next = !learnMode;
+    setLearnMode(next);
+    if (next) {
+      setIntegerMode(true);
+      setAlphaMode(true);
+      setFlash("🎓 학습모드: 도형이 늘 격자에 딱 맞고, 변·넓이가 깔끔한 값으로 맞춰져요. 회전은 90°씩!");
+    } else {
+      setFlash("🕊️ 자유모드: 제한 없이 자유롭게 탐구할 수 있어요");
+    }
+  }
   useEffect(() => {
     try { localStorage.setItem("integerMode", integerMode ? "1" : "0"); } catch {}
     if (integerMode && snapStep !== 1) setSnapStep(1);
@@ -2125,8 +2191,9 @@ export default function PolygonCanvas() {
       // 초록 손잡이 회전은 '돌린 양' 기준 15° 단위로만 —
       //   0·15·30·…·90·180° 처럼 딱딱 끊어지고, 180° 돌리면 정확히 반대,
       //   같은 만큼 되돌리면 처음 위치로 정확히 돌아옴 (이상한 각도로 남지 않음)
+      //   🎓 학습모드에서는 90° 단위로만 → 회전해도 격자에서 벗어나지 않음.
       //   Shift를 누르면 자유 회전.
-      const STEP = Math.PI / 12; // 15°
+      const STEP = learnMode ? Math.PI / 2 : Math.PI / 12;
       const isSnap = !e.shiftKey;
       const ang = isSnap ? Math.round(rawAng / STEP) * STEP : rawAng;
       // 돌린 양(도) 배지
@@ -2135,10 +2202,18 @@ export default function PolygonCanvas() {
       if (deg < -180) deg += 360;
       const cam = camRef.current;
       setRotInfo({ deg: Math.round(deg), snapped: isSnap, sx: dm.center.x * cam.scale + cam.tx, sy: dm.center.y * cam.scale + cam.ty });
+      // 🎓 학습모드: 90° 회전 후 꼭짓점을 격자에 다시 딱 붙임(반정수 중심 보정).
+      //   곡선형(원 조각, 꼭짓점 20개 이상)은 개별 반올림하면 톱니가 되므로 제외.
+      const snapRot = (pts: Point[]) => {
+        const r = rotatePoints(pts, dm.center, ang);
+        return learnMode && !e.shiftKey && pts.length < 20
+          ? r.map((q) => ({ x: Math.round(q.x / GRID) * GRID, y: Math.round(q.y / GRID) * GRID }))
+          : r;
+      };
       setShapes((all) =>
         all.map((s) =>
           s.id === dm.shapeId
-            ? { ...s, points: rotatePoints(dm.startPoints, dm.center, ang), ghosts: dm.startGhosts?.map((g) => rotatePoints(g, dm.center, ang)) }
+            ? { ...s, points: snapRot(dm.startPoints), ghosts: dm.startGhosts?.map((g) => snapRot(g)) }
             : s
         )
       );
@@ -2313,6 +2388,21 @@ export default function PolygonCanvas() {
         if (dm.kind === "measure") setMeasurements((m) => m.filter((s) => s.id !== dm.id));
         else setGuides((g) => g.filter((s) => s.id !== dm.id));
         setActiveAux(null);
+      }
+    } else if (dm.type === "vertex" && learnMode) {
+      // 🎓 학습모드: 꼭짓점을 놓는 순간, 근처에 '인접 두 변이 모두 정수 cm'가 되는
+      //   격자점이 있으면 그리로 딱 맞춤 (예: 16·약16.1·약16.1 → 16·17·17)
+      const s = shapesLiveRef.current.find((sh) => sh.id === dm.shapeId);
+      if (s && !s.defKind && s.points.length >= 3 && s.points.length < 20) {
+        const snapped = learnSnapVertex(s.points, dm.vertexIndex);
+        if (snapped) {
+          setShapes((all) => all.map((sh) => (sh.id === dm.shapeId ? { ...sh, points: snapped } : sh)));
+          const n = s.points.length;
+          const v = snapped[dm.vertexIndex];
+          const l1 = Math.round(Math.hypot(v.x - snapped[(dm.vertexIndex - 1 + n) % n].x, v.y - snapped[(dm.vertexIndex - 1 + n) % n].y) / GRID);
+          const l2 = Math.round(Math.hypot(v.x - snapped[(dm.vertexIndex + 1) % n].x, v.y - snapped[(dm.vertexIndex + 1) % n].y) / GRID);
+          setFlash(`🎓 딱 맞췄어요! 변 ${l1}cm·${l2}cm`);
+        }
       }
     }
     dragRef.current = { type: "none" };
@@ -2563,7 +2653,12 @@ export default function PolygonCanvas() {
     }
     commitHistory();
     // 알파(딱맞춤) 모드: 넓이가 소수로 떨어지면 모양을 살짝 조정해 딱 떨어지게
-    const alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
+    let alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
+    // 🎓 학습모드: 삼각형은 가능하면 세 변까지 모두 정수 cm로 (예: 5·5·6)
+    if (alphaSnap && learnMode) {
+      const refined = learnRefineTriangle(alphaSnap);
+      if (refined) alphaSnap = refined;
+    }
     if (alphaSnap) {
       setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: alphaSnap, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
       setFlash(`🎯 격자에 딱 맞추고 넓이를 ${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))}로 만들었어요!`);
@@ -2652,7 +2747,11 @@ export default function PolygonCanvas() {
       pts.push({ x: c.x + R * Math.cos(a), y: c.y + R * Math.sin(a) });
     }
     commitHistory();
-    const alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
+    let alphaSnap = alphaMode ? niceAreaSnap(pts) : null;
+    if (alphaSnap && learnMode) {
+      const refined = learnRefineTriangle(alphaSnap);
+      if (refined) alphaSnap = refined;
+    }
     if (alphaSnap) {
       setShapes((all) => all.map((sh) => (sh.id === sid ? { ...sh, points: alphaSnap, defKind: undefined, ghosts: undefined, edgeLabels: undefined } : sh)));
       setFlash(`🎯 격자에 딱 맞추고 넓이를 ${fmtArea(polygonArea(alphaSnap) / (GRID * GRID))}로 만들었어요!`);
@@ -2859,7 +2958,31 @@ export default function PolygonCanvas() {
   function addPreset(pr: Preset) {
     commitHistory();
     const { x: cx, y: cy } = viewCenterWorld();
-    const s: Shape = { id: uid(), color: nextColor(), points: placeAtCenter(pr.build(), cx, cy), defKind: pr.defKind };
+    let pts = placeAtCenter(pr.build(), cx, cy);
+    let defKind = pr.defKind;
+    // 🎓 학습모드: 만들어지는 도형은 항상 격자 위 + 딱 떨어지는 값
+    if (learnMode) {
+      if (typeof defKind === "object" && defKind !== null && "circle" in defKind) {
+        // 원: 중심을 격자 교차점에 (반지름은 이미 정수 cm)
+        const c = polygonCentroid(pts);
+        const dx = Math.round(c.x / GRID) * GRID - c.x;
+        const dy = Math.round(c.y / GRID) * GRID - c.y;
+        pts = pts.map((q) => ({ x: q.x + dx, y: q.y + dy }));
+      } else {
+        const snapped = niceAreaSnap(pts);
+        if (snapped) {
+          pts = snapped;
+          // 정n각형은 격자 보정 후 더 이상 '정다각형'이 아님 → 정의 해제
+          if (typeof defKind === "object" && defKind !== null && "regular" in defKind) defKind = undefined;
+        }
+        // 삼각형은 가능하면 세 변 모두 정수 cm(피타고라스 수)로 마무리
+        if (pts.length === 3) {
+          const refined = learnRefineTriangle(pts);
+          if (refined) pts = refined;
+        }
+      }
+    }
+    const s: Shape = { id: uid(), color: nextColor(), points: pts, defKind };
     setShapes((all) => [...all, s]);
     setSelectedId(s.id);
     setTool("select");
@@ -4437,8 +4560,34 @@ export default function PolygonCanvas() {
                 ))}
               </div>
               <Chip active={magnetic} onClick={() => setMagnetic(!magnetic)} icon="🧲" label="자석" title="자석: 도형 변·꼭짓점이 가까워지면 착 달라붙어요 (합치기에 편해요)" />
-              <Chip active={integerMode} onClick={() => setIntegerMode(!integerMode)} icon="🔒" label="자연수" title="자연수 모드: 모든 꼭짓점이 모눈 교차점(정수 cm)에만 놓이도록 강제. 회전은 90° 단위, 격자 1cm 고정." />
-              <Chip active={alphaMode} onClick={() => setAlphaMode(!alphaMode)} icon="🎯" label="딱맞춤" title="딱맞춤(알파) 모드: 넓이가 소수로 떨어지는 도형을 초등 학습에 맞게 ①모든 꼭짓점을 격자 교차점에 올리고 ②넓이가 정수가 되도록 자동 보정해요. 등변·등각으로 만들 때 자동 적용되고, 도형을 고르면 넓이 옆 '🎯 넓이 딱 맞추기' 버튼으로 언제든 맞출 수 있어요." />
+              <Chip
+                active={integerMode}
+                onClick={() => {
+                  if (learnMode) { setFlash("🎓 학습모드에서는 자연수 모드가 항상 켜져 있어요"); return; }
+                  setIntegerMode(!integerMode);
+                }}
+                icon="🔒"
+                label="자연수"
+                title="자연수 모드: 모든 꼭짓점이 모눈 교차점(정수 cm)에만 놓이도록 강제. 격자 1cm 고정."
+              />
+              <Chip
+                active={alphaMode}
+                onClick={() => {
+                  if (learnMode) { setFlash("🎓 학습모드에서는 딱맞춤이 항상 켜져 있어요"); return; }
+                  setAlphaMode(!alphaMode);
+                }}
+                icon="🎯"
+                label="딱맞춤"
+                title="딱맞춤(알파) 모드: 넓이가 소수로 떨어지는 도형을 초등 학습에 맞게 ①모든 꼭짓점을 격자 교차점에 올리고 ②넓이가 정수가 되도록 자동 보정해요. 등변·등각으로 만들 때 자동 적용되고, 도형을 고르면 넓이 옆 '🎯 넓이 딱 맞추기' 버튼으로 언제든 맞출 수 있어요."
+              />
+              <Chip
+                active={learnMode}
+                onClick={toggleLearnMode}
+                icon="🎓"
+                label="학습모드"
+                tone="sky"
+                title="학습모드: 정해진(정합적인) 값들로만 학습하도록 안내해요 — ①자연수·딱맞춤 항상 켜짐 ②회전은 90°씩(격자 유지) ③도형을 만들거나 꼭짓점을 놓으면 변 길이·넓이가 딱 떨어지는 모양으로 자동으로 맞춰져요(예: 밑변 16 삼각형 → 17·17·16). 끄면 자유모드!"
+              />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />

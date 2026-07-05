@@ -1196,6 +1196,14 @@ export default function PolygonCanvas() {
   const [activeAux, setActiveAux] = useState<ActiveAux>(null);
   const [showAreaBadge, setShowAreaBadge] = useState(true);
   const [gridCountMode, setGridCountMode] = useState(false); // 칸세기 모드(어떤 도형이든 모눈 칸 표시)
+  // ⬜ 무격자 모드: 모눈을 숨김 — 칸을 세지 않고 공식·표시된 길이만으로 넓이를 구하는 연습
+  const [showGrid, setShowGrid] = useState(true);
+  useEffect(() => {
+    try { if (localStorage.getItem("showGrid") === "0") setShowGrid(false); } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("showGrid", showGrid ? "1" : "0"); } catch {}
+  }, [showGrid]);
   const [showAngles, setShowAngles] = useState(false); // 각도 표시(내각 + 내각의 합 유도)
   const [showSymmetry, setShowSymmetry] = useState(false); // 🪞 대칭축 표시(선대칭)
   const [showEdgeLen, setShowEdgeLen] = useState(true); // 변 길이(cm) 라벨 표시
@@ -3415,47 +3423,50 @@ export default function PolygonCanvas() {
     const gx0 = Math.floor(x0 / GRID) * GRID;
     const gy0 = Math.floor(y0 / GRID) * GRID;
 
-    // 모눈 (얇은 선)
-    ctx.strokeStyle = "#e6ebf2";
-    ctx.lineWidth = 1 * k;
-    ctx.beginPath();
-    for (let x = gx0; x <= x1; x += GRID) {
-      ctx.moveTo(x, y0);
-      ctx.lineTo(x, y1);
-    }
-    for (let y = gy0; y <= y1; y += GRID) {
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x1, y);
-    }
-    ctx.stroke();
-    // 5cm 굵은 선
-    ctx.strokeStyle = "#cdd7e5";
-    ctx.lineWidth = 1.5 * k;
-    ctx.beginPath();
+    // ⬜ 무격자 모드가 아닐 때만 모눈을 그림
     const bx0 = Math.floor(x0 / (GRID * 5)) * GRID * 5;
     const by0 = Math.floor(y0 / (GRID * 5)) * GRID * 5;
-    for (let x = bx0; x <= x1; x += GRID * 5) {
-      ctx.moveTo(x, y0);
-      ctx.lineTo(x, y1);
+    if (showGrid) {
+      // 모눈 (얇은 선)
+      ctx.strokeStyle = "#e6ebf2";
+      ctx.lineWidth = 1 * k;
+      ctx.beginPath();
+      for (let x = gx0; x <= x1; x += GRID) {
+        ctx.moveTo(x, y0);
+        ctx.lineTo(x, y1);
+      }
+      for (let y = gy0; y <= y1; y += GRID) {
+        ctx.moveTo(x0, y);
+        ctx.lineTo(x1, y);
+      }
+      ctx.stroke();
+      // 5cm 굵은 선
+      ctx.strokeStyle = "#cdd7e5";
+      ctx.lineWidth = 1.5 * k;
+      ctx.beginPath();
+      for (let x = bx0; x <= x1; x += GRID * 5) {
+        ctx.moveTo(x, y0);
+        ctx.lineTo(x, y1);
+      }
+      for (let y = by0; y <= y1; y += GRID * 5) {
+        ctx.moveTo(x0, y);
+        ctx.lineTo(x1, y);
+      }
+      ctx.stroke();
+      // 원점 축 강조
+      ctx.strokeStyle = "#bcd0ea";
+      ctx.lineWidth = 2 * k;
+      ctx.beginPath();
+      if (0 >= x0 && 0 <= x1) {
+        ctx.moveTo(0, y0);
+        ctx.lineTo(0, y1);
+      }
+      if (0 >= y0 && 0 <= y1) {
+        ctx.moveTo(x0, 0);
+        ctx.lineTo(x1, 0);
+      }
+      ctx.stroke();
     }
-    for (let y = by0; y <= y1; y += GRID * 5) {
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x1, y);
-    }
-    ctx.stroke();
-    // 원점 축 강조
-    ctx.strokeStyle = "#bcd0ea";
-    ctx.lineWidth = 2 * k;
-    ctx.beginPath();
-    if (0 >= x0 && 0 <= x1) {
-      ctx.moveTo(0, y0);
-      ctx.lineTo(0, y1);
-    }
-    if (0 >= y0 && 0 <= y1) {
-      ctx.moveTo(x0, 0);
-      ctx.lineTo(x1, 0);
-    }
-    ctx.stroke();
 
     // reference (원본 박제) 먼저 — 작업 도형 아래 레이어
     for (const s of lessonReference) drawShape(ctx, s, false, false, k);
@@ -3701,21 +3712,23 @@ export default function PolygonCanvas() {
     ctx.textAlign = "start";
     ctx.textBaseline = "alphabetic";
 
-    // 모눈 눈금 숫자 (화면 가장자리에 고정 = 자 느낌)
+    // 모눈 눈금 숫자 (화면 가장자리에 고정 = 자 느낌) — 무격자 모드에서는 숨김
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = `bold ${boardMode ? 14 : 12}px sans-serif`;
-    ctx.textBaseline = "top";
-    for (let x = bx0; x <= x1; x += GRID * 5) {
-      const sx = x * camera.scale + camera.tx;
-      if (sx >= 16 && sx <= cw - 4) ctx.fillText(`${Math.round(x / GRID)}`, sx + 3, 3);
+    if (showGrid) {
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = `bold ${boardMode ? 14 : 12}px sans-serif`;
+      ctx.textBaseline = "top";
+      for (let x = bx0; x <= x1; x += GRID * 5) {
+        const sx = x * camera.scale + camera.tx;
+        if (sx >= 16 && sx <= cw - 4) ctx.fillText(`${Math.round(x / GRID)}`, sx + 3, 3);
+      }
+      ctx.textBaseline = "alphabetic";
+      for (let y = by0; y <= y1; y += GRID * 5) {
+        const sy = y * camera.scale + camera.ty;
+        if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
+      }
     }
-    ctx.textBaseline = "alphabetic";
-    for (let y = by0; y <= y1; y += GRID * 5) {
-      const sy = y * camera.scale + camera.ty;
-      if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
-    }
-  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showAngles, showEdgeLen, showSymmetry, labelScale, piMode, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showGrid, showAngles, showEdgeLen, showSymmetry, labelScale, piMode, lessonReference, quiz]);
 
   // 선대칭도형의 대칭축을 도형 폭보다 조금 더 길게 점선으로 그림
   function drawSymmetryAxes(
@@ -4590,6 +4603,17 @@ export default function PolygonCanvas() {
               />
               <Chip active={showAreaBadge} onClick={() => setShowAreaBadge(!showAreaBadge)} icon="🔢" label="넓이" title="넓이 표시: 도형 가운데에 넓이(cm²)를 보여줄지 켜고 끄기" />
               <Chip active={gridCountMode} onClick={() => setGridCountMode(!gridCountMode)} icon="▦" label="칸세기" title="칸세기 모드(G): 어떤 도형이든 모눈 칸을 덮어 꽉 찬 칸/걸친 칸으로 세기 쉽게" />
+              <Chip
+                active={!showGrid}
+                onClick={() => {
+                  const next = !showGrid;
+                  setShowGrid(next);
+                  setFlash(next ? "▦ 격자를 다시 보여줘요" : "⬜ 무격자 모드: 칸을 세지 말고, 공식과 변 길이로 넓이를 구해 보세요!");
+                }}
+                icon="⬜"
+                label="무격자"
+                title="무격자 모드: 모눈(격자)을 숨겨요 — 칸을 세지 않고 공식·표시된 길이만으로 넓이를 구하는 연습! (스냅·자연수 모드는 그대로 유지)"
+              />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />
               <Chip active={showSymmetry} onClick={() => setShowSymmetry(!showSymmetry)} icon="🪞" label="대칭" title="대칭축: 선대칭도형의 대칭축을 점선으로 보여줘요 (정n각형, 마름모, 직사각형, 원)" />
               <Chip active={showEdgeLen} onClick={() => setShowEdgeLen(!showEdgeLen)} icon="📏" label="변길이" title="변 길이(cm) 라벨을 켜고 끄기" />

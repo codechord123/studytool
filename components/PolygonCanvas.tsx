@@ -3050,6 +3050,7 @@ export default function PolygonCanvas() {
   }
 
   function exitLesson() {
+    if (lesson) setFlash("🧪 학습을 마쳤어요 — '학습 예시'에서 언제든 다시 시작할 수 있어요");
     setLesson(null);
     setLessonStep(0);
     setShowHint(false);
@@ -3238,6 +3239,13 @@ export default function PolygonCanvas() {
   }, [shapes, lesson, lessonStep]);
 
   function clearAll() {
+    // 학생 기기에서 실수로 눌러 작업·학습이 통째로 날아가지 않도록 확인
+    if (shapes.length > 0 || texts.length > 0 || lesson || quiz) {
+      const msg = lesson
+        ? "진행 중인 학습과 모든 도형이 지워져요. 정말 처음부터 시작할까요?"
+        : "모든 도형과 글상자가 지워져요. 정말 전체 초기화할까요?";
+      if (!window.confirm(msg)) return;
+    }
     commitHistory();
     setShapes([]);
     setSelectedId(null);
@@ -5555,6 +5563,11 @@ function LessonPanel({
   const isFinal = !!step?.final;
   const fill = step?.fill;
   const challenge = step?.challenge;
+  // 학생 기기에서 실수로 닫아 설명이 사라지지 않도록: 그만두기는 확인 후, 접기로 잠시 숨기기 가능
+  const [collapsed, setCollapsed] = useState(false);
+  function confirmExit() {
+    if (isFinal || window.confirm("학습을 그만둘까요? 진행한 단계가 사라져요.")) onExit();
+  }
 
   const [fillVals, setFillVals] = useState<(string | null)[]>([]);
   const [activeBlank, setActiveBlank] = useState(0);
@@ -5605,6 +5618,20 @@ function LessonPanel({
     return activeBlank === i ? "border-emerald-500 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-white text-slate-800";
   };
 
+  if (collapsed) {
+    // 접힌 상태: 얇은 막대 — 제목 + 펼치기 (설명이 '사라진' 게 아니라 여기 있음이 보이게)
+    return (
+      <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,640px)] -translate-x-1/2">
+        <button
+          onClick={() => setCollapsed(false)}
+          className="pointer-events-auto mx-auto flex items-center gap-2 rounded-full border-2 border-emerald-300 bg-white/95 px-4 py-2 text-sm font-extrabold text-emerald-800 shadow-xl backdrop-blur"
+        >
+          🧪 {lesson.title}
+          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700">▼ 설명 펼치기</span>
+        </button>
+      </div>
+    );
+  }
   return (
     <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,640px)] -translate-x-1/2">
       <div className="pointer-events-auto rounded-2xl border-2 border-emerald-300 bg-white/95 p-4 shadow-2xl backdrop-blur">
@@ -5622,9 +5649,18 @@ function LessonPanel({
               ))}
             </div>
           </div>
-          <button onClick={onExit} className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600">
-            그만두기 ✕
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => setCollapsed(true)}
+              title="설명을 잠시 접어요 (도형이 잘 보이게)"
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50"
+            >
+              ▲ 접기
+            </button>
+            <button onClick={confirmExit} className="rounded-lg px-2 py-1 text-xs font-bold text-slate-400 hover:bg-slate-50 hover:text-slate-600">
+              그만두기 ✕
+            </button>
+          </div>
         </div>
 
         {refArea > 0 && !fill && !challenge && (

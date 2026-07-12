@@ -3008,7 +3008,9 @@ export default function PolygonCanvas() {
   function loadScenario(sc: Scenario) {
     commitHistory();
     const { x: cx, y: cy } = viewCenterWorld();
-    const built = sc.build(cx, cy);
+    let built = sc.build(cx, cy);
+    // 세로 화면: 나란한 예시 도형을 세로로 쌓아 크게 (겹쳐 놓은 도형은 묶음 유지)
+    if (sizeRef.current.h > sizeRef.current.w) built = stackClustersForPortrait(built);
     setShapes(built);
     setSelectedId(null);
     setMergeFirstId(null);
@@ -3020,12 +3022,73 @@ export default function PolygonCanvas() {
   }
 
   // ----- 탐구 레슨 -----
+  // 세로(포트레이트) 화면: 가로로 나란히 배치된 도형들을 세로로 쌓아 더 크게 보이게.
+  // 일부러 겹쳐 놓은 도형(예: 직사각형 안 마름모)은 '겹침 클러스터'로 묶어 함께 이동.
+  function stackClustersForPortrait(shapesIn: Shape[]): Shape[] {
+    const n = shapesIn.length;
+    if (n < 2) return shapesIn;
+    const boxes = shapesIn.map((s) => {
+      const xs = s.points.map((p) => p.x);
+      const ys = s.points.map((p) => p.y);
+      return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+    });
+    // 겹침(여유 0.5칸) 기준 연결 요소 찾기
+    const parent = Array.from({ length: n }, (_, i) => i);
+    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    const m = GRID * 0.5;
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++) {
+        const a = boxes[i], b = boxes[j];
+        if (a.minX < b.maxX + m && b.minX < a.maxX + m && a.minY < b.maxY + m && b.minY < a.maxY + m) parent[find(i)] = find(j);
+      }
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r)!.push(i);
+    }
+    if (groups.size < 2) return shapesIn; // 전부 한 덩어리면 그대로
+    // 전체가 이미 세로형이면 그대로
+    const totW = Math.max(...boxes.map((b) => b.maxX)) - Math.min(...boxes.map((b) => b.minX));
+    const totH = Math.max(...boxes.map((b) => b.maxY)) - Math.min(...boxes.map((b) => b.minY));
+    if (totH >= totW) return shapesIn;
+    // 클러스터를 (위→아래, 왼→오른쪽) 순으로 세로 쌓기 — 이동량은 칸 단위로 반올림해 격자 유지
+    const clusters = [...groups.values()].map((idxs) => {
+      const bb = {
+        minX: Math.min(...idxs.map((i) => boxes[i].minX)),
+        maxX: Math.max(...idxs.map((i) => boxes[i].maxX)),
+        minY: Math.min(...idxs.map((i) => boxes[i].minY)),
+        maxY: Math.max(...idxs.map((i) => boxes[i].maxY)),
+      };
+      return { idxs, bb };
+    });
+    clusters.sort((a, b) => a.bb.minY - b.bb.minY || a.bb.minX - b.bb.minX);
+    const cx = (Math.min(...boxes.map((b) => b.minX)) + Math.max(...boxes.map((b) => b.maxX))) / 2;
+    let y = Math.min(...boxes.map((b) => b.minY));
+    const out = shapesIn.map((s) => ({ ...s, points: s.points.map((p) => ({ ...p })) }));
+    for (const cl of clusters) {
+      const dx = Math.round((cx - (cl.bb.minX + cl.bb.maxX) / 2) / GRID) * GRID;
+      const dy = Math.round((y - cl.bb.minY) / GRID) * GRID;
+      for (const i of cl.idxs) out[i] = { ...out[i], points: translatePoints(out[i].points, dx, dy) };
+      y += cl.bb.maxY - cl.bb.minY + GRID * 1.5;
+    }
+    return out;
+  }
+
   function startLesson(L: Lesson) {
     commitHistory();
     const { x: cx, y: cy } = viewCenterWorld();
     const built = L.build(cx, cy);
-    setShapes(built.working);
-    setLessonReference(built.reference);
+    let working = built.working;
+    let reference = built.reference;
+    // 세로 화면에서는 나란한 배치를 세로로 쌓아 도형이 크게 보이도록
+    if (sizeRef.current.h > sizeRef.current.w) {
+      const stacked = stackClustersForPortrait([...reference, ...working]);
+      reference = stacked.slice(0, reference.length);
+      working = stacked.slice(reference.length);
+    }
+    setShapes(working);
+    setLessonReference(reference);
     setSelectedId(null);
     setMergeFirstId(null);
     setDraft([]);
@@ -3037,8 +3100,8 @@ export default function PolygonCanvas() {
     setLessonStep(0);
     setShowHint(false);
     setDrawer(null);
-    const all = [...built.working, ...built.reference];
-    requestAnimationFrame(() => fitView(all));
+    const all = [...working, ...reference];
+    requestAnimationFrame(() => fitView(all, { topInset: headerH + 8, bottomInset: 90 }));
   }
 
   function restartLesson() {
@@ -3046,14 +3109,21 @@ export default function PolygonCanvas() {
     const { x: cx, y: cy } = viewCenterWorld();
     const built = lesson.build(cx, cy);
     commitHistory();
-    setShapes(built.working);
-    setLessonReference(built.reference);
+    let working = built.working;
+    let reference = built.reference;
+    if (sizeRef.current.h > sizeRef.current.w) {
+      const stacked = stackClustersForPortrait([...reference, ...working]);
+      reference = stacked.slice(0, reference.length);
+      working = stacked.slice(reference.length);
+    }
+    setShapes(working);
+    setLessonReference(reference);
     setSelectedId(null);
     setMergeFirstId(null);
     setLessonStep(0);
     setShowHint(false);
-    const all = [...built.working, ...built.reference];
-    requestAnimationFrame(() => fitView(all));
+    const all = [...working, ...reference];
+    requestAnimationFrame(() => fitView(all, { topInset: headerH + 8, bottomInset: 90 }));
   }
 
   function exitLesson() {

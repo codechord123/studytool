@@ -1505,7 +1505,7 @@ export default function PolygonCanvas() {
   );
 
   const fitView = useCallback(
-    (list?: Shape[], opts?: { topInset?: number; bottomInset?: number }) => {
+    (list?: Shape[], opts?: { topInset?: number; bottomInset?: number; leftInset?: number }) => {
       const { w, h } = sizeRef.current;
       if (!w || !h) return;
       const src = list ?? shapes;
@@ -1526,17 +1526,22 @@ export default function PolygonCanvas() {
             if (p.y > maxY) maxY = p.y;
           }
       }
-      const pad = 80;
+      // 여백은 화면 크기에 비례 (폰에서 80px 고정은 과해서 도형이 지나치게 작아짐).
+      // 최소 48px — 변 길이 라벨이 도형 바깥으로 나와도 잘리지 않을 만큼
+      const pad = Math.min(80, Math.max(48, w * 0.08));
       // 상단 문제 카드/하단 컨텍스트바를 가리지 않도록 위·아래 여백을 비워 그 사이에 도형 배치
+      // 왼쪽 도구 레일(≈84px)에 도형이 가리지 않도록 왼쪽 여백도 기본으로 확보
       const topInset = opts?.topInset ?? 0;
       const bottomInset = opts?.bottomInset ?? 0;
+      const leftInset = opts?.leftInset ?? 90;
       const availH = Math.max(GRID, h - topInset - bottomInset);
+      const availW = Math.max(GRID, w - leftInset);
       const bw = Math.max(GRID, maxX - minX);
       const bh = Math.max(GRID, maxY - minY);
-      const s = clamp(Math.min((w - pad * 2) / bw, (availH - pad * 2) / bh), MIN_SCALE, MAX_SCALE);
+      const s = clamp(Math.min((availW - pad * 2) / bw, (availH - pad * 2) / bh), MIN_SCALE, MAX_SCALE);
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      setCam({ scale: s, tx: w / 2 - cx * s, ty: topInset + availH / 2 - cy * s });
+      setCam({ scale: s, tx: leftInset + availW / 2 - cx * s, ty: topInset + availH / 2 - cy * s });
     },
     [shapes, setCam]
   );
@@ -1763,7 +1768,9 @@ export default function PolygonCanvas() {
     }
 
     const { sx, sy } = localXY(e);
-    const k = 1 / camRef.current.scale;
+    const k0 = 1 / camRef.current.scale;
+    // 손가락(터치)은 마우스보다 부정확 → 손잡이·꼭짓점 히트 영역을 1.5배로 (태블릿 조작성)
+    const k = e.pointerType === "touch" ? k0 * 1.5 : k0;
     const raw = toWorld(sx, sy);
     const p = gridSnap(raw);
 
@@ -3083,6 +3090,7 @@ export default function PolygonCanvas() {
   }
 
   function setQuizFromProblems(problems: QuizProblem[]) {
+    commitHistory(); // 학생이 그리던 캔버스가 대체되므로 ↶ 되돌리기로 복구 가능하게
     const built = buildQuizShapes(problems[0]);
     setQuiz({
       problems,
@@ -3101,6 +3109,13 @@ export default function PolygonCanvas() {
   }
 
   function exitQuiz() {
+    if (quiz) {
+      // 문제 도형이 캔버스에 남아 정답이 노출된 채 어질러지지 않도록 정리 (↶로 복구 가능)
+      commitHistory();
+      setShapes([]);
+      setSelectedId(null);
+      setMergeFirstId(null);
+    }
     setQuiz(null);
   }
 
@@ -3255,7 +3270,7 @@ export default function PolygonCanvas() {
     setMeasurements([]);
     setGuides([]);
     exitLesson();
-    exitQuiz();
+    setQuiz(null); // exitQuiz의 캔버스 정리는 위에서 이미 수행 (중복 커밋 방지)
   }
 
   // 저장 버튼 → 제출용 대화상자 열기(입력창 포커스가 편집 중 글상자를 자동 확정)
@@ -4511,9 +4526,9 @@ export default function PolygonCanvas() {
         </div>
       )}
 
-      {/* 빈 화면 안내 */}
+      {/* 빈 화면 안내 — 좁은 화면에서는 왼쪽 도구 레일에 가리지 않게 오른쪽으로 비켜 배치 */}
       {shapes.length === 0 && draft.length === 0 && texts.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center pl-[84px] pr-2 sm:px-0">
           <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200 bg-white/80 px-8 py-7 text-center shadow-xl backdrop-blur">
             <div className="text-4xl">📐✨</div>
             <div className="text-lg font-bold text-slate-800">다각형 체험을 시작해 볼까요?</div>
@@ -4523,13 +4538,13 @@ export default function PolygonCanvas() {
             <div className="mt-1 flex gap-2">
               <button
                 onClick={() => setDrawer("shapes")}
-                className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-bold text-white shadow hover:bg-slate-800"
+                className="whitespace-nowrap rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-bold text-white shadow hover:bg-slate-800"
               >
                 📐 도형 추가
               </button>
               <button
                 onClick={() => setDrawer("scenarios")}
-                className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-bold text-indigo-700 hover:bg-indigo-100"
+                className="whitespace-nowrap rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-bold text-indigo-700 hover:bg-indigo-100"
               >
                 📚 학습 예시
               </button>
@@ -6079,7 +6094,12 @@ function QuizPanel({
             >
               {muted ? "🔇" : "🔊"}
             </button>
-            <button onClick={onExit} className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600">
+            <button
+              onClick={() => {
+                if (window.confirm("문제 풀기를 그만둘까요? 점수와 진행이 사라져요.")) onExit();
+              }}
+              className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600"
+            >
               그만두기 ✕
             </button>
           </div>

@@ -4121,8 +4121,9 @@ export default function PolygonCanvas() {
       const padH = 5 * k;
       const padV = 4 * k;
       const boxH = baseFont * k + padV * 2;
-      // 변 길이(cm) 박스 — '변길이' 토글이 켜져 있을 때만 (화면에서 너무 작으면 위에서 이미 생략됨)
-      const drawLenBox = showEdgeLen && !gridCountMode;
+      // 변 길이(cm) 박스 — '변길이' 토글이 켜져 있고, 라벨이 변 길이 안에 '들어갈' 때만
+      //   (줌아웃하면 자동으로 정돈되고, 줌인하면 다시 나타남 — 라벨 무더기 방지)
+      const drawLenBox = showEdgeLen && !gridCountMode && L >= (tw + 20 * k) * 1.5;
       if (drawLenBox) {
         ctx.fillStyle = "rgba(255,255,255,0.96)";
         ctx.strokeStyle = s.color;
@@ -4142,17 +4143,20 @@ export default function PolygonCanvas() {
         const mf = (boardMode ? 14 : 12) * labelScale * k;
         ctx.font = `bold ${mf}px sans-serif`;
         const mw = ctx.measureText(meaning).width;
-        const mpx = 6 * k;
-        const mpy = 3 * k;
-        const mbh = mf + mpy * 2;
-        const mty = drawLenBox ? ty0 + boxH / 2 + mbh / 2 + 3 * k : ty0;
-        ctx.fillStyle = "#fef3c7";
-        ctx.strokeStyle = "#f59e0b";
-        ctx.lineWidth = 1.2 * k;
-        ctx.fillRect(tx0 - mw / 2 - mpx, mty - mbh / 2, mw + mpx * 2, mbh);
-        ctx.strokeRect(tx0 - mw / 2 - mpx, mty - mbh / 2, mw + mpx * 2, mbh);
-        ctx.fillStyle = "#92400e";
-        ctx.fillText(meaning, tx0, mty);
+        // 의미 라벨도 변 길이 안에 들어갈 때만 (줌아웃 시 겹침 방지)
+        if (L >= (mw + 20 * k) * 1.5) {
+          const mpx = 6 * k;
+          const mpy = 3 * k;
+          const mbh = mf + mpy * 2;
+          const mty = drawLenBox ? ty0 + boxH / 2 + mbh / 2 + 3 * k : ty0;
+          ctx.fillStyle = "#fef3c7";
+          ctx.strokeStyle = "#f59e0b";
+          ctx.lineWidth = 1.2 * k;
+          ctx.fillRect(tx0 - mw / 2 - mpx, mty - mbh / 2, mw + mpx * 2, mbh);
+          ctx.strokeRect(tx0 - mw / 2 - mpx, mty - mbh / 2, mw + mpx * 2, mbh);
+          ctx.fillStyle = "#92400e";
+          ctx.fillText(meaning, tx0, mty);
+        }
         ctx.font = `bold ${baseFont * k}px sans-serif`;
       }
     }

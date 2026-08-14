@@ -213,6 +213,80 @@ function symmetryInfo(pts: Point[]): { axisAngles: number[]; pointSym: boolean; 
   return { axisAngles, pointSym, center: c };
 }
 
+// 🪞🪞 '두 도형'의 대칭 관계 판별 — 축·대칭의 중심이 도형 '밖'(두 도형 사이)에 놓이는 경우
+//   - 선대칭의 위치: 두 무게중심을 잇는 선분의 수직이등분선을 축 후보로 반사 검사
+//   - 점대칭의 위치: 두 무게중심의 중점을 중심 후보로 180° 회전 검사
+function pairSymmetryInfo(
+  a: Point[],
+  b: Point[]
+): { lineSym: { m: Point; dir: Point } | null; pointSym: Point | null } {
+  if (a.length !== b.length || a.length < 3 || a.length >= 20) return { lineSym: null, pointSym: null };
+  const n = a.length;
+  const eps = GRID * 0.07;
+  const eq = (p: Point, q: Point) => Math.hypot(p.x - q.x, p.y - q.y) < eps;
+  const ca = polygonCentroid(a);
+  const cb = polygonCentroid(b);
+  const m = { x: (ca.x + cb.x) / 2, y: (ca.y + cb.y) / 2 };
+  // 점대칭의 위치
+  let pointSym: Point | null = null;
+  {
+    const ra = a.map((p) => ({ x: 2 * m.x - p.x, y: 2 * m.y - p.y }));
+    let ok = false;
+    for (let k = 0; k < n && !ok; k++) {
+      let good = true;
+      for (let i = 0; i < n; i++) {
+        if (!eq(ra[i], b[(i + k) % n])) { good = false; break; }
+      }
+      ok = good;
+    }
+    if (ok) pointSym = m;
+  }
+  // 선대칭의 위치 (두 무게중심이 떨어져 있을 때만 — 축은 그 수직이등분선)
+  let lineSym: { m: Point; dir: Point } | null = null;
+  const dd = Math.hypot(cb.x - ca.x, cb.y - ca.y);
+  if (dd > eps) {
+    const ux = (cb.x - ca.x) / dd; // 축의 법선 방향
+    const uy = (cb.y - ca.y) / dd;
+    const refl = (p: Point) => {
+      const dist = (p.x - m.x) * ux + (p.y - m.y) * uy;
+      return { x: p.x - 2 * dist * ux, y: p.y - 2 * dist * uy };
+    };
+    const ra = a.map(refl);
+    let ok = false;
+    for (let k = 0; k < n && !ok; k++) {
+      let good = true;
+      for (let i = 0; i < n; i++) {
+        if (!eq(ra[i], b[(((k - i) % n) + n) % n])) { good = false; break; }
+      }
+      ok = good;
+    }
+    if (ok) lineSym = { m, dir: { x: -uy, y: ux } };
+  }
+  return { lineSym, pointSym };
+}
+
+// 🤝 두 다각형이 서로 합동인지 (변 길이·내각의 순환열 비교, 뒤집기 포함)
+function polygonsCongruent(a: Point[], b: Point[]): boolean {
+  if (a.length !== b.length || a.length < 3 || a.length >= 20) return false;
+  const n = a.length;
+  const edges = (p: Point[]) => p.map((q, i) => Math.hypot(p[(i + 1) % n].x - q.x, p[(i + 1) % n].y - q.y));
+  const ea = edges(a);
+  const aa = interiorAnglesDeg(a);
+  const match = (eb: number[], ab: number[]) => {
+    for (let k = 0; k < n; k++) {
+      let good = true;
+      for (let i = 0; i < n; i++) {
+        if (Math.abs(ea[i] - eb[(i + k) % n]) > GRID * 0.08 || Math.abs(aa[i] - ab[(i + k) % n]) > 2.5) { good = false; break; }
+      }
+      if (good) return true;
+    }
+    return false;
+  };
+  if (match(edges(b), interiorAnglesDeg(b))) return true;
+  const br = [...b].reverse();
+  return match(edges(br), interiorAnglesDeg(br));
+}
+
 // 한 변의 '표시 길이'(라벨에 보이는 값)를 소수 첫째자리 단위 수치로 반환
 function niceLenCm(cm: number): number {
   const r = Math.round(cm);
@@ -3701,6 +3775,85 @@ export default function PolygonCanvas() {
     for (const s of lessonReference) drawShape(ctx, s, false, false, k);
     for (const s of shapes) drawShape(ctx, s, isSelected(s.id), s.id === mergeFirstId, k);
 
+    // 🪞🪞 두 도형을 선택하고 대칭이 켜져 있으면 — '두 도형 사이'의 대칭축·대칭의 중심 표시
+    //   (선대칭·점대칭의 '위치' 개념: 축과 중심이 도형 밖에 있을 수 있음)
+    if (showSymmetry && selectedIds.length === 2) {
+      const A = shapes.find((s) => s.id === selectedIds[0]);
+      const B = shapes.find((s) => s.id === selectedIds[1]);
+      const isPoly = (s?: Shape) =>
+        !!s && !(typeof s.defKind === "object" && s.defKind !== null && "circle" in s.defKind) && s.points.length >= 3 && s.points.length < 20;
+      if (isPoly(A) && isPoly(B)) {
+        const info = pairSymmetryInfo(A!.points, B!.points);
+        const allPts = [...A!.points, ...B!.points];
+        if (info.lineSym) {
+          const { m, dir } = info.lineSym;
+          const half = Math.max(...allPts.map((p) => Math.hypot(p.x - m.x, p.y - m.y))) * 1.1 + 18 * k;
+          ctx.save();
+          ctx.setLineDash([9 * k, 6 * k]);
+          ctx.strokeStyle = "rgba(255,255,255,0.9)";
+          ctx.lineWidth = 5.5 * k;
+          ctx.beginPath();
+          ctx.moveTo(m.x - dir.x * half, m.y - dir.y * half);
+          ctx.lineTo(m.x + dir.x * half, m.y + dir.y * half);
+          ctx.stroke();
+          ctx.strokeStyle = "#ec4899";
+          ctx.lineWidth = 2.8 * k;
+          ctx.beginPath();
+          ctx.moveTo(m.x - dir.x * half, m.y - dir.y * half);
+          ctx.lineTo(m.x + dir.x * half, m.y + dir.y * half);
+          ctx.stroke();
+          ctx.restore();
+          const lbl = "대칭축";
+          ctx.font = `bold ${12 * k}px sans-serif`;
+          const lw = ctx.measureText(lbl).width;
+          const lx = m.x + dir.x * half;
+          const ly = m.y + dir.y * half;
+          ctx.fillStyle = "rgba(255,255,255,0.92)";
+          ctx.fillRect(lx - lw / 2 - 4 * k, ly + 6 * k, lw + 8 * k, 16 * k);
+          ctx.fillStyle = "#ec4899";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(lbl, lx, ly + 14 * k);
+          ctx.textAlign = "start";
+          ctx.textBaseline = "alphabetic";
+        }
+        if (info.pointSym) {
+          const m = info.pointSym;
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(m.x, m.y, 12 * k, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(255,255,255,0.95)";
+          ctx.fill();
+          ctx.strokeStyle = "#7c3aed";
+          ctx.lineWidth = 2 * k;
+          ctx.stroke();
+          ctx.fillStyle = "#7c3aed";
+          ctx.beginPath();
+          ctx.arc(m.x, m.y, 3.5 * k, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.lineWidth = 2.2 * k;
+          ctx.beginPath();
+          ctx.moveTo(m.x - 9 * k, m.y);
+          ctx.lineTo(m.x + 9 * k, m.y);
+          ctx.moveTo(m.x, m.y - 9 * k);
+          ctx.lineTo(m.x, m.y + 9 * k);
+          ctx.stroke();
+          const lbl = "대칭의 중심";
+          ctx.font = `bold ${11 * k}px sans-serif`;
+          const lw = ctx.measureText(lbl).width;
+          ctx.fillStyle = "rgba(255,255,255,0.92)";
+          ctx.fillRect(m.x - lw / 2 - 4 * k, m.y + 15 * k, lw + 8 * k, 15 * k);
+          ctx.fillStyle = "#7c3aed";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(lbl, m.x, m.y + 22.5 * k);
+          ctx.textAlign = "start";
+          ctx.textBaseline = "alphabetic";
+          ctx.restore();
+        }
+      }
+    }
+
     // 스마트 정렬 가이드 (도형 이동 중 모서리/중심 정렬)
     if (dragRef.current.type === "translate") {
       const ag = alignGuidesRef.current;
@@ -5137,6 +5290,17 @@ export default function PolygonCanvas() {
                   count: selectedIds.length,
                   area: shapes.filter((s) => selectedIds.includes(s.id)).reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0),
                   peri: shapes.filter((s) => selectedIds.includes(s.id)).reduce((a, s) => a + displayPerimeterCm(s.points), 0),
+                  // 정확히 2개 선택 시: 두 도형 사이의 대칭·합동 관계 (5-2 합동과 대칭)
+                  pair: (() => {
+                    if (selectedIds.length !== 2 || !showSymmetry) return null;
+                    const A = shapes.find((s) => s.id === selectedIds[0]);
+                    const B = shapes.find((s) => s.id === selectedIds[1]);
+                    const isPoly = (sh?: Shape) =>
+                      !!sh && !(typeof sh.defKind === "object" && sh.defKind !== null && "circle" in sh.defKind) && sh.points.length >= 3 && sh.points.length < 20;
+                    if (!isPoly(A) || !isPoly(B)) return null;
+                    const info = pairSymmetryInfo(A!.points, B!.points);
+                    return { line: !!info.lineSym, point: !!info.pointSym, congruent: polygonsCongruent(A!.points, B!.points) };
+                  })(),
                 }
               : null
           }
@@ -5493,7 +5657,7 @@ function InfoCard({
   onResetPos: () => void;
   showAngles?: boolean;
   showSym?: boolean;
-  multi?: { count: number; area: number; peri: number } | null;
+  multi?: { count: number; area: number; peri: number; pair?: { line: boolean; point: boolean; congruent: boolean } | null } | null;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   piMode?: 3 | 3.1 | 3.14;
@@ -5616,7 +5780,16 @@ function InfoCard({
       </div>
       <div className="p-3 pt-1 sm:p-4 sm:pt-1">
       {multi ? (
+        <>
         <div className="mb-3 text-base font-bold text-indigo-600">🧩 {multi.count}개 선택됨 · 합계</div>
+        {multi.pair && (
+          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-pink-50 px-3.5 py-2.5 text-sm font-extrabold">
+            <span className={multi.pair.line ? "text-pink-600" : "text-slate-400"}>🪞 선대칭의 위치 {multi.pair.line ? "○" : "✗"}</span>
+            <span className={multi.pair.point ? "text-violet-600" : "text-slate-400"}>🔃 점대칭의 위치 {multi.pair.point ? "○" : "✗"}</span>
+            <span className={multi.pair.congruent ? "text-emerald-600" : "text-slate-400"}>🤝 서로 합동 {multi.pair.congruent ? "○" : "✗"}</span>
+          </div>
+        )}
+        </>
       ) : selected && kind ? (
         <div className="mb-3 flex items-center gap-2.5">
           <span className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-black/5" style={{ backgroundColor: selected.color }} />

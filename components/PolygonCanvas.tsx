@@ -4041,20 +4041,29 @@ export default function PolygonCanvas() {
     circleDef: { circle: number } | null
   ) {
     const c = polygonCentroid(s.points);
-    // 도형 바운딩 반지름 (표시 길이 결정)
-    const bbR = Math.max(...s.points.map((p) => Math.hypot(p.x - c.x, p.y - c.y))) * 1.15;
+    // 도형 바운딩 반지름 (표시 길이 결정) — 도형 밖까지 넉넉히 나가야 축이 눈에 띔
+    const bbR = Math.max(...s.points.map((p) => Math.hypot(p.x - c.x, p.y - c.y))) * 1.3 + 14 * k;
     const drawLine = (angle: number) => {
       const dx = Math.cos(angle) * bbR;
       const dy = Math.sin(angle) * bbR;
+      // 흰 밑줄(casing) → 도형 색·배지 위에서도 또렷하게
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 5.5 * k;
+      ctx.beginPath();
+      ctx.moveTo(c.x - dx, c.y - dy);
+      ctx.lineTo(c.x + dx, c.y + dy);
+      ctx.stroke();
+      ctx.restore();
       ctx.beginPath();
       ctx.moveTo(c.x - dx, c.y - dy);
       ctx.lineTo(c.x + dx, c.y + dy);
       ctx.stroke();
     };
     ctx.save();
-    ctx.setLineDash([8 * k, 5 * k]);
-    ctx.strokeStyle = "#ec4899cc";
-    ctx.lineWidth = 1.8 * k;
+    ctx.setLineDash([9 * k, 6 * k]);
+    ctx.strokeStyle = "#ec4899";
+    ctx.lineWidth = 2.8 * k;
     let pointSym = false;
     if (circleDef) {
       // 원 — 대표 4개 대칭축(수직·수평·대각선 2) + 점대칭
@@ -4069,21 +4078,38 @@ export default function PolygonCanvas() {
       for (const ang of info.axisAngles) drawLine(ang);
       pointSym = info.pointSym;
     }
-    // 🔃 점대칭이면 '대칭의 중심'을 표시
+    // 🔃 점대칭이면 '대칭의 중심'을 표시 — 흰 배경 원 위에 보라 ✚, 라벨까지
     if (pointSym) {
       ctx.setLineDash([]);
-      ctx.strokeStyle = "#7c3aed";
-      ctx.fillStyle = "#7c3aed";
-      ctx.lineWidth = 1.6 * k;
       ctx.beginPath();
-      ctx.arc(c.x, c.y, 4.5 * k, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, 12 * k, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
       ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(c.x - 10 * k, c.y);
-      ctx.lineTo(c.x + 10 * k, c.y);
-      ctx.moveTo(c.x, c.y - 10 * k);
-      ctx.lineTo(c.x, c.y + 10 * k);
+      ctx.strokeStyle = "#7c3aed";
+      ctx.lineWidth = 2 * k;
       ctx.stroke();
+      ctx.fillStyle = "#7c3aed";
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 3.5 * k, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 2.2 * k;
+      ctx.beginPath();
+      ctx.moveTo(c.x - 9 * k, c.y);
+      ctx.lineTo(c.x + 9 * k, c.y);
+      ctx.moveTo(c.x, c.y - 9 * k);
+      ctx.lineTo(c.x, c.y + 9 * k);
+      ctx.stroke();
+      const lbl = "대칭의 중심";
+      ctx.font = `bold ${11 * k}px sans-serif`;
+      const lw = ctx.measureText(lbl).width;
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillRect(c.x - lw / 2 - 4 * k, c.y + 15 * k, lw + 8 * k, 15 * k);
+      ctx.fillStyle = "#7c3aed";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(lbl, c.x, c.y + 22.5 * k);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
     }
     ctx.restore();
   }
@@ -4194,11 +4220,6 @@ export default function PolygonCanvas() {
     ctx.lineWidth = (isMergeFirst || isSelected ? 3.5 : isRef ? 2 : 2.5) * k;
     ctx.stroke();
     ctx.restore();
-
-    // 🪞 대칭축 표시 — 선대칭도형의 대칭축 자동 감지 후 점선 표시
-    if (showSymmetry && !isRef) {
-      drawSymmetryAxes(ctx, s, k, circleDef);
-    }
 
     // 원본 박제 워터마크 라벨
     if (isRef) {
@@ -4623,8 +4644,10 @@ export default function PolygonCanvas() {
       const tw = ctx.measureText(centerLabel).width;
       const padH = 8 * k;
       const boxH = lf + 9 * k;
+      // 🪞 대칭 표시 중에는 '대칭의 중심' 마커와 겹치지 않게 배지를 위로 비켜 그림
+      const symShift = showSymmetry && !isRef ? -34 * k : 0;
       const bx = cx0.x - tw / 2 - padH;
-      const by = cx0.y - boxH / 2;
+      const by = cx0.y - boxH / 2 + symShift;
       const bw = tw + padH * 2;
       if (isCellLabel) {
         ctx.fillStyle = "rgba(255,255,255,0.96)";
@@ -4640,7 +4663,7 @@ export default function PolygonCanvas() {
       }
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(centerLabel, cx0.x, cx0.y);
+      ctx.fillText(centerLabel, cx0.x, cx0.y + symShift);
       ctx.textAlign = "start";
       ctx.textBaseline = "alphabetic";
     }
@@ -4675,6 +4698,11 @@ export default function PolygonCanvas() {
         ctx.textAlign = "start";
         ctx.textBaseline = "alphabetic";
       });
+    }
+
+    // 🪞 대칭 표시 — 넓이 배지·라벨보다 '위에' 그려 축과 대칭의 중심이 또렷이 보이게
+    if (showSymmetry && !isRef) {
+      drawSymmetryAxes(ctx, s, k, circleDef);
     }
   }
 
@@ -5662,7 +5690,7 @@ function InfoCard({
       </div>
       {/* 🪞 대칭 판별 (대칭 토글이 켜져 있을 때) — 5-2 합동과 대칭 */}
       {showSym && selected && (circleDef || (selected.points.length >= 3 && selected.points.length < 20)) && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-pink-50 px-3.5 py-2 text-xs font-bold">
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-pink-50 px-3.5 py-2.5 text-sm font-extrabold">
           {circleDef ? (
             <>
               <span className="text-pink-600">🪞 선대칭 · 축이 무수히 많아요</span>

@@ -287,6 +287,244 @@ function polygonsCongruent(a: Point[], b: Point[]): boolean {
   return match(edges(br), interiorAnglesDeg(br));
 }
 
+// ===== 🔍 대응점·대응변·대응각 (5-2 «합동과 대칭») =====
+// kind: 합동인 두 도형(pair) / 선대칭도형(line) / 점대칭도형(point)
+// map[i] = A의 i번 꼭짓점에 대응하는 B의 꼭짓점 번호 (한 도형의 대칭이면 B === A)
+type Corr = {
+  kind: "pair" | "line" | "point";
+  A: Point[];
+  B: Point[];
+  labelsA: string[];
+  labelsB: string[];
+  map: number[];
+  axis?: { m: Point; dir: Point }; // 대칭축 (선대칭도형 / 선대칭의 위치)
+  center?: Point; // 대칭의 중심 (점대칭도형 / 점대칭의 위치)
+};
+type CorrTab = "point" | "side" | "angle";
+type CorrItem = { a: number; b: number; self: boolean }; // 점·각: 꼭짓점 번호 / 변: A의 변 i ↔ B의 변 b(꼭짓점 b→b+1)
+const KO_VERTEX = ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"];
+const CORR_COLORS = ["#e11d48", "#2563eb", "#059669", "#d97706", "#7c3aed", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#4f46e5"];
+const koV = (t: number) => (t < KO_VERTEX.length ? KO_VERTEX[t] : KO_VERTEX[t % KO_VERTEX.length] + "′");
+
+// 교과서처럼 '맨 위(같으면 왼쪽) 꼭짓점'부터 화면 시계방향으로 ㄱ, ㄴ, ㄷ… 순서
+function labelOrder(pts: Point[]): number[] {
+  const n = pts.length;
+  let s = 0;
+  for (let i = 1; i < n; i++) if (pts[i].y < pts[s].y - 1e-6 || (Math.abs(pts[i].y - pts[s].y) < 1e-6 && pts[i].x < pts[s].x)) s = i;
+  let a2 = 0;
+  for (let i = 0; i < n; i++) a2 += pts[i].x * pts[(i + 1) % n].y - pts[(i + 1) % n].x * pts[i].y;
+  const dir = a2 > 0 ? 1 : -1; // y-아래 좌표에서 양수 = 화면 시계방향
+  return Array.from({ length: n }, (_, t) => (((s + dir * t) % n) + n) % n); // t번째 이름 → 꼭짓점 번호
+}
+
+function nearestIndex(pts: Point[], p: Point): number {
+  let best = 0;
+  let bd = Infinity;
+  pts.forEach((q, j) => {
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bd) { bd = d; best = j; }
+  });
+  return bd < GRID * 0.12 ? best : -1;
+}
+
+// 합동 대응 후보(변 길이·내각 순환열 일치) 중 '평행이동에 가장 가까운' 것을 고름 → 자연스러운 짝
+function overlayMap(a: Point[], b: Point[]): number[] | null {
+  const n = a.length;
+  const edgeLens = (p: Point[]) => p.map((q, i) => Math.hypot(p[(i + 1) % n].x - q.x, p[(i + 1) % n].y - q.y));
+  const ea = edgeLens(a);
+  const aa = interiorAnglesDeg(a);
+  const ca = polygonCentroid(a);
+  const cb = polygonCentroid(b);
+  let best: number[] | null = null;
+  let bestCost = Infinity;
+  for (const rev of [false, true]) {
+    const order = Array.from({ length: n }, (_, m) => (rev ? n - 1 - m : m));
+    const bp = order.map((j) => b[j]);
+    const eb = edgeLens(bp);
+    const ab = interiorAnglesDeg(bp);
+    for (let k = 0; k < n; k++) {
+      let ok = true;
+      for (let i = 0; i < n && ok; i++) {
+        if (Math.abs(ea[i] - eb[(i + k) % n]) > GRID * 0.08 || Math.abs(aa[i] - ab[(i + k) % n]) > 2.5) ok = false;
+      }
+      if (!ok) continue;
+      const map = a.map((_, i) => order[(i + k) % n]);
+      let cost = rev ? GRID : 0; // 뒤집지 않은 짝을 조금 더 선호
+      for (let i = 0; i < n; i++) {
+        cost += Math.hypot(b[map[i]].x - cb.x - (a[i].x - ca.x), b[map[i]].y - cb.y - (a[i].y - ca.y));
+      }
+      if (cost < bestCost) { bestCost = cost; best = map; }
+    }
+  }
+  return best;
+}
+
+function finishCorr(c: Omit<Corr, "labelsA" | "labelsB">): Corr {
+  const n = c.A.length;
+  const ord = labelOrder(c.A);
+  const labelsA: string[] = new Array(n);
+  ord.forEach((vi, t) => (labelsA[vi] = koV(t)));
+  if (c.kind !== "pair") return { ...c, labelsA, labelsB: labelsA };
+  // 두 도형: B는 A와 '대응하는 순서'로 이름 → 삼각형 ㄱㄴㄷ ≡ 삼각형 ㄹㅁㅂ (교과서 표기)
+  const labelsB: string[] = new Array(n);
+  ord.forEach((vi, t) => (labelsB[c.map[vi]] = koV(n + t)));
+  return { ...c, labelsA, labelsB };
+}
+
+// 대응 기준 후보: 한 도형이면 각 대칭축·점대칭, 두 도형이면 선대칭의 위치·점대칭의 위치·포개기(합동)
+function corrOptions(shapesPts: Point[][], preferOverlay = false): { label: string; corr: Corr }[] | { reason: string } {
+  const ok = (p: Point[]) => p.length >= 3 && p.length < 20;
+  if (shapesPts.length === 1) {
+    const A = shapesPts[0];
+    if (!ok(A)) return { reason: "꼭짓점이 있는 다각형을 골라 주세요" };
+    const info = symmetryInfo(A);
+    const out: { label: string; corr: Corr }[] = [];
+    info.axisAngles.forEach((ang, k) => {
+      const dir = { x: Math.cos(ang), y: Math.sin(ang) };
+      const m = info.center;
+      const refl = (p: Point) => {
+        const d = (p.x - m.x) * dir.x + (p.y - m.y) * dir.y;
+        return { x: m.x + 2 * d * dir.x - (p.x - m.x), y: m.y + 2 * d * dir.y - (p.y - m.y) };
+      };
+      const map = A.map((p) => nearestIndex(A, refl(p)));
+      if (map.every((j) => j >= 0)) {
+        out.push({ label: info.axisAngles.length > 1 ? `🪞 대칭축 ${k + 1}` : "🪞 선대칭", corr: finishCorr({ kind: "line", A, B: A, map, axis: { m, dir } }) });
+      }
+    });
+    if (info.pointSym) {
+      const c = info.center;
+      const map = A.map((p) => nearestIndex(A, { x: 2 * c.x - p.x, y: 2 * c.y - p.y }));
+      if (map.every((j) => j >= 0)) out.push({ label: "🔃 점대칭", corr: finishCorr({ kind: "point", A, B: A, map, center: c }) });
+    }
+    if (!out.length) return { reason: "이 도형은 선대칭도형도 점대칭도형도 아니어서, 도형 안에서 짝이 되는 점이 없어요" };
+    return out;
+  }
+  if (shapesPts.length === 2) {
+    const [A, B] = shapesPts;
+    if (!ok(A) || !ok(B)) return { reason: "꼭짓점이 있는 다각형 두 개를 골라 주세요" };
+    if (!polygonsCongruent(A, B)) return { reason: "두 도형이 합동이 아니에요 — 모양과 크기가 같아야 포갰을 때 완전히 겹쳐요" };
+    const out: { label: string; corr: Corr }[] = [];
+    const info = pairSymmetryInfo(A, B);
+    if (info.lineSym) {
+      const { m, dir } = info.lineSym;
+      const refl = (p: Point) => {
+        const d = (p.x - m.x) * dir.x + (p.y - m.y) * dir.y;
+        return { x: m.x + 2 * d * dir.x - (p.x - m.x), y: m.y + 2 * d * dir.y - (p.y - m.y) };
+      };
+      const map = A.map((p) => nearestIndex(B, refl(p)));
+      if (map.every((j) => j >= 0)) out.push({ label: "🪞 선대칭의 위치", corr: finishCorr({ kind: "pair", A, B, map, axis: info.lineSym }) });
+    }
+    if (info.pointSym) {
+      const c = info.pointSym;
+      const map = A.map((p) => nearestIndex(B, { x: 2 * c.x - p.x, y: 2 * c.y - p.y }));
+      if (map.every((j) => j >= 0)) out.push({ label: "🔃 점대칭의 위치", corr: finishCorr({ kind: "pair", A, B, map, center: c }) });
+    }
+    const om = overlayMap(A, B);
+    if (om) {
+      const ov = { label: "🤝 포개기", corr: finishCorr({ kind: "pair", A, B, map: om }) };
+      if (preferOverlay) out.unshift(ov);
+      else out.push(ov);
+    }
+    if (!out.length) return { reason: "대응을 찾지 못했어요" };
+    return out;
+  }
+  return { reason: "합동인 두 도형을 함께 고르거나(Ctrl/Shift+클릭), 대칭인 도형 하나를 골라 보세요" };
+}
+
+// 탭별 짝 목록 — 한 도형의 대칭은 (ㄴ↔ㅁ, ㅁ↔ㄴ) 같은 중복을 한 번만
+function corrItems(c: Corr, tab: CorrTab): CorrItem[] {
+  const n = c.A.length;
+  const single = c.kind !== "pair";
+  const ord = labelOrder(c.A); // 이름 순서(ㄱ, ㄴ, ㄷ…)대로 나열
+  const out: CorrItem[] = [];
+  for (const i of ord) {
+    if (tab === "side") {
+      const p = c.map[i];
+      const q = c.map[(i + 1) % n];
+      const j = q === (p + 1) % n ? p : q; // B에서 그 변의 번호(꼭짓점 j→j+1)
+      if (single && j < i) continue;
+      out.push({ a: i, b: j, self: single && j === i });
+    } else {
+      const j = c.map[i];
+      if (single && j < i) continue;
+      out.push({ a: i, b: j, self: single && j === i });
+    }
+  }
+  return out;
+}
+
+function fmtDeg(deg: number): string {
+  const r = Math.round(deg);
+  return Math.abs(deg - r) < 0.3 ? `${r}°` : `약 ${r}°`;
+}
+
+// 아이 눈높이 설명 문장 — big: 큰 글씨 한 줄, text: 설명, prop: 대칭의 성질(대응점일 때)
+function corrDescribe(c: Corr, tab: CorrTab, it: CorrItem): { big: string; text: string; prop?: string } {
+  const n = c.A.length;
+  const LA = c.labelsA;
+  const LB = c.labelsB;
+  const fromAxis = c.kind === "line" || (c.kind === "pair" && !!c.axis);
+  if (tab === "point") {
+    const la = LA[it.a];
+    const lb = LB[it.b];
+    if (it.self) {
+      return { big: `점 ${la}`, text: `점 ${la}은 대칭축 위에 있어서, 대응점이 자기 자신이에요.` };
+    }
+    let prop: string | undefined;
+    const pa = c.A[it.a];
+    const pb = c.B[it.b];
+    const half = Math.hypot(pb.x - pa.x, pb.y - pa.y) / 2 / GRID;
+    if (c.axis) prop = `선분 ${la}${lb}은 대칭축과 수직(90°)으로 만나고, 대칭축이 선분을 똑같이 둘로 나눠요 → ${fmtLen(half)} + ${fmtLen(half)}`;
+    else if (c.center) prop = `선분 ${la}${lb}은 대칭의 중심을 지나고, 중심이 선분을 똑같이 둘로 나눠요 → ${fmtLen(half)} + ${fmtLen(half)}`;
+    return { big: `점 ${la} ↔ 점 ${lb}`, text: `점 ${la}의 대응점은 점 ${lb}이에요.`, prop };
+  }
+  if (tab === "side") {
+    const a1 = LA[it.a];
+    const a2 = LA[(it.a + 1) % n];
+    // B 쪽 이름은 '대응하는 순서'로 (변 ㄱㄴ ↔ 변 ㄹㅁ)
+    const b1 = LB[c.map[it.a]];
+    const b2 = LB[c.map[(it.a + 1) % n]];
+    const p = c.A[it.a];
+    const q = c.A[(it.a + 1) % n];
+    const len = fmtLen(Math.hypot(q.x - p.x, q.y - p.y) / GRID);
+    if (it.self) {
+      return { big: `변 ${a1}${a2}`, text: `변 ${a1}${a2}은 대칭${fromAxis ? "축" : "의 중심"}이 한가운데를 지나서, 대응변이 자기 자신이에요. (${len})` };
+    }
+    return { big: `변 ${a1}${a2} ↔ 변 ${b1}${b2}`, text: `변 ${a1}${a2}의 대응변은 변 ${b1}${b2} — 길이가 둘 다 ${len}로 같아요!` };
+  }
+  const prevA = (it.a - 1 + n) % n;
+  const nextA = (it.a + 1) % n;
+  const nameA = `${LA[prevA]}${LA[it.a]}${LA[nextA]}`;
+  const nameB = `${LB[c.map[prevA]]}${LB[c.map[it.a]]}${LB[c.map[nextA]]}`;
+  const deg = fmtDeg(interiorAnglesDeg(c.A)[it.a]);
+  if (it.self) {
+    return { big: `각 ${nameA}`, text: `각 ${nameA}은 대칭축이 가운데를 지나서, 대응각이 자기 자신이에요. (${deg})` };
+  }
+  return { big: `각 ${nameA} ↔ 각 ${nameB}`, text: `각 ${nameA}의 대응각은 각 ${nameB} — 크기가 둘 다 ${deg}로 같아요!` };
+}
+
+// 꼭짓점 이름표 위치: 각의 이등분선 바깥쪽
+function corrLabelPos(pts: Point[], i: number, off: number): Point {
+  const n = pts.length;
+  const cur = pts[i];
+  const prev = pts[(i - 1 + n) % n];
+  const next = pts[(i + 1) % n];
+  const l1 = Math.hypot(prev.x - cur.x, prev.y - cur.y) || 1;
+  const l2 = Math.hypot(next.x - cur.x, next.y - cur.y) || 1;
+  let bx = -((prev.x - cur.x) / l1 + (next.x - cur.x) / l2);
+  let by = -((prev.y - cur.y) / l1 + (next.y - cur.y) / l2);
+  let bl = Math.hypot(bx, by);
+  if (bl < 1e-3) {
+    bx = -(next.y - cur.y) / l2;
+    by = (next.x - cur.x) / l2;
+    bl = 1;
+  }
+  bx /= bl;
+  by /= bl;
+  if (interiorAnglesDeg(pts)[i] > 180) { bx = -bx; by = -by; } // 오목 꼭짓점은 반대쪽이 바깥
+  return { x: cur.x + bx * off, y: cur.y + by * off };
+}
+
 // 한 변의 '표시 길이'(라벨에 보이는 값)를 소수 첫째자리 단위 수치로 반환
 function niceLenCm(cm: number): number {
   const r = Math.round(cm);
@@ -759,10 +997,11 @@ type LessonStep = {
   tool?: Tool;
   manual?: boolean; // 자동 감지 불가(관찰형) → '다음' 버튼
   final?: boolean; // 공식 공개 단계
-  done?: (shapes: Shape[]) => boolean; // 목표 상태 감지(작업 도형만, reference 제외)
+  done?: (shapes: Shape[], reference: Shape[]) => boolean; // 목표 상태 감지(작업 도형 + 비교용 박제)
   success?: string;
   fill?: FillBlank; // 빈칸 채우기 정리
   challenge?: Challenge; // 적용 챌린지(자동 채점)
+  drawMode?: "none" | "line" | "point"; // 이 단계에서 켤 대칭 그리기 모드
 };
 type Lesson = {
   id: string;
@@ -771,6 +1010,11 @@ type Lesson = {
   // working: 아이가 조작하는 도형 / reference: 비교용 박제(읽기 전용 점선)
   build: (cx: number, cy: number) => { working: Shape[]; reference: Shape[] };
   steps: LessonStep[];
+  group?: "area" | "sym"; // 서랍에서 묶어 보여줄 단원
+  hideAreaCompare?: boolean; // '원본 넓이 → 현재' 비교 숨김 (넓이와 무관한 레슨)
+  refLabel?: string; // 비교용 박제 위 안내 문구
+  corrMode?: "refPair" | "single"; // 🔍 대응을 자동으로 보여줄 대상 (박제↔작업 도형 / 작업 도형 하나)
+  setupSymmetry?: boolean; // 시작할 때 🪞 대칭 표시 켜기
 };
 
 // 의미 라벨 (각 도형 빌더의 점 순서에 맞춰 부여)
@@ -1034,6 +1278,211 @@ const LESSONS: Lesson[] = [
         prompt: "💡 직사각형 넓이 = 가로 × 세로 — 칸을 세는 게 곧 곱하기였어요!",
         manual: true,
         final: true,
+      },
+    ],
+  },
+  // ===== 🪞 합동과 대칭 (5-2 3단원) =====
+  {
+    id: "congruence",
+    group: "sym",
+    title: "합동 — 포개어 겹쳐 보기",
+    formula: "대응변의 길이 같음 · 대응각의 크기 같음",
+    hideAreaCompare: true,
+    refLabel: "🎯 여기에 꼭 맞게 포개요",
+    corrMode: "refPair",
+    build: (cx, cy) => {
+      // 세 변이 3·4·5cm인 직각삼각형 — 모든 꼭짓점이 격자 위
+      const bx = Math.round(cx / GRID);
+      const by = Math.round(cy / GRID);
+      const P = (x: number, y: number) => ({ x: x * GRID, y: y * GRID });
+      const ref = asReference({ id: uid(), color: COLORS[0], points: [P(bx - 6, by - 1), P(bx - 2, by - 1), P(bx - 6, by + 2)] });
+      // 180° 돌려서 오른쪽에 둔 같은 삼각형
+      const w = { id: uid(), color: COLORS[3], points: [P(bx + 6, by + 2), P(bx + 2, by + 2), P(bx + 6, by - 1)] };
+      return { working: [w], reference: [ref] };
+    },
+    steps: [
+      {
+        prompt:
+          "🎯 노란 삼각형을 돌리고 옮겨서 점선 삼각형에 꼭 맞게 포개 보세요! 아래 도구의 ↷90° · 180° 버튼으로 돌리고, 끌어서 옮겨요. 같은 색 점끼리 만나야 해요.",
+        hint: "180° 버튼을 한 번 누른 뒤, 점 ㄹ이 점 ㄱ 위에 오도록 끌어 보세요. 🧲 자석을 켜면 딱 붙어요.",
+        tool: "select",
+        done: (shapes, ref) => {
+          const a = ref[0]?.points;
+          const b = shapes[0]?.points;
+          if (!a || !b || a.length !== b.length) return false;
+          return a.every((p) => b.some((q) => Math.hypot(p.x - q.x, p.y - q.y) < GRID * 0.2));
+        },
+        success: "🎉 완전히 겹쳤어요! 이렇게 포개었을 때 완전히 겹치는 두 도형을 '합동'이라고 해요.",
+      },
+      {
+        prompt:
+          "🔍 오른쪽 '대응 찾기'에서 [대응점] → [대응변] → [대응각]을 차례로 눌러 보세요. 포갰을 때 겹치는 점·변·각이 짝이에요. 길이와 크기를 비교해 보세요!",
+        manual: true,
+      },
+      {
+        fill: {
+          parts: ["포개었을 때 완전히 겹치는 두 도형을 서로 ", "이라고 해요. 이때 겹치는 점을 ", ", 겹치는 변을 ", ", 겹치는 각을 ", "이라고 해요."],
+          answers: ["합동", "대응점", "대응변", "대응각"],
+          options: ["합동", "대칭", "대응점", "꼭짓점", "대응변", "대응각"],
+        },
+      },
+      {
+        fill: {
+          parts: ["합동인 두 도형에서 대응변의 길이는 서로 ", ". 대응각의 크기도 서로 ", ". 삼각형이니까 대응점·대응변·대응각은 각각 ", "쌍이에요."],
+          answers: ["같아요", "같아요", "3"],
+          options: ["같아요", "달라요", "3", "6"],
+        },
+      },
+      {
+        challenge: {
+          question: "삼각형 ㄱㄴㄷ과 삼각형 ㄹㅁㅂ은 서로 합동이에요. 변 ㄴㄷ이 5cm일 때, 대응변 ㅁㅂ은 몇 cm일까요?",
+          answer: 5,
+          unit: "cm",
+          solution: "합동인 두 도형의 대응변은 길이가 같으므로 변 ㅁㅂ = 변 ㄴㄷ = 5cm",
+        },
+      },
+      {
+        prompt: "💡 합동인 두 도형은 대응변의 길이와 대응각의 크기가 각각 같아요 — 직접 포개어 확인했어요!",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+  {
+    id: "line-sym",
+    group: "sym",
+    title: "선대칭도형의 성질",
+    formula: "대응점을 이은 선분 ⟂ 대칭축 · 대칭축이 똑같이 둘로 나눔",
+    hideAreaCompare: true,
+    corrMode: "single",
+    setupSymmetry: true,
+    build: (cx, cy) => {
+      const bx = Math.round(cx / GRID);
+      const by = Math.round(cy / GRID);
+      const P = (x: number, y: number) => ({ x: (bx + x) * GRID, y: (by + y) * GRID });
+      // 집 모양 오각형 — 세로 대칭축 하나
+      const house = { id: uid(), color: COLORS[1], points: [P(0, -3), P(3, 0), P(3, 3), P(-3, 3), P(-3, 0)] };
+      return { working: [house], reference: [] };
+    },
+    steps: [
+      {
+        prompt:
+          "🪞 이 도형은 선대칭도형이에요. 분홍 점선(대칭축)을 따라 접으면 완전히 겹쳐요. 오른쪽 '대응 찾기'에서 ▶ 를 눌러 대응점을 한 쌍씩 살펴보세요. 대칭축 위의 점은 짝이 누구일까요?",
+        manual: true,
+      },
+      {
+        prompt:
+          "📐 대응점을 이은 선분을 보세요! 대칭축과 └ (직각)으로 만나고, 대칭축까지의 거리가 양쪽이 똑같아요. [대응변]·[대응각] 탭에서 길이와 크기도 비교해 보세요.",
+        manual: true,
+      },
+      {
+        fill: {
+          parts: ["선대칭도형에서 대응변의 길이와 대응각의 크기는 각각 ", ". 대응점을 이은 선분은 대칭축과 ", "으로 만나요. 대칭축은 대응점을 이은 선분을 둘로 ", " 나눠요."],
+          answers: ["같아요", "수직", "똑같이"],
+          options: ["같아요", "달라요", "수직", "평행", "똑같이", "다르게"],
+        },
+      },
+      {
+        challenge: {
+          question: "어떤 선대칭도형에서 대응점끼리 이은 선분의 길이가 10cm예요. 한 대응점에서 대칭축까지의 거리는 몇 cm일까요?",
+          answer: 5,
+          unit: "cm",
+          solution: "대칭축이 대응점을 이은 선분을 똑같이 둘로 나누므로 10 ÷ 2 = 5cm",
+        },
+      },
+      {
+        prompt: "💡 선대칭도형: 대응변·대응각은 같고, 대응점을 이은 선분은 대칭축과 수직이며 대칭축이 그 선분을 이등분해요!",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+  {
+    id: "point-sym",
+    group: "sym",
+    title: "점대칭도형의 성질",
+    formula: "대응점을 이은 선분은 중심을 지남 · 중심이 똑같이 둘로 나눔",
+    hideAreaCompare: true,
+    corrMode: "single",
+    setupSymmetry: true,
+    build: (cx, cy) => {
+      const bx = Math.round(cx / GRID);
+      const by = Math.round(cy / GRID);
+      const P = (x: number, y: number) => ({ x: (bx + x) * GRID, y: (by + y) * GRID });
+      // 평행사변형 — 선대칭은 아니고 점대칭만 (대응점까지 거리가 5cm, 3cm로 딱 떨어짐)
+      const para = { id: uid(), color: COLORS[4], points: [P(-4, -3), P(0, -3), P(4, 3), P(0, 3)] };
+      return { working: [para], reference: [] };
+    },
+    steps: [
+      {
+        prompt:
+          "🔃 이 평행사변형은 점대칭도형이에요. 보라 ✚(대칭의 중심)를 중심으로 180° 돌리면 자기 자신과 완전히 겹쳐요. '대응 찾기'에서 ▶ 로 대응점을 살펴보세요.",
+        manual: true,
+      },
+      {
+        prompt:
+          "📏 대응점을 이은 선분이 모두 대칭의 중심을 지나죠? 중심에서 양쪽 끝까지의 거리도 똑같아요. 이 도형에 대칭축은 있을까요? (분홍 점선이 없어요!)",
+        manual: true,
+      },
+      {
+        fill: {
+          parts: ["점대칭도형에서 대응변의 길이와 대응각의 크기는 각각 ", ". 대응점을 이은 선분은 대칭의 중심을 ", ". 대칭의 중심은 대응점을 이은 선분을 둘로 ", " 나눠요."],
+          answers: ["같아요", "지나요", "똑같이"],
+          options: ["같아요", "달라요", "지나요", "비켜 가요", "똑같이", "다르게"],
+        },
+      },
+      {
+        challenge: {
+          question: "어떤 점대칭도형에서 대응점끼리 이은 선분의 길이가 12cm예요. 한 대응점에서 대칭의 중심까지는 몇 cm일까요?",
+          answer: 6,
+          unit: "cm",
+          solution: "대칭의 중심이 대응점을 이은 선분을 똑같이 둘로 나누므로 12 ÷ 2 = 6cm",
+        },
+      },
+      {
+        prompt: "💡 점대칭도형: 대응변·대응각은 같고, 대응점을 이은 선분은 대칭의 중심을 지나며 중심이 그 선분을 이등분해요!",
+        manual: true,
+        final: true,
+      },
+    ],
+  },
+  {
+    id: "sym-draw",
+    group: "sym",
+    title: "대칭인 도형 그리기",
+    formula: "반쪽 + 대응점 = 대칭인 도형",
+    hideAreaCompare: true,
+    corrMode: "single",
+    setupSymmetry: true,
+    build: () => ({ working: [], reference: [] }),
+    steps: [
+      {
+        prompt:
+          "🪞 분홍 대칭축의 한쪽에 점을 찍어 반쪽만 그려 보세요. 반대쪽은 거울처럼 저절로 그려져요! 시작 점과 끝 점은 꼭 대칭축 위에 찍으세요.",
+        hint: "예) 축 위 → 왼쪽 위 → 왼쪽 아래 → 축 위, 그리고 첫 점을 다시 누르거나 Enter!",
+        tool: "draw",
+        drawMode: "line",
+        done: (shapes) => shapes.some((s) => s.points.length >= 3 && s.points.length < 20 && symmetryInfo(s.points).axisAngles.length > 0),
+        success: "🎉 선대칭도형 완성! 오른쪽에서 대응점을 확인해 보세요.",
+      },
+      {
+        prompt:
+          "🔃 이번엔 점대칭도형! 보라 ✚(대칭의 중심) 한쪽에 반쪽만 그리고, 끝 점은 시작 점의 정반대편(중심을 지나 같은 거리)에 찍어요.",
+        hint: "예) 중심 왼쪽 위 → 위쪽 → 중심 오른쪽 아래(시작 점의 반대편), 그리고 Enter!",
+        tool: "draw",
+        drawMode: "point",
+        done: (shapes) => {
+          const last = shapes[shapes.length - 1];
+          return shapes.length >= 2 && !!last && last.points.length >= 4 && last.points.length < 20 && symmetryInfo(last.points).pointSym;
+        },
+        success: "🎉 점대칭도형 완성! 대응점을 이은 선분이 모두 중심을 지나요.",
+      },
+      {
+        prompt: "💡 반쪽을 그리고 '대응점'을 찾아 이으면 대칭인 도형이 완성돼요. 📷 제출로 작품을 저장해 보세요!",
+        manual: true,
+        final: true,
+        drawMode: "none",
+        tool: "select",
       },
     ],
   },
@@ -1493,6 +1942,12 @@ export default function PolygonCanvas() {
   const [lessonStep, setLessonStep] = useState(0);
   const [showHint, setShowHint] = useState(false);
   const [lessonReference, setLessonReference] = useState<Shape[]>([]);
+  // 🔍 대응 찾기 (대응점·대응변·대응각)
+  const [showCorr, setShowCorr] = useState(false);
+  const [corrTab, setCorrTab] = useState<CorrTab>("point");
+  const [corrIdx, setCorrIdx] = useState(0); // -1 = 전체 보기
+  const [corrBasisIdx, setCorrBasisIdx] = useState(0);
+  const [corrPos, setCorrPos] = useState<{ x: number; y: number } | null>(null);
   const [quiz, setQuiz] = useState<QuizState | null>(null);
   const [quizSetup, setQuizSetup] = useState(false);
   const [progress, setProgress] = useState<{ quizBestPct: number; lessonsDone: string[] }>({ quizBestPct: 0, lessonsDone: [] });
@@ -1519,12 +1974,14 @@ export default function PolygonCanvas() {
   const railDrag = useDraggable(setRailPos);
   const zoomDrag = useDraggable(setZoomPos);
   const ctxDrag = useDraggable(setCtxPos);
+  const corrDrag = useDraggable(setCorrPos);
   // 🧹 화면 정리: 옮겨 놓은 패널을 전부 기본 위치로 (스마트폰에서 패널이 겹쳐 엉킬 때 한 번에 복구)
   function resetPanelLayout() {
     setInfoPos(null);
     setRailPos(null);
     setCtxPos(null);
     setZoomPos(null);
+    setCorrPos(null);
     setInfoCollapsed(false);
     setFlash("🧹 패널을 기본 위치로 정리했어요!");
   }
@@ -1543,6 +2000,7 @@ export default function PolygonCanvas() {
       setRailPos((p) => fix(p));
       setCtxPos((p) => fix(p));
       setZoomPos((p) => fix(p));
+      setCorrPos((p) => fix(p));
     };
     window.addEventListener("resize", clampAll);
     return () => window.removeEventListener("resize", clampAll);
@@ -1558,6 +2016,42 @@ export default function PolygonCanvas() {
   const didInitRef = useRef(false);
 
   const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
+
+  // 🔍 대응 대상: 레슨이 지정하면 그 도형들, 아니면 선택한 도형(1개=대칭 / 2개=합동)
+  const corrActive = showCorr || !!lesson?.corrMode;
+  const corrState = useMemo(() => {
+    if (!corrActive) return null;
+    const isPoly = (s?: Shape) =>
+      !!s && !(typeof s.defKind === "object" && s.defKind !== null && "circle" in s.defKind) && s.points.length >= 3 && s.points.length < 20;
+    let targets: Shape[] = [];
+    const working = shapes.filter((s) => !s.isReference);
+    if (lesson?.corrMode === "refPair") {
+      if (lessonReference[0] && working[0]) targets = [lessonReference[0], working[0]];
+    } else if (lesson?.corrMode === "single") {
+      const sym = [...working].reverse().find((s) => isPoly(s) && symmetryInfo(s.points).axisAngles.length + (symmetryInfo(s.points).pointSym ? 1 : 0) > 0);
+      if (sym) targets = [sym];
+    } else {
+      targets = shapes.filter((s) => selectedIds.includes(s.id));
+    }
+    if (!targets.length) {
+      return { reason: lesson?.corrMode ? "도형을 완성하면 짝을 보여 줄게요" : "합동인 두 도형을 함께 고르거나(Ctrl/Shift+클릭), 대칭인 도형 하나를 골라 보세요" } as const;
+    }
+    if (!targets.every(isPoly)) return { reason: "원이나 곡선 도형은 꼭짓점이 없어서 대응점을 셀 수 없어요" } as const;
+    const res = corrOptions(targets.map((s) => s.points), lesson?.corrMode === "refPair");
+    if ("reason" in res) return { reason: res.reason } as const;
+    const bi = Math.min(corrBasisIdx, res.length - 1);
+    return { options: res, basisIdx: bi, corr: res[bi].corr } as const;
+  }, [corrActive, shapes, selectedIds, lesson, lessonReference, corrBasisIdx]);
+  const corr: Corr | null = corrState && "corr" in corrState ? corrState.corr ?? null : null;
+  const corrList = useMemo(() => (corr ? corrItems(corr, corrTab) : []), [corr, corrTab]);
+  // 대상·탭이 바뀌면 첫 짝부터
+  const corrKey = corr ? `${corr.kind}|${corr.A.length}|${corr.labelsA.join("")}|${selectedIds.join(",")}|${corrTab}` : "";
+  useEffect(() => {
+    setCorrIdx(0);
+  }, [corrKey]);
+  useEffect(() => {
+    setCorrBasisIdx(0);
+  }, [selectedIds.join(","), lesson?.id]);
   const selectedLiveRef = useRef<Shape | null>(null);
   selectedLiveRef.current = selected;
   // 최신 shapes와 함수들을 timer/rAF에서 stale-closure 없이 참조하기 위한 ref
@@ -1642,7 +2136,7 @@ export default function PolygonCanvas() {
   );
 
   const fitView = useCallback(
-    (list?: Shape[], opts?: { topInset?: number; bottomInset?: number; leftInset?: number }) => {
+    (list?: Shape[], opts?: { topInset?: number; bottomInset?: number; leftInset?: number; rightInset?: number }) => {
       const { w, h } = sizeRef.current;
       if (!w || !h) return;
       const src = list ?? shapes;
@@ -1672,7 +2166,8 @@ export default function PolygonCanvas() {
       const bottomInset = opts?.bottomInset ?? 0;
       const leftInset = opts?.leftInset ?? 90;
       const availH = Math.max(GRID, h - topInset - bottomInset);
-      const availW = Math.max(GRID, w - leftInset);
+      const rightInset = opts?.rightInset ?? 0;
+      const availW = Math.max(GRID, w - leftInset - rightInset);
       const bw = Math.max(GRID, maxX - minX);
       const bh = Math.max(GRID, maxY - minY);
       const s = clamp(Math.min((availW - pad * 2) / bw, (availH - pad * 2) / bh), MIN_SCALE, MAX_SCALE);
@@ -1698,6 +2193,19 @@ export default function PolygonCanvas() {
     const p = toWorld(w / 2, h / 2);
     return { x: Math.round(p.x / GRID) * GRID, y: Math.round(p.y / GRID) * GRID };
   }, [toWorld]);
+
+  // 🪞/🔃 대칭 그리기 모드 켜기 (칩·레슨 공용) — 축·중심이 없으면 화면 가운데에 만듦
+  function enterSymMode(mode: "none" | "line" | "point", announce = false, recenter = false, at?: Point) {
+    setSymMode(mode);
+    const c = at ?? viewCenterWorld();
+    if (mode === "line") {
+      setSymAxisX((x) => (recenter ? c.x : x ?? c.x));
+      if (announce) setFlash("🪞 선대칭 그리기: 축의 왼쪽(또는 오른쪽)에 반쪽만 그리면 반대쪽이 저절로 완성돼요! 시작·끝 점을 축 위에 찍으세요. 축은 위쪽 동그라미 손잡이로 옮길 수 있어요.");
+    } else if (mode === "point") {
+      setSymCenter((p) => (recenter ? c : p ?? c));
+      if (announce) setFlash("🔃 점대칭 그리기: 중심의 한쪽에 반쪽만 그리면 180° 돌린 반대쪽이 저절로 완성돼요! 끝 점을 시작 점의 정반대편에 찍으세요. 중심은 잡아서 옮길 수 있어요.");
+    }
+  }
 
   useEffect(() => {
     if (!flash) return;
@@ -2065,6 +2573,38 @@ export default function PolygonCanvas() {
 
     // (글상자 이동·크기조절은 위쪽 통합 블록에서 처리)
 
+    // 🔍 대응 찾기: ㄱㄴㄷ 이름표를 탭하면 그 꼭짓점이 들어 있는 짝으로 바로 이동
+    if (tool === "select" && corrActive && corr) {
+      const c = corr;
+      const n = c.A.length;
+      const posA = c.A.map((_, i) => corrLabelPos(c.A, i, 22 * k0));
+      const hitA = posA.findIndex((q) => Math.hypot(raw.x - q.x, raw.y - q.y) < 13 * k);
+      let hitB = -1;
+      if (hitA < 0 && c.kind === "pair") {
+        const posB = c.B.map((_, i) => {
+          const q = corrLabelPos(c.B, i, 22 * k0);
+          return posA.some((a) => Math.hypot(a.x - q.x, a.y - q.y) < 18 * k0) ? corrLabelPos(c.B, i, 44 * k0) : q;
+        });
+        hitB = posB.findIndex((q) => Math.hypot(raw.x - q.x, raw.y - q.y) < 13 * k);
+      }
+      if (hitA >= 0 || hitB >= 0) {
+        const single = c.kind !== "pair";
+        const has = (it: CorrItem) => {
+          if (corrTab === "side") {
+            const inA = (v: number) => v === it.a || v === (it.a + 1) % n;
+            const inB = (v: number) => v === it.b || v === (it.b + 1) % n;
+            return hitA >= 0 ? inA(hitA) || (single && inB(hitA)) : inB(hitB);
+          }
+          return hitA >= 0 ? it.a === hitA || (single && it.b === hitA) : it.b === hitB;
+        };
+        const found = corrList.findIndex(has);
+        if (found >= 0) {
+          setCorrIdx(found);
+          return;
+        }
+      }
+    }
+
     // select — 단일 선택일 때만 회전/꼭짓점/점추가 편집 허용
     if (selected && selectedIds.length === 1) {
       // 원: 테두리(경계선) 근처를 잡으면 반지름 조절 — 자연수 cm로 스냅
@@ -2097,7 +2637,8 @@ export default function PolygonCanvas() {
         return;
       }
       // 꼭짓점 삭제 배지(➖) — 각 꼭짓점 바깥쪽의 빨간 버튼을 '탭'하면 바로 삭제(꾹 누르기 없이)
-      if (selected.points.length > 3) {
+      //   (🔍 대응 찾기 중에는 ㄱㄴㄷ 이름표와 겹치므로 편집 배지를 끔)
+      if (selected.points.length > 3 && !corrActive) {
         const cen = polygonCentroid(selected.points);
         for (let i = 0; i < selected.points.length; i++) {
           const v = selected.points[i];
@@ -2145,7 +2686,7 @@ export default function PolygonCanvas() {
         return;
       }
       // 변 가운데 '+' 핸들 → 점 추가 후 바로 끌기 · 꾹 누르면 등변화
-      if (tool === "select" && selected.points.length < 16) {
+      if (tool === "select" && selected.points.length < 16 && !corrActive) {
         for (let i = 0; i < selected.points.length; i++) {
           const a = selected.points[i];
           const b = selected.points[(i + 1) % selected.points.length];
@@ -3285,6 +3826,14 @@ export default function PolygonCanvas() {
     return out;
   }
 
+  // 레슨 화면 맞춤 여백 — 대칭 레슨은 위(레슨 패널)·오른쪽(🔍 대응 패널) 공간을 비워 도형이 가려지지 않게
+  function lessonFitOpts(L: Lesson) {
+    const wide = sizeRef.current.w > 900;
+    return L.group === "sym"
+      ? { topInset: headerH + 200, bottomInset: 90, rightInset: wide && L.corrMode ? 340 : 0 }
+      : { topInset: headerH + 8, bottomInset: 90 };
+  }
+
   function startLesson(L: Lesson) {
     commitHistory();
     const { x: cx, y: cy } = viewCenterWorld();
@@ -3310,8 +3859,15 @@ export default function PolygonCanvas() {
     setLessonStep(0);
     setShowHint(false);
     setDrawer(null);
+    if (L.setupSymmetry) setShowSymmetry(true);
+    if (L.corrMode) {
+      setCorrTab("point");
+      setCorrIdx(0);
+      setCorrPos(null);
+    }
     const all = [...working, ...reference];
-    requestAnimationFrame(() => fitView(all, { topInset: headerH + 8, bottomInset: 90 }));
+    // 빈 캔버스로 시작하는 레슨(그리기)은 기본 크기로 — 여백 계산으로 지나치게 작아지지 않게
+    requestAnimationFrame(() => (all.length ? fitView(all, lessonFitOpts(L)) : fitView([])));
   }
 
   function restartLesson() {
@@ -3333,11 +3889,13 @@ export default function PolygonCanvas() {
     setLessonStep(0);
     setShowHint(false);
     const all = [...working, ...reference];
-    requestAnimationFrame(() => fitView(all, { topInset: headerH + 8, bottomInset: 90 }));
+    // 빈 캔버스로 시작하는 레슨(그리기)은 기본 크기로 — 여백 계산으로 지나치게 작아지지 않게
+    requestAnimationFrame(() => (all.length ? fitView(all, lessonFitOpts(lesson)) : fitView([])));
   }
 
   function exitLesson() {
     if (lesson) setFlash("🧪 학습을 마쳤어요 — '학습 예시'에서 언제든 다시 시작할 수 있어요");
+    if (lesson?.steps.some((st) => st.drawMode)) setSymMode("none");
     setLesson(null);
     setLessonStep(0);
     setShowHint(false);
@@ -3526,12 +4084,51 @@ export default function PolygonCanvas() {
     const step = lesson.steps[lessonStep];
     if (!step || step.manual || !step.done) return;
     const working = shapes.filter((s) => !s.isReference);
-    if (step.done(working)) {
+    if (step.done(working, lessonReference)) {
       if (step.success) setFlash(step.success);
       setShowHint(false);
       setLessonStep((i) => Math.min(i + 1, lesson.steps.length - 1));
     }
-  }, [shapes, lesson, lessonStep]);
+  }, [shapes, lesson, lessonStep, lessonReference]);
+
+  // 단계별 도구·대칭 그리기 모드 자동 전환 (예: 대칭 그리기 레슨)
+  useEffect(() => {
+    if (!lesson) return;
+    const step = lesson.steps[lessonStep];
+    if (!step) return;
+    if (step.tool && lessonStep > 0) setTool(step.tool);
+    if (step.drawMode) {
+      const mode = step.drawMode;
+      // 화면 맞춤(rAF) 이후의 화면 가운데에 축·중심을 놓기 위해 두 프레임 뒤에 적용
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          // 이미 그린 작품이 있으면 그 오른쪽 빈 곳에 새 축·중심을 두고, 둘 다 보이게 화면 맞춤
+          const ws = shapesLiveRef.current.filter((sh) => !sh.isReference);
+          if (!ws.length) {
+            enterSymMode(mode, false, true);
+            return;
+          }
+          const xs = ws.flatMap((sh) => sh.points.map((q) => q.x));
+          const ys = ws.flatMap((sh) => sh.points.map((q) => q.y));
+          const at = {
+            x: Math.round((Math.max(...xs) + 6 * GRID) / GRID) * GRID,
+            y: Math.round((Math.min(...ys) + Math.max(...ys)) / 2 / GRID) * GRID,
+          };
+          enterSymMode(mode, false, true, at);
+          const box: Shape = {
+            id: "fit-box",
+            color: "#000",
+            points: [
+              { x: at.x - 4 * GRID, y: at.y - 4 * GRID },
+              { x: at.x + 4 * GRID, y: at.y + 4 * GRID },
+            ],
+          };
+          fitView([...ws, box], lessonFitOpts(lesson));
+        })
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lesson, lessonStep]);
 
   function clearAll() {
     // 학생 기기에서 실수로 눌러 작업·학습이 통째로 날아가지 않도록 확인
@@ -3853,6 +4450,9 @@ export default function PolygonCanvas() {
         }
       }
     }
+
+    // 🔍 대응점·대응변·대응각 (도형·대칭 표시 위에)
+    if (corrActive && corr) drawCorrespondence(ctx, k);
 
     // 스마트 정렬 가이드 (도형 이동 중 모서리/중심 정렬)
     if (dragRef.current.type === "translate") {
@@ -4184,9 +4784,206 @@ export default function PolygonCanvas() {
         if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
       }
     }
-  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showGrid, showAngles, showEdgeLen, showSymmetry, symMode, symAxisX, symCenter, labelScale, piMode, lessonReference, quiz]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showGrid, showAngles, showEdgeLen, showSymmetry, symMode, symAxisX, symCenter, labelScale, piMode, lessonReference, quiz, lesson, corrActive, corr, corrList, corrTab, corrIdx]);
 
   // 선대칭도형의 대칭축을 도형 폭보다 조금 더 길게 점선으로 그림
+  // 🔍 대응점·대응변·대응각 그리기 — 짝마다 같은 색, 꼭짓점에 ㄱㄴㄷ 이름표
+  function drawCorrespondence(ctx: CanvasRenderingContext2D, k: number) {
+    if (!corr) return;
+    const c = corr;
+    const n = c.A.length;
+    const shown = corrIdx < 0 ? corrList.map((_, i) => i) : corrList[corrIdx] ? [corrIdx] : [];
+    const colorOf = (idx: number) => CORR_COLORS[idx % CORR_COLORS.length];
+    const angA = interiorAnglesDeg(c.A);
+    const angB = interiorAnglesDeg(c.B);
+    // 꼭짓점별 강조 색 (이름표 테두리에 사용)
+    const hiA = new Map<number, string>();
+    const hiB = new Map<number, string>();
+
+    const pill = (text: string, x: number, y: number, bg: string) => {
+      ctx.font = `bold ${12 * labelScale * k}px sans-serif`;
+      const w = ctx.measureText(text).width;
+      const h = 16 * labelScale * k;
+      ctx.fillStyle = bg;
+      ctx.beginPath();
+      ctx.roundRect(x - w / 2 - 5 * k, y - h / 2, w + 10 * k, h, 5 * k);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    };
+    const tick = (p: Point, q: Point, col: string) => {
+      // 선분 pq의 가운데에 '같은 길이' 눈금
+      const mx = (p.x + q.x) / 2;
+      const my = (p.y + q.y) / 2;
+      const L = Math.hypot(q.x - p.x, q.y - p.y) || 1;
+      const nx = -(q.y - p.y) / L;
+      const ny = (q.x - p.x) / L;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2.4 * k;
+      ctx.beginPath();
+      ctx.moveTo(mx - nx * 7 * k, my - ny * 7 * k);
+      ctx.lineTo(mx + nx * 7 * k, my + ny * 7 * k);
+      ctx.stroke();
+    };
+    const drawAngleWedge = (pts: Point[], i: number, deg: number, col: string) => {
+      const m = pts.length;
+      const cur = pts[i];
+      const prev = pts[(i - 1 + m) % m];
+      const next = pts[(i + 1) % m];
+      const a1 = Math.atan2(prev.y - cur.y, prev.x - cur.x);
+      const a2 = Math.atan2(next.y - cur.y, next.x - cur.x);
+      const want = (deg * Math.PI) / 180;
+      let s = (a2 - a1) % (Math.PI * 2);
+      if (s < 0) s += Math.PI * 2;
+      const ccw = Math.abs(s - want) > 0.02; // 증가 방향 호가 내각이 아니면 반대 방향
+      const r = 26 * k;
+      ctx.beginPath();
+      ctx.moveTo(cur.x, cur.y);
+      ctx.arc(cur.x, cur.y, r, a1, a2, ccw);
+      ctx.closePath();
+      ctx.fillStyle = col + "40";
+      ctx.fill();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2.4 * k;
+      ctx.beginPath();
+      ctx.arc(cur.x, cur.y, r, a1, a2, ccw);
+      ctx.stroke();
+      const mid = a1 + (ccw ? -1 : 1) * (want / 2);
+      pill(fmtDeg(deg), cur.x + Math.cos(mid) * (r + 16 * k), cur.y + Math.sin(mid) * (r + 16 * k), col);
+    };
+
+    ctx.save();
+    for (const idx of shown) {
+      const it = corrList[idx];
+      const col = colorOf(idx);
+      if (corrTab === "point") {
+        const pa = c.A[it.a];
+        const pb = c.B[it.b];
+        hiA.set(it.a, col);
+        hiB.set(it.b, col);
+        if (it.self) {
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 3 * k;
+          ctx.beginPath();
+          ctx.arc(pa.x, pa.y, 12 * k, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          // 대응점을 이은 선분
+          ctx.setLineDash([7 * k, 5 * k]);
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 2.6 * k;
+          ctx.beginPath();
+          ctx.moveTo(pa.x, pa.y);
+          ctx.lineTo(pb.x, pb.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // 성질 표시는 한 쌍씩 볼 때만 (전체 보기에서는 깔끔하게)
+          if (corrIdx >= 0 && c.axis) {
+            const { m, dir } = c.axis;
+            const t = (pa.x - m.x) * dir.x + (pa.y - m.y) * dir.y;
+            const F = { x: m.x + dir.x * t, y: m.y + dir.y * t }; // 대칭축과 만나는 점
+            const vl = Math.hypot(pa.x - F.x, pa.y - F.y) || 1;
+            const vx = (pa.x - F.x) / vl;
+            const vy = (pa.y - F.y) / vl;
+            const s = 10 * k;
+            ctx.strokeStyle = "#0f172a";
+            ctx.lineWidth = 2 * k;
+            ctx.beginPath(); // 직각 표시 └
+            ctx.moveTo(F.x + vx * s, F.y + vy * s);
+            ctx.lineTo(F.x + vx * s + dir.x * s, F.y + vy * s + dir.y * s);
+            ctx.lineTo(F.x + dir.x * s, F.y + dir.y * s);
+            ctx.stroke();
+            tick(pa, F, col);
+            tick(F, pb, col);
+            const half = fmtLen(vl / GRID);
+            // 거리 표시는 도형 안쪽(무게중심)과 반대편으로 비켜서
+            const gA = polygonCentroid(c.A);
+            const sg = (gA.x - F.x) * dir.x + (gA.y - F.y) * dir.y > 0 ? -1 : 1;
+            pill(half, (pa.x + F.x) / 2 + sg * dir.x * 18 * k, (pa.y + F.y) / 2 + sg * dir.y * 18 * k, col);
+            pill(half, (pb.x + F.x) / 2 + sg * dir.x * 18 * k, (pb.y + F.y) / 2 + sg * dir.y * 18 * k, col);
+          } else if (corrIdx >= 0 && c.center) {
+            const C = c.center;
+            tick(pa, C, col);
+            tick(C, pb, col);
+            const half = fmtLen(Math.hypot(pa.x - C.x, pa.y - C.y) / GRID);
+            const L = Math.hypot(pb.x - pa.x, pb.y - pa.y) || 1;
+            const nx = -(pb.y - pa.y) / L;
+            const ny = (pb.x - pa.x) / L;
+            pill(half, (pa.x + C.x) / 2 + nx * 16 * k, (pa.y + C.y) / 2 + ny * 16 * k, col);
+            pill(half, (pb.x + C.x) / 2 + nx * 16 * k, (pb.y + C.y) / 2 + ny * 16 * k, col);
+            ctx.fillStyle = "#7c3aed";
+            ctx.beginPath();
+            ctx.arc(C.x, C.y, 4 * k, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        for (const p of it.self ? [pa] : [pa, pb]) {
+          ctx.fillStyle = col;
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 2 * k;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 7 * k, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      } else if (corrTab === "side") {
+        const segs: [Point, Point][] = [[c.A[it.a], c.A[(it.a + 1) % n]]];
+        if (!it.self) segs.push([c.B[it.b], c.B[(it.b + 1) % n]]);
+        hiA.set(it.a, col).set((it.a + 1) % n, col);
+        if (!it.self) hiB.set(it.b, col).set((it.b + 1) % n, col);
+        for (const [p, q] of segs) {
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 7 * k;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(q.x, q.y);
+          ctx.stroke();
+          ctx.lineCap = "butt";
+          pill(fmtLen(Math.hypot(q.x - p.x, q.y - p.y) / GRID), (p.x + q.x) / 2, (p.y + q.y) / 2, col);
+        }
+      } else {
+        hiA.set(it.a, col);
+        drawAngleWedge(c.A, it.a, angA[it.a], col);
+        if (!it.self) {
+          hiB.set(it.b, col);
+          drawAngleWedge(c.B, it.b, angB[it.b], col);
+        }
+      }
+    }
+    // 꼭짓점 이름표 (두 도형이 겹치면 B 이름표를 더 바깥으로 비켜 줌)
+    const drawLabels = (pts: Point[], labels: string[], hi: Map<number, string>, avoid: Point[]) => {
+      pts.forEach((_, i) => {
+        let pos = corrLabelPos(pts, i, 22 * k);
+        if (avoid.some((q) => Math.hypot(q.x - pos.x, q.y - pos.y) < 18 * k)) pos = corrLabelPos(pts, i, 44 * k);
+        const col = hi.get(i);
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 11 * labelScale * k, 0, Math.PI * 2);
+        ctx.fillStyle = col ?? "#ffffff";
+        ctx.fill();
+        ctx.strokeStyle = col ?? "#334155";
+        ctx.lineWidth = 2 * k;
+        ctx.stroke();
+        ctx.fillStyle = col ? "#ffffff" : "#0f172a";
+        ctx.font = `bold ${13 * labelScale * k}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(labels[i], pos.x, pos.y + 0.5 * k);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+      });
+    };
+    const posA = c.A.map((_, i) => corrLabelPos(c.A, i, 22 * k));
+    if (c.kind !== "pair") hiB.forEach((col, i) => hiA.set(i, col)); // 한 도형: 짝 꼭짓점도 같은 색
+    drawLabels(c.A, c.labelsA, hiA, []);
+    if (c.kind === "pair") drawLabels(c.B, c.labelsB, hiB, posA);
+    ctx.restore();
+  }
+
   function drawSymmetryAxes(
     ctx: CanvasRenderingContext2D,
     s: Shape,
@@ -4380,7 +5177,7 @@ export default function PolygonCanvas() {
       ctx.fillStyle = "#64748b";
       ctx.textAlign = "center";
       const minY = Math.min(...s.points.map((p) => p.y));
-      ctx.fillText("💎 원본 (비교용)", polygonCentroid(s.points).x, minY - 12 * k);
+      ctx.fillText(lesson?.refLabel ?? "💎 원본 (비교용)", polygonCentroid(s.points).x, minY - (lesson?.refLabel ? 44 : 12) * k);
       ctx.textAlign = "start";
     }
 
@@ -4619,7 +5416,7 @@ export default function PolygonCanvas() {
 
     // 점 추가 핸들: 단일 선택+선택도구일 때 각 변 가운데 '+' (눌러서 꼭짓점 추가)
     //   원은 꼭짓점이 없으므로 이 핸들을 표시하지 않음
-    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && s.points.length < 16 && !circleDef) {
+    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && s.points.length < 16 && !circleDef && !corrActive) {
       for (let i = 0; i < s.points.length; i++) {
         const a = s.points[i];
         const b = s.points[(i + 1) % s.points.length];
@@ -4645,7 +5442,7 @@ export default function PolygonCanvas() {
     }
 
     // 꼭짓점 삭제 배지: 단일 선택+선택도구, 점 4개 이상일 때 각 꼭짓점 바깥에 '➖'(탭하면 삭제)
-    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && !circleDef && s.points.length > 3) {
+    if (isSelected && selectedIds.length === 1 && !isRef && tool === "select" && !circleDef && s.points.length > 3 && !corrActive) {
       const cen = polygonCentroid(s.points);
       for (let i = 0; i < s.points.length; i++) {
         const v = s.points[i];
@@ -5095,6 +5892,17 @@ export default function PolygonCanvas() {
               />
               <Chip active={showAngles} onClick={() => setShowAngles(!showAngles)} icon="📐" label="각도" title="각도: 각 꼭짓점의 내각을 표시하고, 도형을 선택하면 삼각형으로 나눠 내각의 합 (n-2)×180°를 보여줘요" />
               <Chip active={showSymmetry} onClick={() => setShowSymmetry(!showSymmetry)} icon="🪞" label="대칭" title="대칭 표시: 어떤 도형이든 실제로 검사해 선대칭이면 대칭축(분홍 점선)을, 점대칭이면 대칭의 중심(보라 ✚)을 보여줘요 — 직접 그린 도형도 판별됩니다" />
+              <Chip
+                active={showCorr}
+                onClick={() => {
+                  const next = !showCorr;
+                  setShowCorr(next);
+                  if (next) setFlash("🔍 대응 찾기: 합동인 두 도형을 함께 고르거나(Ctrl/Shift+클릭), 대칭인 도형 하나를 고르면 같은 색 짝으로 대응점·대응변·대응각을 보여 줘요!");
+                }}
+                icon="🔍"
+                label="대응"
+                title="대응 찾기: 합동인 두 도형(또는 선대칭·점대칭인 도형 하나)에서 대응점·대응변·대응각을 같은 색 짝과 ㄱㄴㄷ 이름으로 보여 주고, 한 쌍씩 설명해 줘요"
+              />
               <Chip active={showEdgeLen} onClick={() => setShowEdgeLen(!showEdgeLen)} icon="📏" label="변길이" title="변 길이(cm) 라벨을 켜고 끄기" />
               <span className="hidden px-0.5 text-[11px] font-bold text-slate-400 lg:inline" title="변·넓이 숫자 크기 (수업용)">글자</span>
               <div className="flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5" title="변·넓이 숫자 크기 조절 (수업용)">
@@ -5270,8 +6078,8 @@ export default function PolygonCanvas() {
         </button>
       </div>
 
-      {/* 정보 카드 (헤더 아래 우측 상단) — 퀴즈·레슨 중에는 전용 패널이 있어 숨김 */}
-      {!quiz && !lesson && (
+      {/* 정보 카드 (헤더 아래 우측 상단) — 퀴즈·레슨·🔍대응 찾기 중에는 전용 패널이 그 자리를 씀 */}
+      {!quiz && !lesson && !corrActive && (
         <InfoCard
           selected={selectedIds.length > 1 ? null : selected}
           boardMode={boardMode}
@@ -5334,8 +6142,8 @@ export default function PolygonCanvas() {
         </div>
       )}
 
-      {/* 선택 도형 컨텍스트 액션 (하단 중앙) */}
-      {selected && (
+      {/* 선택 도형 컨텍스트 액션 (하단 중앙) — 그리기 중엔 그리기 모드 버튼과 겹치지 않게 숨김 */}
+      {selected && tool !== "draw" && (
         <ContextBar
           shape={selected}
           onRotate={(deg) => transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))}
@@ -5386,14 +6194,7 @@ export default function PolygonCanvas() {
           <Chip active={symMode === "none"} onClick={() => setSymMode("none")} icon="✏️" label="일반" title="일반 그리기: 점을 찍어 자유롭게 다각형을 그려요" />
           <Chip
             active={symMode === "line"}
-            onClick={() => {
-              setSymMode("line");
-              if (symAxisX == null) {
-                const c = viewCenterWorld();
-                setSymAxisX(Math.round(c.x / GRID) * GRID);
-              }
-              setFlash("🪞 선대칭 그리기: 축의 왼쪽(또는 오른쪽)에 반쪽만 그리면 반대쪽이 저절로 완성돼요! 시작·끝 점을 축 위에 찍으세요. 축은 잡아서 옮길 수 있어요.");
-            }}
+            onClick={() => enterSymMode("line", true)}
             icon="🪞"
             label="선대칭"
             tone="sky"
@@ -5401,14 +6202,7 @@ export default function PolygonCanvas() {
           />
           <Chip
             active={symMode === "point"}
-            onClick={() => {
-              setSymMode("point");
-              if (!symCenter) {
-                const c = viewCenterWorld();
-                setSymCenter({ x: Math.round(c.x / GRID) * GRID, y: Math.round(c.y / GRID) * GRID });
-              }
-              setFlash("🔃 점대칭 그리기: 중심의 한쪽에 반쪽만 그리면 180° 돌린 반대쪽이 저절로 완성돼요! 끝 점을 시작 점의 정반대편에 찍으세요. 중심은 잡아서 옮길 수 있어요.");
-            }}
+            onClick={() => enterSymMode("point", true)}
             icon="🔃"
             label="점대칭"
             tone="sky"
@@ -5435,6 +6229,28 @@ export default function PolygonCanvas() {
         )}
       </div>
 
+      {/* 🔍 대응 찾기 패널 (오른쪽 아래, 드래그 이동) */}
+      {corrActive && !boardMode && !quiz && (
+        <CorrPanel
+          reason={corrState && "reason" in corrState ? corrState.reason ?? null : null}
+          corr={corr}
+          options={corrState && "options" in corrState && corrState.options ? corrState.options : []}
+          basisIdx={corrState && "basisIdx" in corrState && corrState.basisIdx != null ? corrState.basisIdx : 0}
+          onBasis={setCorrBasisIdx}
+          list={corrList}
+          tab={corrTab}
+          onTab={setCorrTab}
+          idx={corrIdx}
+          onIdx={setCorrIdx}
+          onClose={lesson?.corrMode ? undefined : () => setShowCorr(false)}
+          pos={corrPos}
+          dragRef={corrDrag.ref}
+          dragHandle={corrDrag.handle}
+          onResetPos={() => setCorrPos(null)}
+          topPx={boardMode ? 64 : headerH + 8}
+        />
+      )}
+
       {/* 탐구 레슨 패널 (상단 중앙) */}
       {lesson && (
         <LessonPanel
@@ -5446,7 +6262,7 @@ export default function PolygonCanvas() {
           onNext={advanceLesson}
           onRestart={restartLesson}
           onExit={exitLesson}
-          refArea={lessonReference.reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0)}
+          refArea={lesson.hideAreaCompare ? 0 : lessonReference.reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0)}
           curArea={shapes.filter((s) => !s.isReference).reduce((a, s) => a + polygonArea(s.points) / (GRID * GRID), 0)}
         />
       )}
@@ -5503,10 +6319,26 @@ export default function PolygonCanvas() {
               ▶ 문제 풀기 시작
             </button>
           </div>
+          <div className="rounded-xl border-2 border-violet-300 bg-violet-50 p-3">
+            <div className="mb-1 text-sm font-extrabold text-violet-900">🪞 합동과 대칭 (5-2 3단원)</div>
+            <div className="mb-2 text-xs text-violet-700">포개고, 접고, 돌려 보며 대응점·대응변·대응각을 찾아요.</div>
+            {LESSONS.filter((L) => L.group === "sym").map((L) => (
+              <button
+                key={L.id}
+                onClick={() => startLesson(L)}
+                className="mb-1.5 flex w-full items-center gap-2 rounded-lg bg-violet-600 px-3 py-2.5 text-left text-sm font-bold text-white shadow hover:bg-violet-700"
+              >
+                <span className="flex-1">▶ {L.title}</span>
+                {progress.lessonsDone.includes(L.id) && (
+                  <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold">✓ 완료</span>
+                )}
+              </button>
+            ))}
+          </div>
           <div className="rounded-xl border-2 border-emerald-300 bg-emerald-50 p-3">
             <div className="mb-1 text-sm font-extrabold text-emerald-900">🧪 직접 만드는 공식 (탐구)</div>
             <div className="mb-2 text-xs text-emerald-700">도형을 직접 돌리고 붙여 공식을 스스로 발견해요.</div>
-            {LESSONS.map((L) => (
+            {LESSONS.filter((L) => L.group !== "sym").map((L) => (
               <button
                 key={L.id}
                 onClick={() => startLesson(L)}
@@ -5622,6 +6454,167 @@ function DrawerToggle({
       <span>{icon}</span>
       <span className="hidden sm:inline">{label}</span>
     </button>
+  );
+}
+
+// 🔍 대응 찾기 패널 — 탭(점·변·각) · 한 쌍씩 ◀ ▶ · 전체 보기 · 큰 문장 설명
+function CorrPanel({
+  reason,
+  corr,
+  options,
+  basisIdx,
+  onBasis,
+  list,
+  tab,
+  onTab,
+  idx,
+  onIdx,
+  onClose,
+  pos,
+  dragRef,
+  dragHandle,
+  onResetPos,
+  topPx,
+}: {
+  reason: string | null;
+  corr: Corr | null;
+  options: { label: string }[];
+  basisIdx: number;
+  onBasis: (i: number) => void;
+  list: CorrItem[];
+  tab: CorrTab;
+  onTab: (t: CorrTab) => void;
+  idx: number;
+  onIdx: (i: number) => void;
+  onClose?: () => void;
+  pos: { x: number; y: number } | null;
+  dragRef: React.RefObject<HTMLDivElement>;
+  dragHandle: object;
+  onResetPos: () => void;
+  topPx: number;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const style: React.CSSProperties = pos ? { left: pos.x, top: pos.y } : { right: 12, top: topPx };
+  const cur = corr && idx >= 0 && list[idx] ? corrDescribe(corr, tab, list[idx]) : null;
+  const color = CORR_COLORS[(idx < 0 ? 0 : idx) % CORR_COLORS.length];
+  const n = corr?.A.length ?? 0;
+  const title = !corr
+    ? "🔍 대응 찾기"
+    : corr.kind === "pair"
+    ? `🤝 합동 · ${n === 3 ? "삼각형" : n === 4 ? "사각형" : `${n}각형`} ${labelOrder(corr.A).map((i) => corr.labelsA[i]).join("")} ≡ ${labelOrder(corr.A).map((i) => corr.labelsB[corr.map[i]]).join("")}`
+    : corr.kind === "line"
+    ? "🪞 선대칭도형"
+    : "🔃 점대칭도형";
+  const rule = !corr
+    ? ""
+    : corr.kind === "pair"
+    ? "합동인 두 도형은 대응변의 길이와 대응각의 크기가 각각 같아요."
+    : corr.kind === "line"
+    ? "선대칭도형은 대응변의 길이와 대응각의 크기가 각각 같고, 대응점을 이은 선분은 대칭축과 수직으로 만나며 대칭축이 그 선분을 똑같이 나눠요."
+    : "점대칭도형은 대응변의 길이와 대응각의 크기가 각각 같고, 대응점을 이은 선분은 대칭의 중심을 지나며 중심이 그 선분을 똑같이 나눠요.";
+  const tabs: { id: CorrTab; label: string; icon: string }[] = [
+    { id: "point", label: "대응점", icon: "●" },
+    { id: "side", label: "대응변", icon: "━" },
+    { id: "angle", label: "대응각", icon: "∠" },
+  ];
+  return (
+    <div ref={dragRef} style={style} className="absolute z-30 w-[min(92vw,320px)] rounded-2xl border-2 border-indigo-200 bg-white/97 shadow-2xl backdrop-blur">
+      <div className="flex items-center gap-1 rounded-t-2xl border-b border-indigo-100 bg-indigo-50/80 px-2 py-1.5">
+        <Grip handle={dragHandle} onReset={onResetPos} className="h-6 w-4" />
+        <div className="min-w-0 flex-1 truncate text-sm font-extrabold text-indigo-900">{title}</div>
+        <button
+          onClick={() => setCollapsed((v) => !v)}
+          title={collapsed ? "펼치기" : "접기"}
+          className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-white hover:text-slate-700"
+        >
+          {collapsed ? "▸" : "▾"}
+        </button>
+        {onClose && (
+          <button onClick={onClose} title="대응 찾기 끄기" className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-white hover:text-slate-700">
+            ✕
+          </button>
+        )}
+      </div>
+      {!collapsed && <div className="p-3">
+        {!corr ? (
+          <div className="rounded-xl bg-slate-50 px-3 py-3 text-sm font-semibold leading-relaxed text-slate-600">{reason}</div>
+        ) : (
+          <>
+            {options.length > 1 && (
+              <div className="mb-2 flex flex-wrap gap-1">
+                {options.map((o, i) => (
+                  <button
+                    key={i}
+                    onClick={() => onBasis(i)}
+                    className={`rounded-full px-2.5 py-1 text-xs font-bold transition ${
+                      i === basisIdx ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mb-2.5 grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => onTab(t.id)}
+                  className={`flex min-h-[40px] items-center justify-center gap-1 rounded-lg text-sm font-extrabold transition ${
+                    tab === t.id ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <span className="text-xs">{t.icon}</span>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {cur ? (
+              <div className="rounded-xl border-2 px-3 py-2.5" style={{ borderColor: color, background: color + "12" }}>
+                <div className="text-lg font-extrabold leading-tight" style={{ color }}>
+                  {cur.big}
+                </div>
+                <div className="mt-1 text-[13px] font-semibold leading-snug text-slate-700">{cur.text}</div>
+                {cur.prop && <div className="mt-1.5 rounded-lg bg-white/80 px-2 py-1.5 text-xs font-bold leading-snug text-indigo-700">📐 {cur.prop}</div>}
+              </div>
+            ) : (
+              <div className="rounded-xl bg-slate-50 px-3 py-2.5 text-[13px] font-semibold leading-snug text-slate-600">
+                🌈 같은 색끼리 짝이에요! ◀ ▶로 한 쌍씩 살펴보세요.
+              </div>
+            )}
+            <div className="mt-2.5 flex items-center gap-1.5">
+              <button
+                onClick={() => onIdx(idx <= 0 ? list.length - 1 : idx - 1)}
+                className="grid h-11 w-11 place-items-center rounded-xl border border-slate-200 bg-white text-lg font-bold text-slate-700 hover:bg-slate-50"
+                aria-label="이전 짝"
+              >
+                ◀
+              </button>
+              <div className="flex-1 text-center text-sm font-extrabold text-slate-700">{idx < 0 ? `전체 ${list.length}쌍` : `${idx + 1} / ${list.length}`}</div>
+              <button
+                onClick={() => onIdx(idx < 0 || idx >= list.length - 1 ? 0 : idx + 1)}
+                className="grid h-11 w-11 place-items-center rounded-xl bg-indigo-600 text-lg font-bold text-white hover:bg-indigo-700"
+                aria-label="다음 짝"
+              >
+                ▶
+              </button>
+              <button
+                onClick={() => onIdx(idx < 0 ? 0 : -1)}
+                className={`h-11 rounded-xl px-2.5 text-xs font-extrabold ${idx < 0 ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+              >
+                전체
+              </button>
+            </div>
+            {corr.kind === "pair" && (
+              <div className="mt-2 text-center text-xs font-bold text-slate-500">
+                대응점 {n}쌍 · 대응변 {n}쌍 · 대응각 {n}쌍
+              </div>
+            )}
+            <div className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-xs font-semibold leading-snug text-amber-900">💡 {rule}</div>
+          </>
+        )}
+      </div>}
+    </div>
   );
 }
 

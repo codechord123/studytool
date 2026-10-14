@@ -586,6 +586,7 @@ type DragMode =
   | { type: "auxEnd"; kind: "guide" | "measure"; id: string; end: "a" | "b" }
   | { type: "auxMove"; kind: "guide" | "measure"; id: string; startA: Point; startB: Point; startPointer: Point }
   | { type: "symAxis" } // 🪞 선대칭 그리기: 대칭축(세로선) 옮기기
+  | { type: "symLine"; start: Point; current: Point } // 🔎 대칭 찾기 게임: 대칭축 긋기
   | { type: "symCenter" } // 🔃 점대칭 그리기: 대칭의 중심 옮기기
   | { type: "textMove"; id: string; startPointer: Point; startX: number; startY: number; downSX: number; downSY: number; wasActive: boolean }
   | { type: "textResize"; id: string; startPointer: Point; startScale: number; startW: number; startH: number }
@@ -1488,6 +1489,88 @@ const LESSONS: Lesson[] = [
   },
 ];
 
+// ===== 🔎 대칭 찾기 게임 (5-2 3단원: 선대칭·점대칭 도형 찾기 / 대칭축 긋기 / 대칭의 중심 찾기) =====
+// 정답은 하드코딩하지 않고 symmetryInfo로 실제 도형에서 계산
+type SymLibItem = { name: string; pts: () => Point[] }; // 격자 단위(1 = 1cm), 원점 근처
+const gp = (arr: [number, number][]) => () => arr.map(([x, y]) => ({ x, y }));
+const SYM_LIB: SymLibItem[] = [
+  { name: "정사각형", pts: gp([[-2, -2], [2, -2], [2, 2], [-2, 2]]) },
+  { name: "직사각형", pts: gp([[-3, -2], [3, -2], [3, 2], [-3, 2]]) },
+  { name: "이등변삼각형", pts: gp([[0, -3], [2, 2], [-2, 2]]) },
+  { name: "마름모", pts: gp([[0, -3], [2, 0], [0, 3], [-2, 0]]) },
+  { name: "평행사변형", pts: gp([[-3, -2], [1, -2], [3, 2], [-1, 2]]) },
+  { name: "등변사다리꼴", pts: gp([[-1, -2], [1, -2], [3, 2], [-3, 2]]) },
+  { name: "연 모양", pts: gp([[0, -3], [2, -1], [0, 3], [-2, -1]]) },
+  { name: "삼각형", pts: gp([[-2, -2], [3, 0], [0, 2]]) },
+  { name: "직각삼각형", pts: gp([[-2, -2], [3, 2], [-2, 2]]) },
+  { name: "사다리꼴", pts: gp([[-1, -2], [2, -2], [3, 2], [-3, 2]]) },
+  { name: "Z 모양", pts: gp([[-3, -2], [1, -2], [1, 0], [3, 0], [3, 2], [-1, 2], [-1, 0], [-3, 0]]) },
+  { name: "십자 모양", pts: gp([[-1, -3], [1, -3], [1, -1], [3, -1], [3, 1], [1, 1], [1, 3], [-1, 3], [-1, 1], [-3, 1], [-3, -1], [-1, -1]]) },
+  { name: "T 모양", pts: gp([[-3, -2], [3, -2], [3, 0], [1, 0], [1, 3], [-1, 3], [-1, 0], [-3, 0]]) },
+  { name: "화살표", pts: gp([[0, -3], [3, 0], [1, 0], [1, 3], [-1, 3], [-1, 0], [-3, 0]]) },
+  { name: "ㄱ자 모양", pts: gp([[-2, -3], [0, -3], [0, 1], [2, 1], [2, 3], [-2, 3]]) },
+  { name: "정삼각형", pts: () => makeRegular(3, 3) },
+  { name: "정오각형", pts: () => makeRegular(5, 3) },
+  { name: "정육각형", pts: () => makeRegular(6, 3) },
+];
+const symOf = (it: SymLibItem) => {
+  const info = symmetryInfo(it.pts().map((p) => ({ x: p.x * GRID, y: p.y * GRID })));
+  return { axes: info.axisAngles.length, point: info.pointSym };
+};
+
+type SymTaskSpec =
+  | { kind: "pick"; target: "line" | "point"; items: number[] } // SYM_LIB 번호 6개
+  | { kind: "axis"; item: number }
+  | { kind: "center"; item: number };
+type SymGameState = {
+  tasks: SymTaskSpec[];
+  index: number;
+  score: number;
+  results: ("correct" | "wrong" | null)[];
+  shapeIds: string[]; // 현재 문제의 도형 id (pick: 6개 / axis·center: 1개)
+  picked: string[];
+  found: number[]; // 찾은 대칭축 각도
+  lines: { a: Point; b: Point; ok: boolean }[]; // 그은 선
+  taps: { p: Point; ok: boolean }[];
+  status: "playing" | "done";
+  feedback: string | null;
+  correctNow: boolean | null;
+};
+
+function shuffled<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+// 10문제: 고르기(선대칭·점대칭) · 대칭축 긋기 · 대칭의 중심 찾기를 고루
+function makeSymGame(): SymTaskSpec[] {
+  const idx = SYM_LIB.map((_, i) => i);
+  const props = idx.map((i) => symOf(SYM_LIB[i]));
+  const pick = (target: "line" | "point"): SymTaskSpec => {
+    const yes = shuffled(idx.filter((i) => (target === "line" ? props[i].axes > 0 : props[i].point)));
+    const no = shuffled(idx.filter((i) => (target === "line" ? props[i].axes === 0 : !props[i].point)));
+    const nYes = 2 + Math.floor(Math.random() * 2); // 정답 2~3개
+    return { kind: "pick", target, items: shuffled([...yes.slice(0, nYes), ...no.slice(0, 6 - nYes)]) };
+  };
+  const axisPool = shuffled(idx.filter((i) => props[i].axes >= 1 && props[i].axes <= 4));
+  const centerPool = shuffled(idx.filter((i) => props[i].point));
+  return [
+    pick("line"),
+    { kind: "axis", item: axisPool[0] },
+    { kind: "axis", item: axisPool[1] },
+    pick("point"),
+    { kind: "center", item: centerPool[0] },
+    { kind: "center", item: centerPool[1] },
+    pick(Math.random() < 0.5 ? "line" : "point"),
+    { kind: "axis", item: axisPool[2] },
+    { kind: "center", item: centerPool[2] },
+    { kind: "axis", item: shuffled(idx.filter((i) => props[i].axes >= 2))[0] },
+  ];
+}
+
 // ===== 문제 모드 — 랜덤 20문제 =====
 type QuizKind = "rect" | "para" | "tri" | "trap" | "compound";
 type QuizProblem = {
@@ -1949,6 +2032,7 @@ export default function PolygonCanvas() {
   const [corrBasisIdx, setCorrBasisIdx] = useState(0);
   const [corrPos, setCorrPos] = useState<{ x: number; y: number } | null>(null);
   const [quiz, setQuiz] = useState<QuizState | null>(null);
+  const [symGame, setSymGame] = useState<SymGameState | null>(null); // 🔎 대칭 찾기 게임
   const [quizSetup, setQuizSetup] = useState(false);
   const [progress, setProgress] = useState<{ quizBestPct: number; lessonsDone: string[] }>({ quizBestPct: 0, lessonsDone: [] });
   const [muted, setMuted] = useState(false);
@@ -2018,7 +2102,7 @@ export default function PolygonCanvas() {
   const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
 
   // 🔍 대응 대상: 레슨이 지정하면 그 도형들, 아니면 선택한 도형(1개=대칭 / 2개=합동)
-  const corrActive = showCorr || !!lesson?.corrMode;
+  const corrActive = (showCorr || !!lesson?.corrMode) && !symGame;
   const corrState = useMemo(() => {
     if (!corrActive) return null;
     const isPoly = (s?: Shape) =>
@@ -2136,7 +2220,7 @@ export default function PolygonCanvas() {
   );
 
   const fitView = useCallback(
-    (list?: Shape[], opts?: { topInset?: number; bottomInset?: number; leftInset?: number; rightInset?: number }) => {
+    (list?: Shape[], opts?: { topInset?: number; bottomInset?: number; leftInset?: number; rightInset?: number; pad?: number }) => {
       const { w, h } = sizeRef.current;
       if (!w || !h) return;
       const src = list ?? shapes;
@@ -2159,7 +2243,7 @@ export default function PolygonCanvas() {
       }
       // 여백은 화면 크기에 비례 (폰에서 80px 고정은 과해서 도형이 지나치게 작아짐).
       // 최소 48px — 변 길이 라벨이 도형 바깥으로 나와도 잘리지 않을 만큼
-      const pad = Math.min(80, Math.max(48, w * 0.08));
+      const pad = opts?.pad ?? Math.min(80, Math.max(48, w * 0.08));
       // 상단 문제 카드/하단 컨텍스트바를 가리지 않도록 위·아래 여백을 비워 그 사이에 도형 배치
       // 왼쪽 도구 레일(≈84px)에 도형이 가리지 않도록 왼쪽 여백도 기본으로 확보
       const topInset = opts?.topInset ?? 0;
@@ -2425,6 +2509,28 @@ export default function PolygonCanvas() {
       return;
     }
     if (e.button !== 0 && e.pointerType === "mouse") return;
+
+    // 🔎 대칭 찾기 게임: 캔버스 입력을 게임용으로만 (도형 이동·편집 막음)
+    if (symGame) {
+      const task = symGame.tasks[symGame.index];
+      if (task && symGame.status === "playing") {
+        if (task.kind === "pick") {
+          const hit = topShapeAt(raw);
+          if (hit && symGame.shapeIds.includes(hit.id)) {
+            symTogglePick(hit.id);
+            return;
+          }
+        } else if (task.kind === "axis") {
+          dragRef.current = { type: "symLine", start: raw, current: raw };
+          return;
+        } else {
+          symTap(raw);
+          return;
+        }
+      }
+      dragRef.current = { type: "pan", sx, sy, startCam: { ...camRef.current } };
+      return;
+    }
 
     // 글상자(프레젠테이션식): 선택·글상자 도구 어디서든 자유롭게 이동·크기조절·편집
     //   손잡이 드래그=크기, 몸통 드래그=이동, 몸통 탭=편집, 빈 곳(글상자 도구)=새로 만들기
@@ -2895,6 +3001,11 @@ export default function PolygonCanvas() {
       setSymAxisX(gridSnap(raw).x); // 대칭축은 격자에 맞춰 이동
       return;
     }
+    if (dm.type === "symLine") {
+      dragRef.current = { ...dm, current: raw };
+      setHoverPt(raw); // 다시 그리기 트리거
+      return;
+    }
     if (dm.type === "symCenter") {
       setSymCenter(gridSnap(raw));
       return;
@@ -3065,6 +3176,8 @@ export default function PolygonCanvas() {
         setSelectedId(null);
         setActiveTextId(null);
       }
+    } else if (dm.type === "symLine") {
+      symLineDrawn(dm.start, dm.current);
     } else if (dm.type === "textMove") {
       // 거의 안 움직였으면 '탭' (프레젠테이션 글상자처럼):
       //   - 처음 탭 = 선택(손잡이 표시)  - 이미 선택된 글상자를 다시 탭 = 글자 편집
@@ -3836,6 +3949,7 @@ export default function PolygonCanvas() {
 
   function startLesson(L: Lesson) {
     commitHistory();
+    setSymGame(null);
     const { x: cx, y: cy } = viewCenterWorld();
     const built = L.build(cx, cy);
     let working = built.working;
@@ -3929,6 +4043,7 @@ export default function PolygonCanvas() {
 
   function setQuizFromProblems(problems: QuizProblem[]) {
     commitHistory(); // 학생이 그리던 캔버스가 대체되므로 ↶ 되돌리기로 복구 가능하게
+    setSymGame(null);
     const built = buildQuizShapes(problems[0]);
     setQuiz({
       problems,
@@ -3944,6 +4059,163 @@ export default function PolygonCanvas() {
     setDrawer(null);
     setScenarioHint(null);
     showQuizShapes(built);
+  }
+
+  // ===== 🔎 대칭 찾기 게임 =====
+  const SYM_GAME_COLORS = ["#93c5fd", "#f9a8d4", "#86efac", "#fcd34d", "#c4b5fd", "#fdba74"];
+  function buildSymTask(spec: SymTaskSpec): Shape[] {
+    const base = viewCenterWorld();
+    const make = (li: number, x: number, y: number, scale: number, ci: number): Shape => ({
+      id: uid(),
+      color: SYM_GAME_COLORS[ci % SYM_GAME_COLORS.length],
+      points: SYM_LIB[li].pts().map((q) => ({ x: x + q.x * GRID * scale, y: y + q.y * GRID * scale })),
+    });
+    if (spec.kind === "pick") {
+      // 가로 화면: 3열×2행 / 세로 화면(태블릿·폰): 2열×3행 — 도형이 최대한 크게 보이도록
+      const portrait = sizeRef.current.h > sizeRef.current.w;
+      const cols = portrait ? 2 : 3;
+      const rows = 6 / cols;
+      return spec.items.map((li, kk) => {
+        const col = kk % cols;
+        const row = Math.floor(kk / cols);
+        return make(li, base.x + (col - (cols - 1) / 2) * 8 * GRID, base.y + (row - (rows - 1) / 2) * 8 * GRID, 1, kk);
+      });
+    }
+    return [make(spec.item, base.x, base.y, 2, spec.item)];
+  }
+  function showSymTask(tasks: SymTaskSpec[], index: number, score: number, results: SymGameState["results"]) {
+    if (index >= tasks.length) {
+      setSymGame((g) => (g ? { ...g, index, score, results } : g));
+      setShapes([]);
+      return;
+    }
+    const built = buildSymTask(tasks[index]);
+    setShapes(built);
+    setSelectedIds([]);
+    setMergeFirstId(null);
+    setDraft([]);
+    setSymGame({ tasks, index, score, results, shapeIds: built.map((b) => b.id), picked: [], found: [], lines: [], taps: [], status: "playing", feedback: null, correctNow: null });
+    requestAnimationFrame(() => fitView(built, { topInset: headerH + 180, bottomInset: 24, pad: 44 }));
+  }
+  function startSymGame() {
+    commitHistory();
+    exitLesson();
+    setQuiz(null);
+    setQuizSetup(false);
+    setDrawer(null);
+    setScenarioHint(null);
+    setTool("select");
+    setSymMode("none");
+    const tasks = makeSymGame();
+    showSymTask(tasks, 0, 0, tasks.map(() => null));
+  }
+  function exitSymGame() {
+    if (symGame) {
+      commitHistory(); // ↶로 게임 도형 복구 가능
+      setShapes([]);
+    }
+    setSymGame(null);
+  }
+  function symTaskShape(): Shape | null {
+    if (!symGame) return null;
+    return shapesLiveRef.current.find((s) => s.id === symGame.shapeIds[0]) ?? null;
+  }
+  function symFinish(correct: boolean, feedback: string) {
+    setSymGame((g) => {
+      if (!g || g.status === "done") return g;
+      const results = [...g.results];
+      results[g.index] = correct ? "correct" : "wrong";
+      return { ...g, status: "done", results, score: g.score + (correct ? 1 : 0), feedback, correctNow: correct };
+    });
+  }
+  function symTogglePick(id: string) {
+    setSymGame((g) => (g ? { ...g, picked: g.picked.includes(id) ? g.picked.filter((x) => x !== id) : [...g.picked, id] } : g));
+  }
+  function symCheckPick() {
+    if (!symGame) return;
+    const t = symGame.tasks[symGame.index];
+    if (t.kind !== "pick") return;
+    const answer = symGame.shapeIds.filter((id) => {
+      const sh = shapesLiveRef.current.find((s) => s.id === id);
+      if (!sh) return false;
+      const info = symmetryInfo(sh.points);
+      return t.target === "line" ? info.axisAngles.length > 0 : info.pointSym;
+    });
+    const ok = answer.length === symGame.picked.length && answer.every((id) => symGame.picked.includes(id));
+    const word = t.target === "line" ? "선대칭도형" : "점대칭도형";
+    symFinish(
+      ok,
+      ok
+        ? `🎉 ${word}을 모두 맞혔어요! ${t.target === "line" ? "분홍 점선이 대칭축이에요." : "보라 ✚가 대칭의 중심이에요."}`
+        : `아쉬워요! ${word}은 모두 ${answer.length}개예요. 초록 ✓ 맞힘 · 빨강 ✗ 아님 · 주황 ! 놓침을 확인해 보세요.`
+    );
+  }
+  function symLineDrawn(a: Point, b: Point) {
+    const sh = symTaskShape();
+    if (!sh || !symGame) return;
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < GRID * 1.5) return; // 너무 짧으면 무시(탭)
+    const info = symmetryInfo(sh.points);
+    const c = info.center;
+    const dist = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / L;
+    let ang = Math.atan2(b.y - a.y, b.x - a.x);
+    if (ang < 0) ang += Math.PI;
+    const angDiff = (x: number, y: number) => {
+      const d = Math.abs(x - y) % Math.PI;
+      return Math.min(d, Math.PI - d);
+    };
+    const hit = dist < GRID * 0.6 ? info.axisAngles.findIndex((ax) => angDiff(ax, ang) < (7 * Math.PI) / 180) : -1;
+    if (hit >= 0 && symGame.found.includes(hit)) {
+      setSymGame((g) => (g ? { ...g, feedback: "👍 이미 찾은 대칭축이에요. 다른 대칭축도 있을까요?" } : g));
+      return;
+    }
+    if (hit >= 0) {
+      const found = [...symGame.found, hit];
+      setSymGame((g) => (g ? { ...g, found, lines: [...g.lines, { a, b, ok: true }], feedback: `✅ 대칭축 찾았어요! 이 선으로 접으면 완전히 겹쳐요. (찾은 축 ${found.length}개)` } : g));
+      if (found.length === info.axisAngles.length) symFinish(true, `🎉 대칭축을 모두 찾았어요! 이 도형의 대칭축은 ${info.axisAngles.length}개예요.`);
+      return;
+    }
+    setSymGame((g) => (g ? { ...g, lines: [...g.lines, { a, b, ok: false }], feedback: "❌ 이 선으로 접으면 두 쪽이 완전히 겹치지 않아요. 다시 그어 보세요!" } : g));
+  }
+  function symAxisDone() {
+    const sh = symTaskShape();
+    if (!sh || !symGame) return;
+    const total = symmetryInfo(sh.points).axisAngles.length;
+    const left = total - symGame.found.length;
+    if (left <= 0) symFinish(true, `🎉 대칭축을 모두 찾았어요! (${total}개)`);
+    else symFinish(false, `아쉬워요! 대칭축이 ${left}개 더 있어요 — 이 도형의 대칭축은 모두 ${total}개예요. 주황 점선을 확인해 보세요.`);
+  }
+  function symTap(p: Point) {
+    const sh = symTaskShape();
+    if (!sh || !symGame) return;
+    const c = symmetryInfo(sh.points).center;
+    if (Math.hypot(p.x - c.x, p.y - c.y) < GRID * 0.6) {
+      setSymGame((g) => (g ? { ...g, taps: [...g.taps, { p: c, ok: true }] } : g));
+      symFinish(true, "🎉 정답! 여기가 대칭의 중심이에요 — 대응점을 이은 선분이 모두 이 점을 지나요.");
+      return;
+    }
+    const misses = symGame.taps.filter((t) => !t.ok).length + 1;
+    setSymGame((g) => (g ? { ...g, taps: [...g.taps, { p, ok: false }] } : g));
+    if (misses >= 3) symFinish(false, "아쉬워요! 보라 ✚가 대칭의 중심이에요. 마주 보는 꼭짓점끼리 이은 선분이 모두 만나는 점이랍니다.");
+    else
+      setSymGame((g) =>
+        g ? { ...g, feedback: misses === 1 ? "❌ 조금 더 생각해 봐요! 💡 대칭의 중심은 서로 대응하는 꼭짓점을 이은 점선 위, 그 한가운데에 있어요." : "❌ 한 번 더! 점선 두 개가 만나는 점을 콕 찍어요." } : g
+      );
+  }
+  function symReveal() {
+    if (!symGame) return;
+    const t = symGame.tasks[symGame.index];
+    if (t.kind === "pick") return symCheckPick();
+    if (t.kind === "axis") {
+      const sh = symTaskShape();
+      const total = sh ? symmetryInfo(sh.points).axisAngles.length : 0;
+      return symFinish(false, `정답을 확인해요: 이 도형의 대칭축은 모두 ${total}개예요.`);
+    }
+    symFinish(false, "정답을 확인해요: 보라 ✚가 대칭의 중심이에요.");
+  }
+  function symNext() {
+    if (!symGame) return;
+    showSymTask(symGame.tasks, symGame.index + 1, symGame.score, symGame.results);
   }
 
   function exitQuiz() {
@@ -4453,6 +4725,8 @@ export default function PolygonCanvas() {
 
     // 🔍 대응점·대응변·대응각 (도형·대칭 표시 위에)
     if (corrActive && corr) drawCorrespondence(ctx, k);
+    // 🔎 대칭 찾기 게임 표시
+    if (symGame) drawSymGame(ctx, k);
 
     // 스마트 정렬 가이드 (도형 이동 중 모서리/중심 정렬)
     if (dragRef.current.type === "translate") {
@@ -4784,9 +5058,183 @@ export default function PolygonCanvas() {
         if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
       }
     }
-  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showGrid, showAngles, showEdgeLen, showSymmetry, symMode, symAxisX, symCenter, labelScale, piMode, lessonReference, quiz, lesson, corrActive, corr, corrList, corrTab, corrIdx]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showGrid, showAngles, showEdgeLen, showSymmetry, symMode, symAxisX, symCenter, labelScale, piMode, lessonReference, quiz, lesson, corrActive, corr, corrList, corrTab, corrIdx, symGame]);
 
   // 선대칭도형의 대칭축을 도형 폭보다 조금 더 길게 점선으로 그림
+  // 🔎 대칭 찾기 게임: 고른 도형 ✓, 그은 선, 찍은 점, 정답 공개
+  function drawSymGame(ctx: CanvasRenderingContext2D, k: number) {
+    if (!symGame) return;
+    const task = symGame.tasks[symGame.index];
+    if (!task) return;
+    const done = symGame.status === "done";
+    const gShapes = symGame.shapeIds.map((id) => shapes.find((s) => s.id === id)).filter((s): s is Shape => !!s);
+    const badge = (x: number, y: number, bg: string, text: string) => {
+      ctx.beginPath();
+      ctx.arc(x, y, 15 * k, 0, Math.PI * 2);
+      ctx.fillStyle = bg;
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3 * k;
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${17 * k}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y + 1 * k);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    };
+    const nameTag = (s: Shape, text: string) => {
+      const bb = boundsOf(s.points);
+      ctx.font = `bold ${13 * k}px sans-serif`;
+      const w = ctx.measureText(text).width;
+      const x = (bb.minX + bb.maxX) / 2;
+      const y = bb.maxY + 20 * k;
+      ctx.fillStyle = "rgba(15,23,42,0.85)";
+      ctx.beginPath();
+      ctx.roundRect(x - w / 2 - 7 * k, y - 11 * k, w + 14 * k, 22 * k, 11 * k);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    };
+    const longLine = (c: Point, ang: number, half: number, col: string, dash: number[]) => {
+      ctx.save();
+      ctx.setLineDash(dash);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 3 * k;
+      ctx.beginPath();
+      ctx.moveTo(c.x - Math.cos(ang) * half, c.y - Math.sin(ang) * half);
+      ctx.lineTo(c.x + Math.cos(ang) * half, c.y + Math.sin(ang) * half);
+      ctx.stroke();
+      ctx.restore();
+    };
+    const centerMark = (c: Point, col: string) => {
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 13 * k, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.fill();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2.5 * k;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(c.x - 9 * k, c.y);
+      ctx.lineTo(c.x + 9 * k, c.y);
+      ctx.moveTo(c.x, c.y - 9 * k);
+      ctx.lineTo(c.x, c.y + 9 * k);
+      ctx.stroke();
+    };
+
+    if (task.kind === "pick") {
+      for (const s of gShapes) {
+        const bb = boundsOf(s.points);
+        const bx = bb.maxX + 6 * k;
+        const by = bb.minY - 6 * k;
+        const picked = symGame.picked.includes(s.id);
+        if (!done) {
+          if (picked) {
+            ctx.save();
+            ctx.strokeStyle = "#4f46e5";
+            ctx.lineWidth = 4 * k;
+            ctx.setLineDash([8 * k, 5 * k]);
+            ctx.strokeRect(bb.minX - 10 * k, bb.minY - 10 * k, bb.maxX - bb.minX + 20 * k, bb.maxY - bb.minY + 20 * k);
+            ctx.restore();
+            badge(bx, by, "#4f46e5", "✓");
+          }
+          continue;
+        }
+        const info = symmetryInfo(s.points);
+        const yes = task.target === "line" ? info.axisAngles.length > 0 : info.pointSym;
+        if (picked && yes) badge(bx, by, "#16a34a", "✓");
+        else if (picked && !yes) badge(bx, by, "#dc2626", "✗");
+        else if (!picked && yes) badge(bx, by, "#f59e0b", "!");
+        const li = symGame.tasks[symGame.index].kind === "pick" ? (task.items[gShapes.indexOf(s)] ?? -1) : -1;
+        const nm = li >= 0 ? SYM_LIB[li].name : "";
+        nameTag(s, `${nm} · ${task.target === "line" ? (info.axisAngles.length ? `축 ${info.axisAngles.length}개` : "선대칭 ✗") : info.pointSym ? "점대칭 ○" : "점대칭 ✗"}`);
+      }
+      return;
+    }
+
+    const s = gShapes[0];
+    if (!s) return;
+    const info = symmetryInfo(s.points);
+    const c = info.center;
+    const half = Math.max(...s.points.map((q) => Math.hypot(q.x - c.x, q.y - c.y))) * 1.3 + 20 * k;
+
+    if (task.kind === "axis") {
+      // 그은 선: 맞으면 대칭축 전체 길이로(분홍), 틀리면 그은 그대로(빨강, 흐리게)
+      for (const ln of symGame.lines) {
+        if (ln.ok) continue;
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        ctx.strokeStyle = "#dc2626";
+        ctx.lineWidth = 3 * k;
+        ctx.beginPath();
+        ctx.moveTo(ln.a.x, ln.a.y);
+        ctx.lineTo(ln.b.x, ln.b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+      symGame.found.forEach((ai) => longLine(c, info.axisAngles[ai], half, "#ec4899", [10 * k, 6 * k]));
+      if (done) {
+        info.axisAngles.forEach((ang, ai) => {
+          if (!symGame.found.includes(ai)) longLine(c, ang, half, "#f59e0b", [5 * k, 5 * k]);
+        });
+      }
+      const dm = dragRef.current;
+      if (dm.type === "symLine") {
+        ctx.save();
+        ctx.setLineDash([6 * k, 5 * k]);
+        ctx.strokeStyle = "#334155";
+        ctx.lineWidth = 3 * k;
+        ctx.beginPath();
+        ctx.moveTo(dm.start.x, dm.start.y);
+        ctx.lineTo(dm.current.x, dm.current.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+      return;
+    }
+
+    // 대칭의 중심 찾기
+    const misses = symGame.taps.filter((t) => !t.ok);
+    if (misses.length >= 1 || done) {
+      // 힌트(단계적): 1번 틀리면 대응점끼리 이은 점선 1개 → 2번 틀리면 2개(만나는 점이 중심)
+      const n = s.points.length;
+      const want = done ? 2 : Math.min(2, misses.length);
+      const pairs: [number, number][] = [];
+      for (let i = 0; i < n && pairs.length < want; i++) {
+        const j = nearestIndex(s.points, { x: 2 * c.x - s.points[i].x, y: 2 * c.y - s.points[i].y });
+        if (j > i) pairs.push([i, j]);
+      }
+      ctx.save();
+      ctx.setLineDash([6 * k, 5 * k]);
+      ctx.strokeStyle = "#7c3aed";
+      ctx.lineWidth = 2.4 * k;
+      for (const [i, j] of pairs) {
+        ctx.beginPath();
+        ctx.moveTo(s.points[i].x, s.points[i].y);
+        ctx.lineTo(s.points[j].x, s.points[j].y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    for (const t of misses) {
+      ctx.strokeStyle = "#dc2626";
+      ctx.lineWidth = 3.5 * k;
+      ctx.beginPath();
+      ctx.moveTo(t.p.x - 8 * k, t.p.y - 8 * k);
+      ctx.lineTo(t.p.x + 8 * k, t.p.y + 8 * k);
+      ctx.moveTo(t.p.x + 8 * k, t.p.y - 8 * k);
+      ctx.lineTo(t.p.x - 8 * k, t.p.y + 8 * k);
+      ctx.stroke();
+    }
+    if (done) centerMark(c, "#7c3aed");
+  }
+
   // 🔍 대응점·대응변·대응각 그리기 — 짝마다 같은 색, 꼭짓점에 ㄱㄴㄷ 이름표
   function drawCorrespondence(ctx: CanvasRenderingContext2D, k: number) {
     if (!corr) return;
@@ -4988,12 +5436,14 @@ export default function PolygonCanvas() {
     ctx: CanvasRenderingContext2D,
     s: Shape,
     k: number,
-    circleDef: { circle: number } | null
+    circleDef: { circle: number } | null,
+    only?: "line" | "point"
   ) {
     const c = polygonCentroid(s.points);
     // 도형 바운딩 반지름 (표시 길이 결정) — 도형 밖까지 넉넉히 나가야 축이 눈에 띔
     const bbR = Math.max(...s.points.map((p) => Math.hypot(p.x - c.x, p.y - c.y))) * 1.3 + 14 * k;
     const drawLine = (angle: number) => {
+      if (only === "point") return;
       const dx = Math.cos(angle) * bbR;
       const dy = Math.sin(angle) * bbR;
       // 흰 밑줄(casing) → 도형 색·배지 위에서도 또렷하게
@@ -5029,7 +5479,7 @@ export default function PolygonCanvas() {
       pointSym = info.pointSym;
     }
     // 🔃 점대칭이면 '대칭의 중심'을 표시 — 흰 배경 원 위에 보라 ✚, 라벨까지
-    if (pointSym) {
+    if (pointSym && only !== "line") {
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.arc(c.x, c.y, 12 * k, 0, Math.PI * 2);
@@ -5364,7 +5814,7 @@ export default function PolygonCanvas() {
       const boxH = baseFont * k + padV * 2;
       // 변 길이(cm) 박스 — '변길이' 토글이 켜져 있고, 라벨이 변 길이 안에 '들어갈' 때만
       //   (줌아웃하면 자동으로 정돈되고, 줌인하면 다시 나타남 — 라벨 무더기 방지)
-      const drawLenBox = showEdgeLen && !gridCountMode && L >= (tw + 20 * k) * 1.5;
+      const drawLenBox = showEdgeLen && !gridCountMode && !symGame && L >= (tw + 20 * k) * 1.5;
       if (drawLenBox) {
         ctx.fillStyle = "rgba(255,255,255,0.96)";
         ctx.strokeStyle = s.color;
@@ -5473,7 +5923,7 @@ export default function PolygonCanvas() {
     }
 
     // 각도 표시: 내각 + (선택 시) 삼각형 분할로 내각의 합 유도 — 원은 제외
-    if (showAngles && !isRef && s.points.length >= 3 && !circleDef) {
+    if (showAngles && !isRef && s.points.length >= 3 && !circleDef && !symGame) {
       const pts = s.points;
       const n = pts.length;
       // 한 꼭짓점에서 대각선을 그어 (n-2)개 삼각형으로 분할 (선택된 도형만)
@@ -5578,7 +6028,7 @@ export default function PolygonCanvas() {
       ? `${cellInfo.cols} × ${cellInfo.rows} = ${cellInfo.cols * cellInfo.rows}칸`
       : cellCount != null
       ? `= ${cellCount}칸`
-      : showAreaBadge
+      : showAreaBadge && !symGame
       ? circleDef
         ? (() => {
             // 원: 다각형 근사값 대신 정확한 πr²로 표기(정보 카드와 일치)
@@ -5651,8 +6101,11 @@ export default function PolygonCanvas() {
     }
 
     // 🪞 대칭 표시 — 넓이 배지·라벨보다 '위에' 그려 축과 대칭의 중심이 또렷이 보이게
-    if (showSymmetry && !isRef) {
-      drawSymmetryAxes(ctx, s, k, circleDef);
+    //   (🔎 대칭 찾기 게임 중엔 정답이 보이지 않게 숨기고, '고르기' 채점 후에만 공개)
+    const gameTask = symGame?.tasks[symGame.index];
+    const revealHere = !!symGame && symGame.status === "done" && gameTask?.kind === "pick" && symGame.shapeIds.includes(s.id);
+    if ((showSymmetry && !isRef && !symGame) || revealHere) {
+      drawSymmetryAxes(ctx, s, k, circleDef, revealHere && gameTask?.kind === "pick" ? gameTask.target : undefined);
     }
   }
 
@@ -5780,7 +6233,7 @@ export default function PolygonCanvas() {
 
       {/* 빈 화면 안내 — 좁은 화면에서는 왼쪽 도구 레일에 가리지 않게 오른쪽으로 비켜 배치.
           그리기·글상자 같은 만들기 도구를 고르면 카드가 클릭을 가로채지 않도록 숨김 */}
-      {shapes.length === 0 && draft.length === 0 && texts.length === 0 && tool === "select" && (
+      {shapes.length === 0 && draft.length === 0 && texts.length === 0 && tool === "select" && !symGame && !quiz && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center pl-[84px] pr-2 sm:px-0">
           <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200 bg-white/80 px-8 py-7 text-center shadow-xl backdrop-blur">
             <div className="text-4xl">📐✨</div>
@@ -6079,7 +6532,7 @@ export default function PolygonCanvas() {
       </div>
 
       {/* 정보 카드 (헤더 아래 우측 상단) — 퀴즈·레슨·🔍대응 찾기 중에는 전용 패널이 그 자리를 씀 */}
-      {!quiz && !lesson && !corrActive && (
+      {!quiz && !lesson && !corrActive && !symGame && (
         <InfoCard
           selected={selectedIds.length > 1 ? null : selected}
           boardMode={boardMode}
@@ -6181,7 +6634,7 @@ export default function PolygonCanvas() {
       )}
 
       {/* 도구 힌트 (하단 중앙, 컨텍스트바 없을 때) */}
-      {!selected && !boardMode && shapes.length > 0 && (
+      {!selected && !boardMode && !symGame && shapes.length > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-0 -translate-x-1/2 rounded-full border border-slate-200 bg-white/85 px-4 py-1.5 text-xs text-slate-500 shadow backdrop-blur">
           {TOOL_HINT[tool]}
         </div>
@@ -6267,6 +6720,21 @@ export default function PolygonCanvas() {
         />
       )}
 
+      {/* 🔎 대칭 찾기 게임 패널 */}
+      {symGame && (
+        <SymGamePanel
+          game={symGame}
+          topPx={headerH + 8}
+          muted={muted}
+          onCheck={symCheckPick}
+          onAxisDone={symAxisDone}
+          onReveal={symReveal}
+          onNext={symNext}
+          onRestart={startSymGame}
+          onExit={exitSymGame}
+        />
+      )}
+
       {/* 문제 구성 선택(G) */}
       {quizSetup && !quiz && (
         <QuizSetup topPx={headerH + 8} onStart={(cfg) => startQuiz(cfg)} onCancel={() => setQuizSetup(false)} bestPct={progress.quizBestPct} />
@@ -6334,6 +6802,13 @@ export default function PolygonCanvas() {
                 )}
               </button>
             ))}
+            <button
+              onClick={startSymGame}
+              className="mt-0.5 flex w-full items-center gap-2 rounded-lg border-2 border-violet-500 bg-white px-3 py-2.5 text-left text-sm font-bold text-violet-700 shadow hover:bg-violet-100"
+            >
+              <span className="flex-1">🔎 대칭 찾기 게임 (10문제)</span>
+              <span className="text-[10px] font-bold text-violet-500">찾기·축 긋기·중심 찍기</span>
+            </button>
           </div>
           <div className="rounded-xl border-2 border-emerald-300 bg-emerald-50 p-3">
             <div className="mb-1 text-sm font-extrabold text-emerald-900">🧪 직접 만드는 공식 (탐구)</div>
@@ -6454,6 +6929,195 @@ function DrawerToggle({
       <span>{icon}</span>
       <span className="hidden sm:inline">{label}</span>
     </button>
+  );
+}
+
+// 🔎 대칭 찾기 게임 패널 (상단 중앙)
+const SYM_KIND_LABEL = { pick: "도형 찾기", axis: "대칭축 긋기", center: "대칭의 중심" } as const;
+function SymGamePanel({
+  game,
+  topPx,
+  muted,
+  onCheck,
+  onAxisDone,
+  onReveal,
+  onNext,
+  onRestart,
+  onExit,
+}: {
+  game: SymGameState;
+  topPx: number;
+  muted: boolean;
+  onCheck: () => void;
+  onAxisDone: () => void;
+  onReveal: () => void;
+  onNext: () => void;
+  onRestart: () => void;
+  onExit: () => void;
+}) {
+  const total = game.tasks.length;
+  const finished = game.index >= total;
+  const task = finished ? null : game.tasks[game.index];
+  const done = game.status === "done";
+
+  useEffect(() => {
+    if (done && game.correctNow && !muted) playDing(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done, game.index]);
+
+  if (finished) {
+    const pct = Math.round((game.score / total) * 100);
+    const stars = pct >= 90 ? "🏆" : pct >= 70 ? "🌟" : pct >= 50 ? "✨" : "🌱";
+    return (
+      <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,520px)] -translate-x-1/2">
+        <div className="pointer-events-auto relative overflow-hidden rounded-2xl border-2 border-violet-300 bg-white/95 p-5 text-center shadow-2xl backdrop-blur">
+          {pct >= 50 && (
+            <div className="pointer-events-none absolute inset-0">
+              {Array.from({ length: 18 }).map((_, i) => (
+                <span key={i} className="confetti-piece" style={{ left: `${(i * 5.5 + 3) % 100}%`, animationDelay: `${(i % 6) * 0.12}s` }}>
+                  {CONFETTI[i % CONFETTI.length]}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="pop-in text-4xl">{stars}</div>
+          <div className="mt-2 text-lg font-extrabold text-slate-800">대칭 찾기 완주!</div>
+          <div className="mt-2 text-3xl font-extrabold text-violet-600">
+            {game.score} <span className="text-lg text-slate-500">/ {total}</span>
+          </div>
+          <div className="mt-3 flex flex-wrap justify-center gap-1">
+            {game.results.map((r, i) => (
+              <span
+                key={i}
+                title={`${i + 1}번 ${SYM_KIND_LABEL[game.tasks[i].kind]}`}
+                className={`grid h-6 w-6 place-items-center rounded-full text-[10px] font-bold ${
+                  r === "correct" ? "bg-emerald-500 text-white" : r === "wrong" ? "bg-rose-400 text-white" : "bg-slate-200 text-slate-500"
+                }`}
+              >
+                {i + 1}
+              </span>
+            ))}
+          </div>
+          <div className="mt-3 rounded-xl bg-violet-50 px-3 py-2 text-left text-xs leading-relaxed text-violet-900">
+            <b>🪞 선대칭도형</b>: 한 직선(대칭축)을 따라 접으면 완전히 겹쳐요. 대칭축은 여러 개일 수도 있어요.
+            <br />
+            <b>🔃 점대칭도형</b>: 한 점(대칭의 중심)을 중심으로 180° 돌리면 완전히 겹쳐요. 대칭의 중심은 단 하나!
+          </div>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <button onClick={onRestart} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-bold text-white hover:bg-violet-700">
+              ↺ 새 문제로 다시
+            </button>
+            <button onClick={onExit} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+              종료
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const t = task!;
+  const name = t.kind === "pick" ? "" : SYM_LIB[t.item].name;
+  const prompt =
+    t.kind === "pick"
+      ? t.target === "line"
+        ? "🪞 선대칭도형을 모두 찾아 눌러 보세요!"
+        : "🔃 점대칭도형을 모두 찾아 눌러 보세요!"
+      : t.kind === "axis"
+      ? `✏️ ${name}의 대칭축을 모두 그어 보세요!`
+      : `🎯 ${name}의 대칭의 중심을 콕 찍어 보세요!`;
+  const sub =
+    t.kind === "pick"
+      ? t.target === "line"
+        ? "한 직선을 따라 접었을 때 완전히 겹치는 도형이에요. 고른 뒤 ‘확인’을 눌러요."
+        : "어떤 점을 중심으로 180° 돌렸을 때 처음 도형과 완전히 겹치는 도형이에요. 고른 뒤 ‘확인’을 눌러요."
+      : t.kind === "axis"
+      ? "도형 위를 손가락(마우스)으로 길게 끌어 선을 그어요. 다 찾았으면 ‘다 그었어요’를 눌러요."
+      : "도형을 180° 돌려도 그 자리에 있는 점이에요. 그 점을 눌러요.";
+  const good = done && game.correctNow;
+  const fbTone = !game.feedback
+    ? ""
+    : done
+    ? good
+      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+      : "border-amber-200 bg-amber-50 text-amber-900"
+    : game.feedback.startsWith("✅") || game.feedback.startsWith("👍")
+    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+    : "border-rose-200 bg-rose-50 text-rose-800";
+
+  return (
+    <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(94vw,600px)] -translate-x-1/2">
+      <div className="pointer-events-auto rounded-2xl border-2 border-violet-300 bg-white/95 p-3.5 shadow-2xl backdrop-blur">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-extrabold text-violet-700">
+              🔎 대칭 찾기 {game.index + 1} / {total}
+            </span>
+            <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700">{SYM_KIND_LABEL[t.kind]}</span>
+            <span className="text-xs font-bold text-slate-500">점수 {game.score}</span>
+          </div>
+          <button
+            onClick={() => {
+              if (window.confirm("대칭 찾기를 그만둘까요? 점수와 진행이 사라져요.")) onExit();
+            }}
+            className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600"
+          >
+            그만두기 ✕
+          </button>
+        </div>
+        <div className="mb-2 flex flex-wrap gap-0.5">
+          {game.results.map((r, i) => (
+            <span
+              key={i}
+              className={`h-1.5 w-4 rounded-full ${
+                r === "correct" ? "bg-emerald-500" : r === "wrong" ? "bg-rose-400" : i === game.index ? "bg-violet-300" : "bg-slate-200"
+              }`}
+            />
+          ))}
+        </div>
+        <div className="text-base font-extrabold leading-snug text-slate-800">{prompt}</div>
+        {!done && !game.feedback && <div className="mt-0.5 text-xs leading-relaxed text-slate-500">{sub}</div>}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {game.feedback ? (
+            <div className={`min-w-[200px] flex-1 rounded-xl border px-3 py-1.5 text-[13px] font-bold leading-snug ${fbTone}`}>{game.feedback}</div>
+          ) : (
+            <span className="flex-1 text-xs font-bold text-slate-500">
+              {t.kind === "pick" ? `고른 도형 ${game.picked.length}개` : t.kind === "axis" ? `찾은 대칭축 ${game.found.length}개` : ""}
+            </span>
+          )}
+          <div className="ml-auto flex shrink-0 gap-2">
+            {!done && t.kind === "pick" && (
+              <button
+                onClick={onCheck}
+                disabled={game.picked.length === 0}
+                className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-bold text-white shadow hover:bg-violet-700 disabled:opacity-40"
+              >
+                ✓ 확인
+              </button>
+            )}
+            {!done && t.kind !== "pick" && (
+              <button onClick={onReveal} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+                정답 보기
+              </button>
+            )}
+            {!done && t.kind === "axis" && (
+              <button
+                onClick={onAxisDone}
+                disabled={game.found.length === 0}
+                className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-bold text-white shadow hover:bg-violet-700 disabled:opacity-40"
+              >
+                ✓ 다 그었어요
+              </button>
+            )}
+            {done && (
+              <button onClick={onNext} className="pop-in rounded-lg bg-violet-600 px-5 py-2 text-sm font-bold text-white shadow hover:bg-violet-700">
+                {game.index + 1 >= total ? "🏁 결과 보기" : "다음 ▶"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

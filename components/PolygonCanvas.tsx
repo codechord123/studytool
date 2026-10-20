@@ -1571,6 +1571,165 @@ function makeSymGame(): SymTaskSpec[] {
   ];
 }
 
+// ===== 🎬 대칭 실험실 — 도형을 자동으로 만들고, 접고(선대칭)·돌리고(점대칭)·포개(합동) 확인 =====
+type SymDemoKind = "line" | "point" | "cong";
+type SymDemo = {
+  kind: SymDemoKind;
+  name: string;
+  color: string;
+  A: Point[]; // 기준 도형(월드 좌표)
+  cong: { cB: Point; theta: number; flip: boolean; scale: number } | null; // 합동: 움직이는 도형 B의 처음 자세
+  axisIdx: number; // 선대칭: 접는 선 후보 번호
+  t: number; // 0 = 처음, 1 = 다 접음/돌림/포갬
+  dir: 1 | -1;
+  playing: boolean;
+  negative: boolean; // '아닌 도형'(비교용)인지
+  srcId?: string; // 학생이 고른 도형으로 실험할 때 그 도형 id
+};
+const DEMO_DUR: Record<SymDemoKind, number> = { line: 1.9, point: 2.6, cong: 3.6 };
+const easeIO = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const angDiffPi = (x: number, y: number) => {
+  const d = Math.abs(x - y) % Math.PI;
+  return Math.min(d, Math.PI - d);
+};
+// 접는 선 후보: 실제 대칭축 + 세로·가로·대각선(대칭축이 아닐 수도 있음 — 직접 접어 보고 판단)
+function demoFoldLines(A: Point[]): { ang: number; isAxis: boolean }[] {
+  const info = symmetryInfo(A);
+  const out: { ang: number; isAxis: boolean }[] = info.axisAngles.map((ang) => ({ ang: ((ang % Math.PI) + Math.PI) % Math.PI, isAxis: true }));
+  for (const ang of [Math.PI / 2, 0, Math.PI / 4, (3 * Math.PI) / 4])
+    if (!out.some((o) => angDiffPi(o.ang, ang) < 0.02)) out.push({ ang, isAxis: false });
+  // 세로 → 가로 → 나머지(기울기 순)
+  const rank = (a: number) => (angDiffPi(a, Math.PI / 2) < 0.02 ? -2 : angDiffPi(a, 0) < 0.02 ? -1 : a);
+  return out.sort((a, b) => rank(a.ang) - rank(b.ang));
+}
+// 다각형을 직선(c를 지나고 법선 n)으로 잘라 f(p)·sign ≥ 0 쪽만 남김 (Sutherland–Hodgman)
+function clipHalfPlane(pts: Point[], c: Point, n: Point, sign: number): Point[] {
+  const out: Point[] = [];
+  const f = (p: Point) => ((p.x - c.x) * n.x + (p.y - c.y) * n.y) * sign;
+  for (let i = 0; i < pts.length; i++) {
+    const P = pts[i];
+    const Q = pts[(i + 1) % pts.length];
+    const fp = f(P);
+    const fq = f(Q);
+    if (fp >= -1e-9) out.push(P);
+    if ((fp > 1e-9 && fq < -1e-9) || (fp < -1e-9 && fq > 1e-9)) {
+      const t = fp / (fp - fq);
+      out.push({ x: P.x + (Q.x - P.x) * t, y: P.y + (Q.y - P.y) * t });
+    }
+  }
+  return out;
+}
+// 합동 포개기: 밀기 → 돌리기 → 뒤집기 단계(필요한 것만)
+function congPhases(c: NonNullable<SymDemo["cong"]>): ("slide" | "rotate" | "flip")[] {
+  const ph: ("slide" | "rotate" | "flip")[] = ["slide"];
+  if (Math.abs(c.theta) > 1e-6) ph.push("rotate");
+  if (c.flip) ph.push("flip");
+  return ph;
+}
+// 진행도 t에서 움직이는 도형 B의 꼭짓점 (A의 i번 꼭짓점 ↔ B의 i번 꼭짓점이 대응)
+function congPose(A: Point[], c: NonNullable<SymDemo["cong"]>, t: number): Point[] {
+  const cA = polygonCentroid(A);
+  const ph = congPhases(c);
+  const seg = (name: "slide" | "rotate" | "flip") => {
+    const i = ph.indexOf(name);
+    if (i < 0) return 1;
+    return easeIO(Math.min(1, Math.max(0, t * ph.length - i)));
+  };
+  const sl = seg("slide");
+  const ro = seg("rotate");
+  const fl = seg("flip");
+  const cx = c.cB.x + (cA.x - c.cB.x) * sl;
+  const cy = c.cB.y + (cA.y - c.cB.y) * sl;
+  const ang = c.theta * (1 - ro);
+  const fx = c.flip ? Math.cos(Math.PI * (1 - fl)) : 1; // -1(뒤집힌 상태) → 1
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  return A.map((p) => {
+    const qx = (p.x - cA.x) * c.scale * fx;
+    const qy = (p.y - cA.y) * c.scale;
+    return { x: cx + qx * co - qy * si, y: cy + qx * si + qy * co };
+  });
+}
+// 다 접었을/돌렸을/포갰을 때 완전히 겹치는지
+function demoMatch(d: SymDemo): boolean {
+  if (d.kind === "line") return !!demoFoldLines(d.A)[d.axisIdx]?.isAxis;
+  if (d.kind === "point") return symmetryInfo(d.A).pointSym;
+  return !!d.cong && Math.abs(d.cong.scale - 1) < 1e-6;
+}
+// 꼭짓점 이름(ㄱㄴㄷ…)과 대응점 짝. partner[i] = i의 대응점(겹치지 않으면 -1), color[i] = 짝 색
+function demoPairs(d: SymDemo): { names: string[]; namesB: string[]; partner: number[]; color: string[] } {
+  const A = d.A;
+  const n = A.length;
+  const order = labelOrder(A);
+  const rank: number[] = [];
+  order.forEach((vi, t) => (rank[vi] = t));
+  const names = A.map((_, i) => koV(rank[i]));
+  const namesB = A.map((_, i) => koV(n + rank[i]));
+  const match = demoMatch(d);
+  const c = polygonCentroid(A);
+  let partner = A.map(() => -1);
+  if (match && d.kind === "cong") partner = A.map((_, i) => i);
+  else if (match && d.kind === "point") partner = A.map((p) => nearestIndex(A, { x: 2 * c.x - p.x, y: 2 * c.y - p.y }));
+  else if (match && d.kind === "line") {
+    const ang = demoFoldLines(A)[d.axisIdx].ang;
+    const u = { x: Math.cos(ang), y: Math.sin(ang) };
+    partner = A.map((p) => {
+      const dx = p.x - c.x;
+      const dy = p.y - c.y;
+      const along = dx * u.x + dy * u.y;
+      return nearestIndex(A, { x: c.x + 2 * along * u.x - dx, y: c.y + 2 * along * u.y - dy });
+    });
+  }
+  // 짝마다 같은 색 (이름 순서대로 색 배정)
+  const color = A.map(() => "#475569");
+  let ci = 0;
+  for (const vi of order) {
+    if (color[vi] !== "#475569") continue;
+    const col = CORR_COLORS[ci++ % CORR_COLORS.length];
+    color[vi] = col;
+    if (partner[vi] >= 0) color[partner[vi]] = col;
+  }
+  return { names, namesB, partner, color };
+}
+const DEMO_COLORS = ["#93c5fd", "#f9a8d4", "#86efac", "#fcd34d", "#fdba74"]; // 보라는 움직이는 도형(투명 종이) 전용
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+// 실험용 도형 만들기 (격자 1.5배 크기, 중심 at)
+function makeSymDemo(kind: SymDemoKind, negative: boolean, at: Point, prevName?: string): SymDemo {
+  const props = SYM_LIB.map((it) => symOf(it));
+  let pool = SYM_LIB.map((_, i) => i);
+  if (kind === "line") pool = pool.filter((i) => (negative ? props[i].axes === 0 : props[i].axes > 0));
+  else if (kind === "point") pool = pool.filter((i) => (negative ? !props[i].point : props[i].point));
+  else pool = pool.filter((i) => props[i].axes === 0 && SYM_LIB[i].name !== "Z 모양"); // 대칭축이 없어야 뒤집기가 눈에 띔
+  const fresh = pool.filter((i) => SYM_LIB[i].name !== prevName);
+  const li = pickRandom(fresh.length ? fresh : pool);
+  const sc = 1.5;
+  const raw = SYM_LIB[li].pts().map((q) => ({ x: q.x * GRID * sc, y: q.y * GRID * sc }));
+  const color = pickRandom(DEMO_COLORS);
+  if (kind !== "cong") {
+    const c0 = polygonCentroid(raw);
+    return { kind, name: SYM_LIB[li].name, color, A: raw.map((q) => ({ x: q.x - c0.x + at.x, y: q.y - c0.y + at.y })), cong: null, axisIdx: 0, t: 0, dir: 1, playing: false, negative };
+  }
+  // 합동: A는 왼쪽, B는 오른쪽에 돌리고(·뒤집고) 놓음
+  const c0 = polygonCentroid(raw);
+  const A = raw.map((q) => ({ x: q.x - c0.x + at.x - 5.5 * GRID, y: q.y - c0.y + at.y }));
+  const flip = Math.random() < 0.5;
+  const theta = pickRandom(flip ? [0, Math.PI / 2, -Math.PI / 2, Math.PI] : [Math.PI / 2, -Math.PI / 2, Math.PI]);
+  return {
+    kind,
+    name: SYM_LIB[li].name,
+    color,
+    A,
+    cong: { cB: { x: at.x + 5.5 * GRID, y: at.y }, theta, flip, scale: negative ? 1.35 : 1 },
+    axisIdx: 0,
+    t: 0,
+    dir: 1,
+    playing: false,
+    negative,
+  };
+}
+
 // ===== 문제 모드 — 랜덤 20문제 =====
 type QuizKind = "rect" | "para" | "tri" | "trap" | "compound";
 type QuizProblem = {
@@ -2033,6 +2192,10 @@ export default function PolygonCanvas() {
   const [corrPos, setCorrPos] = useState<{ x: number; y: number } | null>(null);
   const [quiz, setQuiz] = useState<QuizState | null>(null);
   const [symGame, setSymGame] = useState<SymGameState | null>(null); // 🔎 대칭 찾기 게임
+  const [symDemo, setSymDemo] = useState<SymDemo | null>(null); // 🎬 대칭 실험실
+  const demoCamRef = useRef<Camera | null>(null);
+  const symDemoRef = useRef<SymDemo | null>(null);
+  symDemoRef.current = symDemo;
   const [quizSetup, setQuizSetup] = useState(false);
   const [progress, setProgress] = useState<{ quizBestPct: number; lessonsDone: string[] }>({ quizBestPct: 0, lessonsDone: [] });
   const [muted, setMuted] = useState(false);
@@ -2102,7 +2265,7 @@ export default function PolygonCanvas() {
   const selected = useMemo(() => shapes.find((s) => s.id === selectedId) ?? null, [shapes, selectedId]);
 
   // 🔍 대응 대상: 레슨이 지정하면 그 도형들, 아니면 선택한 도형(1개=대칭 / 2개=합동)
-  const corrActive = (showCorr || !!lesson?.corrMode) && !symGame;
+  const corrActive = (showCorr || !!lesson?.corrMode) && !symGame && !symDemo;
   const corrState = useMemo(() => {
     if (!corrActive) return null;
     const isPoly = (s?: Shape) =>
@@ -2510,6 +2673,11 @@ export default function PolygonCanvas() {
     }
     if (e.button !== 0 && e.pointerType === "mouse") return;
 
+    // 🎬 대칭 실험실: 화면 이동만
+    if (symDemo) {
+      dragRef.current = { type: "pan", sx, sy, startCam: { ...camRef.current } };
+      return;
+    }
     // 🔎 대칭 찾기 게임: 캔버스 입력을 게임용으로만 (도형 이동·편집 막음)
     if (symGame) {
       const task = symGame.tasks[symGame.index];
@@ -3344,6 +3512,11 @@ export default function PolygonCanvas() {
         spaceRef.current = true;
         return;
       }
+      // 🎬 대칭 실험실 중엔 도형 단축키를 막고 Esc로 닫기
+      if (symDemoRef.current) {
+        if (e.key === "Escape") closeSymDemo();
+        return;
+      }
       // 도구 단축키 (A/S/D/F/Q/W/E) — 수정키 없이
       if (!meta && !e.altKey) {
         const lk = e.key.toLowerCase();
@@ -3736,6 +3909,7 @@ export default function PolygonCanvas() {
 
   // 더블클릭 → 글상자 편집
   function handleDoubleClick(e: React.MouseEvent) {
+    if (symDemo) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const w = toWorld(e.clientX - rect.left, e.clientY - rect.top);
@@ -4218,6 +4392,143 @@ export default function PolygonCanvas() {
     showSymTask(symGame.tasks, symGame.index + 1, symGame.score, symGame.results);
   }
 
+  // ===== 🎬 대칭 실험실 =====
+  function fitDemo(d: SymDemo) {
+    let pts: Point[] = d.A;
+    if (d.kind === "point") {
+      // 돌아가는 동안 쓸고 지나가는 원까지 보이게
+      const c = polygonCentroid(d.A);
+      const R = Math.max(...d.A.map((q) => Math.hypot(q.x - c.x, q.y - c.y)));
+      pts = [{ x: c.x - R, y: c.y - R }, { x: c.x + R, y: c.y + R }];
+    } else if (d.kind === "cong" && d.cong) pts = [...d.A, ...congPose(d.A, d.cong, 0)];
+    requestAnimationFrame(() =>
+      fitView([{ id: "demo", color: d.color, points: pts }], { topInset: headerH + 214, bottomInset: 150, pad: 52 })
+    );
+  }
+  function openSymDemo(kind: SymDemoKind, from?: Shape | null) {
+    if (!symDemo) demoCamRef.current = { ...camRef.current };
+    if (lesson) exitLesson();
+    if (symGame) exitSymGame();
+    setQuiz(null);
+    setQuizSetup(false);
+    setDrawer(null);
+    setScenarioHint(null);
+    setTool("select");
+    setSymMode("none");
+    setSelectedIds([]);
+    let d: SymDemo;
+    if (from) {
+      const info = symmetryInfo(from.points);
+      d = {
+        kind,
+        name: "선택한 도형",
+        color: from.color,
+        A: from.points.map((q) => ({ ...q })),
+        cong: null,
+        axisIdx: 0,
+        t: 0,
+        dir: 1,
+        playing: false,
+        negative: kind === "line" ? info.axisAngles.length === 0 : !info.pointSym,
+        srcId: from.id,
+      };
+    } else d = makeSymDemo(kind, false, viewCenterWorld());
+    setSymDemo(d);
+    fitDemo(d);
+  }
+  function demoSwitchKind(kind: SymDemoKind) {
+    if (!symDemo || symDemo.kind === kind) return;
+    // 내가 고른 도형은 접기↔돌리기를 오가며 그대로 실험, 합동은 새 두 도형으로
+    if (symDemo.name === "선택한 도형" && kind !== "cong") {
+      const info = symmetryInfo(symDemo.A);
+      const d: SymDemo = { ...symDemo, kind, cong: null, axisIdx: 0, t: 0, dir: 1, playing: false, negative: kind === "line" ? info.axisAngles.length === 0 : !info.pointSym };
+      setSymDemo(d);
+      fitDemo(d);
+      return;
+    }
+    const d = makeSymDemo(kind, false, viewCenterWorld());
+    setSymDemo(d);
+    fitDemo(d);
+  }
+  function demoNewShape(negative: boolean) {
+    if (!symDemo) return;
+    const d = makeSymDemo(symDemo.kind, negative, viewCenterWorld(), symDemo.name);
+    setSymDemo(d);
+    fitDemo(d);
+  }
+  function demoPlay() {
+    setSymDemo((d) => {
+      if (!d) return d;
+      if (d.playing) return { ...d, playing: false };
+      if (d.t >= 0.999) return { ...d, dir: -1, playing: true }; // 다 됐으면 되돌리기
+      return { ...d, dir: 1, playing: true };
+    });
+  }
+  function closeSymDemo() {
+    setSymDemo(null);
+    if (demoCamRef.current) setCam(demoCamRef.current);
+    demoCamRef.current = null;
+  }
+  // 실험한 도형을 캔버스에 꺼내 🔍 대응 찾기로 이어서 공부
+  function demoToCorr() {
+    if (!symDemo) return;
+    const d = symDemo;
+    const src = d.srcId && d.kind !== "cong" ? shapes.find((x) => x.id === d.srcId) : null;
+    if (src) {
+      // 학생이 고른 도형 → 복제하지 않고 그 도형을 그대로 선택
+      setSelectedIds([src.id]);
+      setShowSymmetry(true);
+      setShowCorr(true);
+      setSymDemo(null);
+      demoCamRef.current = null;
+      requestAnimationFrame(() => fitView([src], { topInset: headerH + 20, rightInset: sizeRef.current.w > 900 ? 340 : 0 }));
+      return;
+    }
+    commitHistory();
+    const made: Shape[] = [{ id: uid(), color: d.color, points: d.A.map((q) => ({ ...q })) }];
+    if (d.kind === "cong" && d.cong) made.push({ id: uid(), color: "#c4b5fd", points: congPose(d.A, d.cong, 0) });
+    setShapes((prev) => [...prev, ...made]);
+    setSelectedIds(made.map((m) => m.id));
+    if (d.kind !== "cong") setShowSymmetry(true);
+    setShowCorr(true);
+    setSymDemo(null);
+    demoCamRef.current = null;
+    requestAnimationFrame(() => fitView(made, { topInset: headerH + 20, rightInset: sizeRef.current.w > 900 ? 340 : 0 }));
+  }
+  useEffect(() => {
+    if (!symDemo?.playing) return;
+    let raf = 0;
+    let last = performance.now();
+    // 접기·돌리기는 천천히 시작해 천천히 멈추게(가감속). 합동은 단계마다 congPose가 가감속
+    const eased = symDemo.kind !== "cong";
+    const inv = (y: number) => {
+      let lo = 0;
+      let hi = 1;
+      for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        if (easeIO(mid) < y) lo = mid;
+        else hi = mid;
+      }
+      return (lo + hi) / 2;
+    };
+    let clock = eased ? inv(symDemo.t) : symDemo.t;
+    const step = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      setSymDemo((d) => {
+        if (!d || !d.playing) return d;
+        clock = Math.min(1, Math.max(0, clock + (d.dir * dt) / DEMO_DUR[d.kind]));
+        const t = clock >= 1 ? 1 : clock <= 0 ? 0 : eased ? easeIO(clock) : clock;
+        const end = d.dir > 0 ? t >= 1 : t <= 0;
+        return { ...d, t, playing: !end, dir: end && d.dir < 0 ? 1 : d.dir };
+      });
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symDemo?.playing]);
+
   function exitQuiz() {
     if (quiz) {
       // 문제 도형이 캔버스에 남아 정답이 노출된 채 어질러지지 않도록 정리 (↶로 복구 가능)
@@ -4640,6 +4951,9 @@ export default function PolygonCanvas() {
       ctx.stroke();
     }
 
+    // 🎬 대칭 실험실 중에는 실험 도형만 (작업 도형·메모는 잠시 숨김)
+    if (symDemo) drawSymDemo(ctx, k);
+    else {
     // reference (원본 박제) 먼저 — 작업 도형 아래 레이어
     for (const s of lessonReference) drawShape(ctx, s, false, false, k);
     for (const s of shapes) drawShape(ctx, s, isSelected(s.id), s.id === mergeFirstId, k);
@@ -5042,6 +5356,7 @@ export default function PolygonCanvas() {
     ctx.textAlign = "start";
     ctx.textBaseline = "alphabetic";
 
+    }
     // 모눈 눈금 숫자 (화면 가장자리에 고정 = 자 느낌) — 무격자 모드에서는 숨김
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (showGrid) {
@@ -5058,10 +5373,273 @@ export default function PolygonCanvas() {
         if (sy >= 14 && sy <= ch - 4) ctx.fillText(`${Math.round(y / GRID)}`, 4, sy + 4);
       }
     }
-  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showGrid, showAngles, showEdgeLen, showSymmetry, symMode, symAxisX, symCenter, labelScale, piMode, lessonReference, quiz, lesson, corrActive, corr, corrList, corrTab, corrIdx, symGame]);
+  }, [shapes, draft, hoverPt, selectedIds, inspectId, mergeFirstId, tool, cam, size, measurements, guides, texts, editingTextId, activeTextId, boardMode, activeAux, showAreaBadge, gridCountMode, showGrid, showAngles, showEdgeLen, showSymmetry, symMode, symAxisX, symCenter, labelScale, piMode, lessonReference, quiz, lesson, corrActive, corr, corrList, corrTab, corrIdx, symGame, symDemo]);
 
   // 선대칭도형의 대칭축을 도형 폭보다 조금 더 길게 점선으로 그림
   // 🔎 대칭 찾기 게임: 고른 도형 ✓, 그은 선, 찍은 점, 정답 공개
+  // 🎬 대칭 실험실 그리기 — 접기(선대칭) · 180° 돌리기(점대칭) · 밀기·돌리기·뒤집기(합동)
+  function drawSymDemo(ctx: CanvasRenderingContext2D, k: number) {
+    const d = symDemo;
+    if (!d) return;
+    const A = d.A;
+    const c = polygonCentroid(A);
+    const e = d.t; // 재생 중 부드러운 가감속은 애니메이션 시계에서 처리 → 슬라이더 위치 = 접힌/돌린 정도
+    const done = d.t >= 0.999;
+    const match = demoMatch(d);
+    const reveal = done && match;
+    const pr = demoPairs(d);
+    const poly = (pts: Point[], fill: string | null, stroke: string, o: { dash?: number[]; lw?: number; alpha?: number } = {}) => {
+      if (pts.length < 2) return;
+      ctx.save();
+      ctx.beginPath();
+      pts.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+      ctx.closePath();
+      if (fill) {
+        ctx.globalAlpha = o.alpha ?? 1;
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.shadowColor = "transparent";
+      ctx.setLineDash(o.dash ?? []);
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = (o.lw ?? 2.5) * k;
+      ctx.stroke();
+      ctx.restore();
+    };
+    const pill = (p: Point, text: string, bg: string, fg = "#ffffff") => {
+      ctx.save();
+      ctx.font = `bold ${15 * k}px sans-serif`;
+      const w = ctx.measureText(text).width;
+      ctx.fillStyle = bg;
+      ctx.beginPath();
+      ctx.roundRect(p.x - w / 2 - 6 * k, p.y - 11 * k, w + 12 * k, 22 * k, 11 * k);
+      ctx.fill();
+      if (bg === "#ffffff") {
+        ctx.strokeStyle = "#cbd5e1";
+        ctx.lineWidth = 1.2 * k;
+        ctx.stroke();
+      }
+      ctx.fillStyle = fg;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, p.x, p.y + 1 * k);
+      ctx.restore();
+    };
+    const dot = (p: Point, col: string, r = 5.5) => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * k, 0, Math.PI * 2);
+      ctx.fillStyle = col;
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2 * k;
+      ctx.stroke();
+    };
+    const away = (p: Point, from: Point, dist: number): Point => {
+      const dx = p.x - from.x;
+      const dy = p.y - from.y;
+      const L = Math.hypot(dx, dy) || 1;
+      return { x: p.x + (dx / L) * dist * k, y: p.y + (dy / L) * dist * k };
+    };
+    const connector = (a: Point, b: Point, col: string) => {
+      ctx.save();
+      ctx.setLineDash([7 * k, 5 * k]);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2.4 * k;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.restore();
+    };
+    const lift = (on: boolean) => {
+      // 종이를 들어 올린 듯한 그림자
+      const h = Math.sin(Math.PI * Math.min(1, Math.max(0, e)));
+      ctx.shadowColor = on && h > 0.01 ? "rgba(15,23,42,0.28)" : "transparent";
+      ctx.shadowBlur = 22 * k * h;
+      ctx.shadowOffsetY = 8 * k * h;
+    };
+    if (d.kind === "line") {
+      const L = demoFoldLines(A)[d.axisIdx] ?? demoFoldLines(A)[0];
+      const u = { x: Math.cos(L.ang), y: Math.sin(L.ang) };
+      const nv = { x: -u.y, y: u.x };
+      const keep = clipHalfPlane(A, c, nv, 1);
+      const mov = clipHalfPlane(A, c, nv, -1);
+      const cs = Math.cos(Math.PI * e);
+      const fold = (p: Point): Point => {
+        const dx = p.x - c.x;
+        const dy = p.y - c.y;
+        const a = dx * u.x + dy * u.y;
+        const b = (dx * nv.x + dy * nv.y) * cs;
+        return { x: c.x + a * u.x + b * nv.x, y: c.y + a * u.y + b * nv.y };
+      };
+      if (d.t > 0.001) poly(mov, "#e2e8f0", "#94a3b8", { dash: [6 * k, 5 * k], lw: 2, alpha: 0.35 }); // 접기 전 자리
+      poly(keep, d.color, "#475569", { alpha: 0.9 });
+      ctx.save();
+      lift(true);
+      ctx.beginPath();
+      mov.map(fold).forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+      ctx.closePath();
+      ctx.globalAlpha = cs >= 0 ? 0.92 : 0.6; // 뒷면이 보이면 반투명 → 아래와 겹치는지 보임
+      ctx.fillStyle = d.color;
+      ctx.fill();
+      if (cs < 0) {
+        ctx.globalAlpha = 0.25;
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+      }
+      ctx.restore();
+      poly(mov.map(fold), null, done && !match ? "#dc2626" : "#475569", { dash: done && !match ? [8 * k, 5 * k] : [], lw: done && !match ? 3 : 2.5 });
+      // 접는 선 / 대칭축
+      const proj = A.map((q) => (q.x - c.x) * u.x + (q.y - c.y) * u.y);
+      const lo = Math.min(...proj) - 34 * k;
+      const hi = Math.max(...proj) + 34 * k;
+      const a0 = { x: c.x + u.x * lo, y: c.y + u.y * lo };
+      const a1 = { x: c.x + u.x * hi, y: c.y + u.y * hi };
+      ctx.save();
+      ctx.setLineDash([10 * k, 7 * k]);
+      ctx.strokeStyle = reveal ? "#ec4899" : "#64748b";
+      ctx.lineWidth = 3 * k;
+      ctx.beginPath();
+      ctx.moveTo(a0.x, a0.y);
+      ctx.lineTo(a1.x, a1.y);
+      ctx.stroke();
+      ctx.restore();
+      // 이름표는 선 끝의 '옆'에 (위아래로 공간을 더 쓰지 않게)
+      const tagAt = u.y > 0.3 ? a0 : u.y < -0.3 ? a1 : u.x > 0 ? a1 : a0;
+      const sideDir = nv.x >= 0 ? 1 : -1;
+      const tagText = reveal ? "대칭축" : "접는 선";
+      ctx.font = `bold ${15 * k}px sans-serif`;
+      const tw = ctx.measureText(tagText).width / 2 + 30 * k;
+      pill({ x: tagAt.x + nv.x * sideDir * tw, y: tagAt.y + nv.y * sideDir * tw + 10 * k }, tagText, reveal ? "#ec4899" : "#64748b");
+      // 꼭짓점
+      const side = (p: Point) => (p.x - c.x) * nv.x + (p.y - c.y) * nv.y;
+      if (reveal) {
+        A.forEach((p, i) => {
+          const j = pr.partner[i];
+          if (j > i && side(p) > 1e-6) connector(p, A[j], pr.color[i]);
+          if (j > i && side(p) < -1e-6) connector(A[j], p, pr.color[i]);
+        });
+      }
+      A.forEach((p, i) => {
+        const moving = side(p) < -1e-6;
+        if (reveal && moving) {
+          // 접기 전 자리(빈 동그라미) — 대응점을 이은 선분의 끝
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5 * k, 0, Math.PI * 2);
+          ctx.fillStyle = "#ffffff";
+          ctx.fill();
+          ctx.strokeStyle = pr.color[i];
+          ctx.lineWidth = 2.2 * k;
+          ctx.stroke();
+        }
+        const pos = moving ? fold(p) : p;
+        dot(pos, reveal ? pr.color[i] : moving ? "#7c3aed" : "#334155");
+      });
+      A.forEach((p, i) => {
+        const moving = side(p) < -1e-6;
+        if (reveal) {
+          if (moving) return; // 접힌 점은 짝의 자리에 겹쳐 있음
+          const j = pr.partner[i];
+          pill(away(p, c, 24), j === i || j < 0 ? pr.names[i] : `${pr.names[i]}↔${pr.names[j]}`, pr.color[i]);
+          return;
+        }
+        const pos = moving ? fold(p) : p;
+        pill(away(pos, c, moving && done ? 44 : 22), pr.names[i], "#ffffff", moving ? "#7c3aed" : "#0f172a");
+      });
+      return;
+    }
+
+    if (d.kind === "point") {
+      const ang = Math.PI * e;
+      const co = Math.cos(ang);
+      const si = Math.sin(ang);
+      const rot = (p: Point): Point => ({ x: c.x + (p.x - c.x) * co - (p.y - c.y) * si, y: c.y + (p.x - c.x) * si + (p.y - c.y) * co });
+      poly(A, d.color, "#475569", { alpha: 0.9 });
+      if (reveal) {
+        A.forEach((p, i) => {
+          const j = pr.partner[i];
+          if (j > i) connector(p, A[j], pr.color[i]);
+        });
+      }
+      // 투명 종이에 따라 그린 도형 — 핀(대칭의 중심)을 꽂고 돌림
+      ctx.save();
+      lift(true);
+      ctx.beginPath();
+      A.map(rot).forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+      ctx.closePath();
+      ctx.fillStyle = "rgba(196,181,253,0.38)";
+      ctx.fill();
+      ctx.restore();
+      poly(A.map(rot), null, done && !match ? "#dc2626" : "#7c3aed", { dash: done && !match ? [8 * k, 5 * k] : [], lw: 3 });
+      // 돌린 각도 호
+      if (d.t > 0.001) {
+        ctx.save();
+        ctx.strokeStyle = "#7c3aed";
+        ctx.lineWidth = 3 * k;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 34 * k, -Math.PI / 2, -Math.PI / 2 + ang);
+        ctx.stroke();
+        const ex = { x: c.x + Math.cos(-Math.PI / 2 + ang) * 34 * k, y: c.y + Math.sin(-Math.PI / 2 + ang) * 34 * k };
+        ctx.fillStyle = "#7c3aed";
+        ctx.beginPath();
+        ctx.arc(ex.x, ex.y, 4.5 * k, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        pill({ x: c.x + 62 * k, y: c.y - 30 * k }, `${Math.round(180 * e)}°`, "#7c3aed");
+      }
+      // 핀
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 8 * k, 0, Math.PI * 2);
+      ctx.fillStyle = reveal ? "#7c3aed" : "#334155";
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2.5 * k;
+      ctx.stroke();
+      pill({ x: c.x, y: c.y + 26 * k }, reveal ? "대칭의 중심" : "📌 핀", reveal ? "#7c3aed" : "#334155");
+      A.forEach((p, i) => dot(p, reveal ? pr.color[i] : "#334155"));
+      if (!reveal && d.t > 0.03) A.forEach((p) => dot(rot(p), "#7c3aed", 4.5));
+      A.forEach((p, i) => {
+        if (reveal) {
+          const j = pr.partner[i];
+          pill(away(p, c, 24), j >= 0 ? `${pr.names[i]}↔${pr.names[j]}` : pr.names[i], pr.color[i]);
+          return;
+        }
+        pill(away(p, c, 22), pr.names[i], "#ffffff", "#0f172a");
+        if (d.t > 0.03) pill(away(rot(p), c, 46), pr.names[i], "#ffffff", "#7c3aed");
+      });
+      return;
+    }
+
+    // 합동 — 밀기·돌리기·뒤집기로 포개기
+    if (!d.cong) return;
+    const B0 = congPose(A, d.cong, 0);
+    const B = congPose(A, d.cong, d.t);
+    const cB = polygonCentroid(B);
+    if (d.t > 0.001) poly(B0, "#e2e8f0", "#94a3b8", { dash: [6 * k, 5 * k], lw: 2, alpha: 0.35 }); // 처음 자리
+    poly(A, d.color, "#475569", { alpha: 0.9 });
+    ctx.save();
+    lift(d.t > 0.001 && d.t < 0.999);
+    ctx.beginPath();
+    B.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+    ctx.closePath();
+    ctx.fillStyle = "rgba(196,181,253,0.55)";
+    ctx.fill();
+    ctx.restore();
+    poly(B, null, done && !match ? "#dc2626" : "#7c3aed", { dash: done && !match ? [8 * k, 5 * k] : [], lw: 3 });
+    A.forEach((p, i) => dot(p, reveal ? pr.color[i] : "#334155"));
+    if (!reveal) B.forEach((p) => dot(p, "#7c3aed", 4.5));
+    A.forEach((p, i) => {
+      if (reveal) {
+        pill(away(p, c, 24), `${pr.names[i]}↔${pr.namesB[i]}`, pr.color[i]);
+        return;
+      }
+      pill(away(p, c, 22), pr.names[i], "#ffffff", "#0f172a");
+      pill(away(B[i], cB, done ? 46 : 22), pr.namesB[i], "#ffffff", "#7c3aed");
+    });
+  }
+
   function drawSymGame(ctx: CanvasRenderingContext2D, k: number) {
     if (!symGame) return;
     const task = symGame.tasks[symGame.index];
@@ -6233,7 +6811,7 @@ export default function PolygonCanvas() {
 
       {/* 빈 화면 안내 — 좁은 화면에서는 왼쪽 도구 레일에 가리지 않게 오른쪽으로 비켜 배치.
           그리기·글상자 같은 만들기 도구를 고르면 카드가 클릭을 가로채지 않도록 숨김 */}
-      {shapes.length === 0 && draft.length === 0 && texts.length === 0 && tool === "select" && !symGame && !quiz && (
+      {shapes.length === 0 && draft.length === 0 && texts.length === 0 && tool === "select" && !symGame && !symDemo && !quiz && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center pl-[84px] pr-2 sm:px-0">
           <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200 bg-white/80 px-8 py-7 text-center shadow-xl backdrop-blur">
             <div className="text-4xl">📐✨</div>
@@ -6532,7 +7110,7 @@ export default function PolygonCanvas() {
       </div>
 
       {/* 정보 카드 (헤더 아래 우측 상단) — 퀴즈·레슨·🔍대응 찾기 중에는 전용 패널이 그 자리를 씀 */}
-      {!quiz && !lesson && !corrActive && !symGame && (
+      {!quiz && !lesson && !corrActive && !symGame && !symDemo && (
         <InfoCard
           selected={selectedIds.length > 1 ? null : selected}
           boardMode={boardMode}
@@ -6596,7 +7174,7 @@ export default function PolygonCanvas() {
       )}
 
       {/* 선택 도형 컨텍스트 액션 (하단 중앙) — 그리기 중엔 그리기 모드 버튼과 겹치지 않게 숨김 */}
-      {selected && tool !== "draw" && (
+      {selected && tool !== "draw" && !symDemo && (
         <ContextBar
           shape={selected}
           onRotate={(deg) => transformSelected((pts, c) => rotatePoints(pts, c, (deg * Math.PI) / 180))}
@@ -6630,11 +7208,19 @@ export default function PolygonCanvas() {
           onResetPos={() => setCtxPos(null)}
           collapsed={ctxCollapsed}
           onToggleCollapsed={() => setCtxCollapsed((v) => !v)}
+          onSymDemo={
+            selected.points.length >= 3 && selected.points.length < 20
+              ? () => {
+                  const info = symmetryInfo(selected.points);
+                  openSymDemo(info.axisAngles.length === 0 && info.pointSym ? "point" : "line", selected);
+                }
+              : undefined
+          }
         />
       )}
 
       {/* 도구 힌트 (하단 중앙, 컨텍스트바 없을 때) */}
-      {!selected && !boardMode && !symGame && shapes.length > 0 && (
+      {!selected && !boardMode && !symGame && !symDemo && shapes.length > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-0 -translate-x-1/2 rounded-full border border-slate-200 bg-white/85 px-4 py-1.5 text-xs text-slate-500 shadow backdrop-blur">
           {TOOL_HINT[tool]}
         </div>
@@ -6720,6 +7306,22 @@ export default function PolygonCanvas() {
         />
       )}
 
+      {/* 🎬 대칭 실험실 */}
+      {symDemo && (
+        <SymDemoPanel
+          demo={symDemo}
+          topPx={headerH + 8}
+          muted={muted}
+          onKind={demoSwitchKind}
+          onNew={demoNewShape}
+          onAxis={(i) => setSymDemo((d) => (d ? { ...d, axisIdx: i, t: 0, dir: 1, playing: false } : d))}
+          onPlay={demoPlay}
+          onScrub={(t) => setSymDemo((d) => (d ? { ...d, t, playing: false, dir: 1 } : d))}
+          onToCorr={demoToCorr}
+          onClose={closeSymDemo}
+        />
+      )}
+
       {/* 🔎 대칭 찾기 게임 패널 */}
       {symGame && (
         <SymGamePanel
@@ -6802,6 +7404,19 @@ export default function PolygonCanvas() {
                 )}
               </button>
             ))}
+            <div className="mb-1 mt-1 text-[11px] font-bold text-violet-600">🎬 대칭 실험실 — 도형이 저절로 만들어지고, 접고·돌리고·포개 봐요</div>
+            <div className="mb-1.5 grid grid-cols-3 gap-1.5">
+              {DEMO_TABS.map((tb) => (
+                <button
+                  key={tb.kind}
+                  onClick={() => openSymDemo(tb.kind)}
+                  className="flex flex-col items-center gap-0.5 rounded-lg border-2 border-violet-300 bg-white px-1 py-2 text-center text-[11px] font-bold leading-tight text-violet-800 shadow-sm hover:bg-violet-100"
+                >
+                  <span className="text-lg">{tb.icon}</span>
+                  {tb.label}
+                </button>
+              ))}
+            </div>
             <button
               onClick={startSymGame}
               className="mt-0.5 flex w-full items-center gap-2 rounded-lg border-2 border-violet-500 bg-white px-3 py-2.5 text-left text-sm font-bold text-violet-700 shadow hover:bg-violet-100"
@@ -6929,6 +7544,245 @@ function DrawerToggle({
       <span>{icon}</span>
       <span className="hidden sm:inline">{label}</span>
     </button>
+  );
+}
+
+// 🎬 대칭 실험실 패널 — 위: 실험 고르기·조작 / 아래: 결과 설명
+const DEMO_TABS: { kind: SymDemoKind; icon: string; label: string }[] = [
+  { kind: "line", icon: "🪞", label: "선대칭 · 접기" },
+  { kind: "point", icon: "🔃", label: "점대칭 · 돌리기" },
+  { kind: "cong", icon: "🤝", label: "합동 · 포개기" },
+];
+const josa = (word: string, withBatchim: string, without: string) => {
+  const ch = word.charCodeAt(word.length - 1);
+  if (ch < 0xac00 || ch > 0xd7a3) return word + without;
+  return word + ((ch - 0xac00) % 28 ? withBatchim : without);
+};
+function SymDemoPanel({
+  demo,
+  topPx,
+  muted,
+  onKind,
+  onNew,
+  onAxis,
+  onPlay,
+  onScrub,
+  onToCorr,
+  onClose,
+}: {
+  demo: SymDemo;
+  topPx: number;
+  muted: boolean;
+  onKind: (k: SymDemoKind) => void;
+  onNew: (negative: boolean) => void;
+  onAxis: (i: number) => void;
+  onPlay: () => void;
+  onScrub: (t: number) => void;
+  onToCorr: () => void;
+  onClose: () => void;
+}) {
+  const d = demo;
+  const done = d.t >= 0.999;
+  const match = demoMatch(d);
+  const lines = d.kind === "line" ? demoFoldLines(d.A) : [];
+  const info = symmetryInfo(d.A);
+  const pr = demoPairs(d);
+  const isUser = d.name === "선택한 도형";
+
+  useEffect(() => {
+    if (done && match && d.dir === 1 && !muted) playDing(2);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done]);
+
+  const verb = d.kind === "line" ? "접어 보기" : d.kind === "point" ? "180° 돌려 보기" : "포개 보기";
+  const back = d.kind === "line" ? "펼치기" : d.kind === "point" ? "되돌리기" : "제자리로";
+  const playLabel = d.playing ? "⏸ 멈춤" : done ? `↩ ${back}` : d.t > 0.001 ? "▶ 계속" : `▶ ${verb}`;
+  const negLabel = d.kind === "line" ? "🤔 선대칭이 아닌 도형" : d.kind === "point" ? "🤔 점대칭이 아닌 도형" : "🤔 크기가 다르면?";
+  const question =
+    d.kind === "line"
+      ? "이 선을 따라 접으면 두 쪽이 완전히 겹칠까요? 예상해 보고 눌러 보세요!"
+      : d.kind === "point"
+      ? "📌 가운데에 핀을 꽂고 투명 종이를 180° 돌리면, 처음 도형과 완전히 겹칠까요?"
+      : "보라색 도형을 밀고·돌리고·뒤집어서 왼쪽 도형에 완전히 포갤 수 있을까요?";
+  const phases = d.cong ? congPhases(d.cong) : [];
+  const PH_LABEL = { slide: "밀기", rotate: "돌리기", flip: "뒤집기" } as const;
+  const curPhase = phases.length ? Math.min(phases.length - 1, Math.floor(d.t * phases.length - 1e-9)) : -1;
+
+  // 결과 문장
+  let resTitle = "";
+  let resBody: string[] = [];
+  if (done) {
+    const nm = isUser ? "이 도형" : d.name;
+    if (d.kind === "line") {
+      if (match) {
+        resTitle = `🎉 완전히 겹쳐요! 이 접는 선이 대칭축 → ${josa(nm, "은", "는")} 선대칭도형이에요.`;
+        resBody = ["대응점을 이은 선분은 대칭축과 수직으로 만나고, 대칭축이 그 선분을 똑같이 둘로 나눠요."];
+        if (info.axisAngles.length > 1) resBody.push(`💡 이 도형의 대칭축은 모두 ${info.axisAngles.length}개! 다른 접는 선으로도 접어 보세요.`);
+      } else if (info.axisAngles.length > 0) {
+        resTitle = "❌ 이 선으로 접으면 꼭 맞게 겹치지 않아요.";
+        resBody = ["💡 다른 접는 선을 골라 다시 접어 보세요. 완전히 겹치는 선이 있어요!"];
+      } else {
+        resTitle = `❌ 겹치지 않아요. ${josa(nm, "은", "는")} 어느 선으로 접어도 완전히 겹치지 않아요 → 선대칭도형이 아니에요.`;
+        if (info.pointSym) resBody = ["💡 그런데 180° 돌리면 겹쳐요! 위의 🔃 점대칭 · 돌리기로 확인해 보세요."];
+      }
+    } else if (d.kind === "point") {
+      if (match) {
+        resTitle = `🎉 180° 돌렸더니 처음 도형과 완전히 겹쳐요! 핀을 꽂은 점이 대칭의 중심 → ${josa(nm, "은", "는")} 점대칭도형이에요.`;
+        resBody = ["대응점을 이은 선분은 모두 대칭의 중심을 지나고, 중심이 그 선분을 똑같이 둘로 나눠요."];
+      } else {
+        resTitle = `❌ 180° 돌리면 처음 도형과 겹치지 않아요 → ${josa(nm, "은", "는")} 점대칭도형이 아니에요.`;
+        if (info.axisAngles.length > 0) resBody = ["💡 대신 선을 따라 접으면 겹쳐요! 위의 🪞 선대칭 · 접기로 확인해 보세요."];
+      }
+    } else {
+      if (match) {
+        resTitle = "🎉 밀고·돌리고·뒤집었더니 완전히 포개져요 → 두 도형은 서로 합동이에요.";
+        resBody = ["합동인 두 도형은 대응변의 길이가 같고, 대응각의 크기도 같아요."];
+      } else {
+        resTitle = "❌ 모양은 같지만 크기가 달라서 완전히 포개지지 않아요 → 합동이 아니에요.";
+        resBody = ["💡 합동은 모양과 크기가 모두 같아서 포개었을 때 완전히 겹치는 것이에요."];
+      }
+    }
+  }
+  const pairText = (() => {
+    if (!done || !match) return "";
+    const seen = new Set<number>();
+    const parts: string[] = [];
+    const onAxis: string[] = [];
+    const order = labelOrder(d.A);
+    for (const i of order) {
+      const j = pr.partner[i];
+      if (d.kind === "cong") {
+        parts.push(`${pr.names[i]}↔${pr.namesB[i]}`);
+        continue;
+      }
+      if (j < 0 || seen.has(i)) continue;
+      seen.add(i);
+      seen.add(j);
+      if (j === i) onAxis.push(pr.names[i]);
+      else parts.push(`${pr.names[i]}↔${pr.names[j]}`);
+    }
+    return `같은 색 점끼리 만나요 — 대응점 ${parts.join(", ")}${onAxis.length ? ` · 대칭축 위의 점 ${onAxis.join(", ")}` : ""}`;
+  })();
+
+  const btn = "rounded-lg px-2.5 py-1.5 text-xs font-bold transition";
+  return (
+    <>
+      <div style={{ top: topPx }} className="pointer-events-none absolute left-1/2 z-30 w-[min(96vw,640px)] -translate-x-1/2">
+        <div className="pointer-events-auto rounded-2xl border-2 border-violet-300 bg-white/95 p-3 shadow-2xl backdrop-blur">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="shrink-0 text-sm font-extrabold text-violet-700">🎬 대칭 실험실</span>
+            <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto rounded-xl bg-violet-50 p-0.5">
+              {DEMO_TABS.map((tb) => (
+                <button
+                  key={tb.kind}
+                  onClick={() => onKind(tb.kind)}
+                  className={`flex-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-xs font-bold transition ${
+                    d.kind === tb.kind ? "bg-violet-600 text-white shadow" : "text-violet-700 hover:bg-violet-100"
+                  }`}
+                >
+                  {tb.icon} {tb.label}
+                </button>
+              ))}
+            </div>
+            <button onClick={onClose} title="닫기 (Esc)" className="shrink-0 text-xs font-bold text-slate-400 hover:text-slate-600">
+              닫기 ✕
+            </button>
+          </div>
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-extrabold text-slate-700">
+              {d.kind === "cong" ? `${d.name} 두 개` : d.name}
+            </span>
+            <button onClick={() => onNew(false)} className={`${btn} border border-violet-200 bg-white text-violet-700 hover:bg-violet-50`}>
+              🎲 다른 도형
+            </button>
+            <button onClick={() => onNew(true)} className={`${btn} border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100`}>
+              {negLabel}
+            </button>
+          </div>
+          {d.kind === "line" && (
+            <div className="mb-2 flex flex-wrap items-center gap-1">
+              <span className="mr-0.5 text-[11px] font-bold text-slate-500">접는 선</span>
+              {lines.map((L, i) => (
+                <button
+                  key={i}
+                  onClick={() => onAxis(i)}
+                  title="이 선을 따라 접어 봐요"
+                  className={`grid h-8 w-9 place-items-center rounded-lg border transition ${
+                    d.axisIdx === i ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  <span className="block h-[3px] w-5 rounded-full bg-current" style={{ transform: `rotate(${(L.ang * 180) / Math.PI}deg)` }} />
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onPlay}
+              className="shrink-0 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-extrabold text-white shadow hover:bg-violet-700"
+            >
+              {playLabel}
+            </button>
+            <div className="min-w-0 flex-1">
+              <input
+                type="range"
+                min={0}
+                max={1000}
+                value={Math.round(d.t * 1000)}
+                onChange={(e) => onScrub(Number(e.target.value) / 1000)}
+                aria-label="진행 정도"
+                className="w-full accent-violet-600"
+              />
+              <div className="flex justify-between text-[10px] font-bold text-slate-400">
+                {d.kind === "cong" ? (
+                  phases.map((ph, i) => (
+                    <span key={ph} className={i === curPhase && d.t > 0.001 ? "text-violet-700" : ""}>
+                      {"①②③"[i]} {PH_LABEL[ph]}
+                    </span>
+                  ))
+                ) : d.kind === "point" ? (
+                  <>
+                    <span>0°</span>
+                    <span className="text-violet-700">{Math.round(180 * d.t)}° 돌림</span>
+                    <span>180°</span>
+                  </>
+                ) : (
+                  <>
+                    <span>펼침</span>
+                    <span>접힘</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          {d.t < 0.001 && !d.playing && <div className="mt-1.5 text-xs font-semibold text-slate-500">🤔 {question}</div>}
+        </div>
+      </div>
+      {done && (
+        <div className="pointer-events-none absolute bottom-3 left-1/2 z-30 w-[min(96vw,640px)] -translate-x-1/2">
+          <div
+            className={`pop-in pointer-events-auto rounded-2xl border-2 px-4 py-3 shadow-2xl backdrop-blur ${
+              match ? "border-emerald-300 bg-emerald-50/95" : "border-amber-300 bg-amber-50/95"
+            }`}
+          >
+            <div className={`text-sm font-extrabold leading-snug ${match ? "text-emerald-800" : "text-amber-900"}`}>{resTitle}</div>
+            {pairText && <div className="mt-1 text-xs font-bold text-slate-700 sm:text-[13px]">{pairText}</div>}
+            {resBody.map((b) => (
+              <div key={b} className="mt-0.5 hidden text-xs leading-relaxed text-slate-600 sm:block">
+                {b}
+              </div>
+            ))}
+            {match && (
+              <div className="mt-2 hidden justify-end sm:flex">
+                <button onClick={onToCorr} className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-900">
+                  🔍 대응변·대응각까지 살펴보기
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -7576,6 +8430,7 @@ function ContextBar({
   onResetPos,
   collapsed,
   onToggleCollapsed,
+  onSymDemo,
 }: {
   shape: Shape;
   onRotate: (deg: number) => void;
@@ -7597,6 +8452,7 @@ function ContextBar({
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   onResetPos: () => void;
+  onSymDemo?: () => void;
 }) {
   const mini =
     "grid h-9 min-w-[38px] place-items-center rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50";
@@ -7672,6 +8528,17 @@ function ContextBar({
               title="모든 각을 같게 (직사각형 / 정다각형). 각 부근을 꾹 눌러도 됩니다."
             >
               📐 등각
+            </button>
+          </MiniGroup>
+        )}
+        {!isCircle && onSymDemo && (
+          <MiniGroup label="대칭 실험">
+            <button
+              className="grid h-9 place-items-center rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-2 text-sm font-semibold text-fuchsia-700 hover:bg-fuchsia-100"
+              onClick={onSymDemo}
+              title="이 도형을 직접 접어 보고(선대칭) 180° 돌려 보며(점대칭) 확인해요"
+            >
+              🎬 접기·돌리기
             </button>
           </MiniGroup>
         )}

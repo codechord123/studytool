@@ -379,7 +379,17 @@ function corrOptions(shapesPts: Point[][], preferOverlay = false): { label: stri
     if (!ok(A)) return { reason: "꼭짓점이 있는 다각형을 골라 주세요" };
     const info = symmetryInfo(A);
     const out: { label: string; corr: Corr }[] = [];
-    info.axisAngles.forEach((ang, k) => {
+    // 대칭축은 세로 → 가로 → 대각선 순서, 이름도 방향으로 (화면에 그려진 축과 바로 연결되게)
+    const norm = (a: number) => ((a % Math.PI) + Math.PI) % Math.PI;
+    const near = (a: number, b: number) => {
+      const d = Math.abs(norm(a) - norm(b));
+      return Math.min(d, Math.PI - d) < 0.02;
+    };
+    const rank = (a: number) => (near(a, Math.PI / 2) ? -4 : near(a, 0) ? -3 : near(a, Math.PI / 4) ? -2 : near(a, (3 * Math.PI) / 4) ? -1 : norm(a));
+    const axes = [...info.axisAngles].sort((a, b) => rank(a) - rank(b));
+    const axisName = (a: number, k: number) =>
+      near(a, Math.PI / 2) ? "│ 세로 대칭축" : near(a, 0) ? "─ 가로 대칭축" : near(a, Math.PI / 4) ? "╲ 대각선 대칭축" : near(a, (3 * Math.PI) / 4) ? "╱ 대각선 대칭축" : `대칭축 ${k + 1}`;
+    axes.forEach((ang, k) => {
       const dir = { x: Math.cos(ang), y: Math.sin(ang) };
       const m = info.center;
       const refl = (p: Point) => {
@@ -388,7 +398,7 @@ function corrOptions(shapesPts: Point[][], preferOverlay = false): { label: stri
       };
       const map = A.map((p) => nearestIndex(A, refl(p)));
       if (map.every((j) => j >= 0)) {
-        out.push({ label: info.axisAngles.length > 1 ? `🪞 대칭축 ${k + 1}` : "🪞 선대칭", corr: finishCorr({ kind: "line", A, B: A, map, axis: { m, dir } }) });
+        out.push({ label: `🪞 ${axisName(ang, k)}`, corr: finishCorr({ kind: "line", A, B: A, map, axis: { m, dir } }) });
       }
     });
     if (info.pointSym) {
@@ -5882,6 +5892,94 @@ export default function PolygonCanvas() {
       pill(fmtDeg(deg), cur.x + Math.cos(mid) * (r + 16 * k), cur.y + Math.sin(mid) * (r + 16 * k), col);
     };
 
+    // 지금 기준인 대칭축 / 대칭의 중심을 또렷하게 (다른 축과 헷갈리지 않게)
+    if (c.axis) {
+      const { m, dir } = c.axis;
+      const pts = c.kind === "pair" ? [...c.A, ...c.B] : c.A;
+      const proj = pts.map((q) => (q.x - m.x) * dir.x + (q.y - m.y) * dir.y);
+      const lo = Math.min(...proj) - 84 * k;
+      const hi = Math.max(...proj) + 84 * k;
+      const a0 = { x: m.x + dir.x * lo, y: m.y + dir.y * lo };
+      const a1 = { x: m.x + dir.x * hi, y: m.y + dir.y * hi };
+      ctx.save();
+      ctx.lineCap = "round";
+      // 도형 테두리를 지나는 곳(변 길이 이름표 자리)은 살짝 끊어 글자를 가리지 않게
+      const gaps: [number, number][] = [];
+      const shapesOn = c.kind === "pair" ? [c.A, c.B] : [c.A];
+      for (const P of shapesOn) {
+        const g = polygonCentroid(P);
+        const tg = (g.x - m.x) * dir.x + (g.y - m.y) * dir.y;
+        for (let i = 0; i < P.length; i++) {
+          const p0 = P[i];
+          const p1 = P[(i + 1) % P.length];
+          const s0 = (p0.x - m.x) * -dir.y + (p0.y - m.y) * dir.x;
+          const s1 = (p1.x - m.x) * -dir.y + (p1.y - m.y) * dir.x;
+          if ((s0 > 1e-6 && s1 > 1e-6) || (s0 < -1e-6 && s1 < -1e-6) || Math.abs(s0 - s1) < 1e-9) continue;
+          const u = s0 / (s0 - s1);
+          if (u < 0.3 || u > 0.7) continue; // 변의 가운데쯤을 지날 때만(이름표 자리)
+          const q = { x: p0.x + (p1.x - p0.x) * u, y: p0.y + (p1.y - p0.y) * u };
+          const tq = (q.x - m.x) * dir.x + (q.y - m.y) * dir.y;
+          gaps.push(tq > tg ? [tq - 8 * k, tq + 58 * k] : [tq - 58 * k, tq + 8 * k]);
+        }
+      }
+      gaps.sort((x, y) => x[0] - y[0]);
+      const segs: [number, number][] = [];
+      let cur = lo;
+      for (const [g0, g1] of gaps) {
+        if (g0 > cur) segs.push([cur, Math.min(g0, hi)]);
+        cur = Math.max(cur, g1);
+      }
+      if (cur < hi) segs.push([cur, hi]);
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 8 * k;
+      ctx.beginPath();
+      for (const [t0, t1] of segs) {
+        ctx.moveTo(m.x + dir.x * t0, m.y + dir.y * t0);
+        ctx.lineTo(m.x + dir.x * t1, m.y + dir.y * t1);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = "#db2777";
+      ctx.lineWidth = 4 * k;
+      ctx.setLineDash([14 * k, 7 * k]);
+      ctx.beginPath();
+      for (const [t0, t1] of segs) {
+        ctx.moveTo(m.x + dir.x * t0, m.y + dir.y * t0);
+        ctx.lineTo(m.x + dir.x * t1, m.y + dir.y * t1);
+      }
+      ctx.stroke();
+      ctx.restore();
+      // '대칭축' 이름표: 위쪽 끝(가로면 오른쪽 끝)의 '옆'에 — 축 위 꼭짓점 이름표와 겹치지 않게
+      const end = Math.abs(a0.y - a1.y) > 1e-6 ? (a0.y < a1.y ? a0 : a1) : a0.x > a1.x ? a0 : a1;
+      let nx = -dir.y;
+      let ny = dir.x;
+      if (ny > 0.01 || (Math.abs(ny) <= 0.01 && nx < 0)) {
+        nx = -nx;
+        ny = -ny;
+      }
+      ctx.font = `bold ${12 * labelScale * k}px sans-serif`;
+      const tw = ctx.measureText("대칭축").width;
+      const off = tw / 2 + 16 * k;
+      pill("대칭축", end.x + nx * off, end.y + ny * off, "#db2777");
+    } else if (c.center && c.kind === "point") {
+      const C = c.center;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(C.x, C.y, 13 * k, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.fill();
+      ctx.strokeStyle = "#7c3aed";
+      ctx.lineWidth = 3 * k;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(C.x - 9 * k, C.y);
+      ctx.lineTo(C.x + 9 * k, C.y);
+      ctx.moveTo(C.x, C.y - 9 * k);
+      ctx.lineTo(C.x, C.y + 9 * k);
+      ctx.stroke();
+      ctx.restore();
+      pill("대칭의 중심", C.x, C.y + 26 * k, "#7c3aed");
+    }
+
     ctx.save();
     for (const idx of shown) {
       const it = corrList[idx];
@@ -6343,14 +6441,15 @@ export default function PolygonCanvas() {
 
     // 회전 손잡이(점선+초록 원) — 단일 선택일 때만 (원에는 표시 안 함)
     if (isSelected && selectedIds.length === 1 && !circleDef) {
-      const c = polygonCentroid(s.points);
+      // 줄기는 도형 위쪽 끝에서부터만 — 도형 안을 가로지르면 대칭축으로 착각하기 쉬움
       const h = rotationHandle(s, k);
+      const topY = Math.min(...s.points.map((q) => q.y));
       ctx.save();
-      ctx.setLineDash([8 * k, 6 * k]);
-      ctx.strokeStyle = "#0f172a";
+      ctx.setLineDash([6 * k, 5 * k]);
+      ctx.strokeStyle = "#64748b";
       ctx.lineWidth = 2 * k;
       ctx.beginPath();
-      ctx.moveTo(c.x, c.y);
+      ctx.moveTo(h.x, topY);
       ctx.lineTo(h.x, h.y);
       ctx.stroke();
       ctx.restore();
@@ -6594,7 +6693,9 @@ export default function PolygonCanvas() {
     // 칸세기 모드: 꽉 찬 칸/걸친 칸 개수를 보여줘 어림하게 (정확한 넓이는 숨김)
     const gcLabel = gcCells && !quizHiding ? `🟩 꽉 ${gcCells.full.length} · 걸친 ${gcCells.partial.length}칸` : null;
     const isCellLabel = !!cellInfo || cellCount != null || !!gcLabel;
-    const centerLabel = tooSmallForBadge
+    // 🔍 대응 찾기 대상 도형은 넓이·칸 수 대신 대응 표시에 집중 (축·중심과 겹치지 않게)
+    const corrTarget = corrActive && !!corr && (corr.A === s.points || corr.B === s.points);
+    const centerLabel = tooSmallForBadge || corrTarget
       ? null
       : inspecting
       ? null
@@ -6683,7 +6784,9 @@ export default function PolygonCanvas() {
     const gameTask = symGame?.tasks[symGame.index];
     const revealHere = !!symGame && symGame.status === "done" && gameTask?.kind === "pick" && symGame.shapeIds.includes(s.id);
     if ((showSymmetry && !isRef && !symGame) || revealHere) {
-      drawSymmetryAxes(ctx, s, k, circleDef, revealHere && gameTask?.kind === "pick" ? gameTask.target : undefined);
+      // 🔍 대응 찾기가 이 도형의 '한 대칭축/중심'을 기준으로 보고 있으면 그 기준만 (drawCorrespondence에서 굵게)
+      const corrHere = corrActive && !!corr && (corr.kind === "line" || corr.kind === "point") && corr.A === s.points;
+      if (!corrHere) drawSymmetryAxes(ctx, s, k, circleDef, revealHere && gameTask?.kind === "pick" ? gameTask.target : undefined);
     }
   }
 
